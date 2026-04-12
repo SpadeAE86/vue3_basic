@@ -1,4 +1,4 @@
-﻿import { BrowserWindow, app, ipcMain } from "electron"
+import { BrowserWindow, app, ipcMain } from "electron"
 import path from "path"
 import { fileURLToPath } from "url"
 
@@ -14,7 +14,7 @@ const createWindow = () => {
     }
   })
 
-  if (process.env.NODE_ENV !== 'production') {
+  if (!app.isPackaged) {
     win.loadURL('http://localhost:5173')
     win.webContents.openDevTools()
   } else {
