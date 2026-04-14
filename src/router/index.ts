@@ -22,6 +22,12 @@ const router = createRouter({
       component: () => import('../views/GraphView.vue'),
       meta: { title: '力导图' },
     },
+    {
+      path: '/chat',
+      name: 'chat',
+      component: () => import('../views/ChatDebugView.vue'),
+      meta: { title: 'Agent 调试' },
+    },
   ],
 })
 

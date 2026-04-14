@@ -36,6 +36,11 @@ const route = useRoute()
           <template #title>力导图</template>
         </el-menu-item>
 
+        <el-menu-item index="/chat">
+          <el-icon><i-ep-chat-dot-round /></el-icon>
+          <template #title>Agent 调试</template>
+        </el-menu-item>
+
         <el-sub-menu index="/tools">
           <template #title>
             <el-icon><i-ep-setting /></el-icon>
