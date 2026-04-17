@@ -28,6 +28,12 @@ const router = createRouter({
       component: () => import('../views/ChatDebugView.vue'),
       meta: { title: 'Agent 调试' },
     },
+    {
+      path: '/image',
+      name: 'image',
+      component: () => import('../views/ImageGenerateView.vue'),
+      meta: { title: '提示词对比' },
+    },
   ],
 })
 

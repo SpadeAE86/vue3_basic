@@ -41,6 +41,11 @@ const route = useRoute()
           <template #title>Agent 调试</template>
         </el-menu-item>
 
+        <el-menu-item index="/image">
+          <el-icon><i-ep-picture /></el-icon>
+          <template #title>提示词对比</template>
+        </el-menu-item>
+
         <el-sub-menu index="/tools">
           <template #title>
             <el-icon><i-ep-setting /></el-icon>
