@@ -31,7 +31,7 @@ const router = createRouter({
     {
       path: '/image',
       name: 'image',
-      component: () => import('../views/ImageGenerateView.vue'),
+      component: () => import('../views/PromptLabView.vue'),
       meta: { title: '提示词对比' },
     },
   ],

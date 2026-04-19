@@ -34,4 +34,8 @@ export default defineConfig({
       '@': fileURLToPath(new URL('./src', import.meta.url)),
     },
   },
+  server: {
+    host: '0.0.0.0', // 监听所有 IPv4 地址
+    port: 5173
+  }
 })
