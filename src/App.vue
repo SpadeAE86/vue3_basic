@@ -1,9 +1,25 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
+import { checkBackendStatusApi } from '@/api/generate'
 
 const isCollapsed = ref(false)
 const route = useRoute()
+const isBackendConnected = ref(false)
+let statusCheckTimer: number
+
+const checkStatus = async () => {
+  isBackendConnected.value = await checkBackendStatusApi()
+}
+
+onMounted(() => {
+  checkStatus()
+  statusCheckTimer = window.setInterval(checkStatus, 10000) // 每10秒检查一次
+})
+
+onUnmounted(() => {
+  clearInterval(statusCheckTimer)
+})
 </script>
 
 <template>
@@ -75,6 +91,15 @@ const route = useRoute()
           <span class="page-title">{{ route.meta.title || '首页' }}</span>
         </div>
         <div class="header-right">
+          <el-tooltip
+            :content="isBackendConnected ? '后端已连接' : '后端未连接'"
+            placement="bottom"
+          >
+            <div class="status-indicator">
+              <span class="status-dot" :class="{ 'is-connected': isBackendConnected }"></span>
+              <span class="status-text">{{ isBackendConnected ? '已连接' : '未连接' }}</span>
+            </div>
+          </el-tooltip>
           <el-tag type="success" effect="plain" round>v0.1.0</el-tag>
         </div>
       </el-header>
@@ -190,5 +215,40 @@ const route = useRoute()
   background: #f5f7fa;
   overflow-y: auto;
   padding: 20px;
+}
+
+/* --- 状态指示器 --- */
+.status-indicator {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 16px;
+  background: #f5f7fa;
+  cursor: default;
+  transition: all 0.3s ease;
+}
+
+.status-indicator:hover {
+  background: #ebeef5;
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: #f56c6c;
+  box-shadow: 0 0 4px rgba(245, 108, 108, 0.5);
+  transition: all 0.3s ease;
+}
+
+.status-dot.is-connected {
+  background-color: #67c23a;
+  box-shadow: 0 0 4px rgba(103, 194, 58, 0.5);
+}
+
+.status-text {
+  font-size: 13px;
+  color: #606266;
 }
 </style>

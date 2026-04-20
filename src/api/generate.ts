@@ -9,6 +9,15 @@ export function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit & {
   return fetch(input, { ...rest, signal: controller.signal }).finally(() => window.clearTimeout(t))
 }
 
+export async function checkBackendStatusApi() {
+  try {
+    const resp = await fetchWithTimeout(`${API_BASE}/health`, { timeoutMs: 3000 })
+    return resp.ok
+  } catch (e) {
+    return false
+  }
+}
+
 export async function loadHistoryApi(mode: GenerateMode) {
   const resp = await fetch(`${API_BASE}/${mode}/history`)
   return resp.json()
