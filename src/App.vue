@@ -62,6 +62,11 @@ onUnmounted(() => {
           <template #title>提示词对比</template>
         </el-menu-item>
 
+        <el-menu-item index="/video-analysis">
+          <el-icon><i-ep-video-play /></el-icon>
+          <template #title>视频分析</template>
+        </el-menu-item>
+
         <el-sub-menu index="/tools">
           <template #title>
             <el-icon><i-ep-setting /></el-icon>

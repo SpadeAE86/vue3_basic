@@ -34,6 +34,12 @@ const router = createRouter({
       component: () => import('../views/PromptLabView.vue'),
       meta: { title: '提示词对比' },
     },
+    {
+      path: '/video-analysis',
+      name: 'video-analysis',
+      component: () => import('../views/VideoAnalysisView.vue'),
+      meta: { title: '视频分析' },
+    },
   ],
 })
 
