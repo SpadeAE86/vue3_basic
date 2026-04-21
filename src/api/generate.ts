@@ -56,7 +56,7 @@ export async function generateImageApi(payload: any) {
   return resp.json()
 }
 
-export async function beautifyPromptApi(prompt: string, systemPrompt: string) {
+export async function beautifyPromptApi(prompt: string, systemPrompt: string, videoDuration?: number) {
   const resp = await fetchWithTimeout(`${API_BASE}/text`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -64,6 +64,7 @@ export async function beautifyPromptApi(prompt: string, systemPrompt: string) {
       prompt,
       system_prompt: systemPrompt,
       model: 'Seed 2.0 Pro',
+      video_duration: videoDuration,
     }),
     timeoutMs: 60_000, // 文本模型生成可能较慢，设置 60 秒超时
   })

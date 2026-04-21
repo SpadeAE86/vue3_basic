@@ -186,8 +186,8 @@ async function handleGenerateBoth() {
       const sysB = await getTemplateContent(templateForB!)
       
       const [resA, resB] = await Promise.all([
-        beautifyPromptApi(rawPrompt.value, sysA),
-        beautifyPromptApi(rawPrompt.value, sysB)
+        beautifyPromptApi(rawPrompt.value, sysA, props.currentMode === 'video' ? sharedForm.videoDuration : undefined),
+        beautifyPromptApi(rawPrompt.value, sysB, props.currentMode === 'video' ? sharedForm.videoDuration : undefined)
       ])
 
       if (resA.success && resA.text) {

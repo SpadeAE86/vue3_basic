@@ -1,0 +1,11 @@
+node_modules
+dist
+dist_electron
+.idea
+.vscode
+.git
+.DS_Store
+npm-debug.log*
+pnpm-debug.log*
+*.local
+

@@ -66,6 +66,8 @@ const TEMPLATE_ACTION_COLOR = '#6366f1'
 function handleBeautify() {
   beautifyPrompt(form.prompt, (newPrompt) => {
     form.prompt = newPrompt
+  }, {
+    videoDuration: currentMode.value === 'video' ? form.videoDuration : undefined
   })
 }
 
