@@ -25,7 +25,7 @@ RUN pnpm run build-only
 FROM nginx:1.27-alpine AS runner
 
 # nginx 官方镜像会对 /etc/nginx/templates/*.template 做 envsubst
-ENV BACKEND_UPSTREAM=algorithm_demo_backend.freeuuu.com:80
+ENV BACKEND_UPSTREAM=algorithm-demo-backend.freeuuu.com:80
 COPY nginx.conf /etc/nginx/templates/default.conf.template
 COPY --from=builder /app/dist /usr/share/nginx/html
 
