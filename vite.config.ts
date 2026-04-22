@@ -36,6 +36,13 @@ export default defineConfig({
   },
   server: {
     host: '0.0.0.0', // 监听所有 IPv4 地址
-    port: 5173
+    port: 5173,
+    proxy: {
+      '/api': {
+        target: 'http://127.0.0.1:8004',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api/, '')
+      }
+    }
   }
 })

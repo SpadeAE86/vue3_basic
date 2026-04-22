@@ -1,6 +1,6 @@
 import type { GenerateMode } from '@/types/generate'
 
-const API_BASE = 'http://127.0.0.1:8004'
+const API_BASE = '/api'
 
 export function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit & { timeoutMs?: number } = {}) {
   const { timeoutMs = 12_000, ...rest } = init

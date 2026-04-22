@@ -10,7 +10,7 @@ const loading = ref(false)
 
 // ─── 模式切换: Mock / 真实后端 ────────────────────────────────────
 const useMock = ref(true)
-const API_BASE = 'http://127.0.0.1:8004'   // 你的后端地址
+const API_BASE = '/api'   // 你的后端地址
 
 async function handleSend(text: string) {
   pushEvent({ event_type: 'user_message', content: text })
