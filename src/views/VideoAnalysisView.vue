@@ -1,68 +1,214 @@
 <script setup lang="ts">
-import { ref, nextTick } from 'vue'
+import { ref, computed, onMounted } from 'vue'
+import { ElMessage } from 'element-plus'
+import { analyzeVideoApi, getVideoAnalysisHistoryApi, getVideoAnalysisHistoryItemApi, getVideoAnalysisCardsApi } from '@/api/generate'
+import ShotDetailDrawer from '@/components/video_analysis/ShotDetailDrawer.vue'
+import TagPills from '@/components/video_analysis/TagPills.vue'
+import FrameStrip from '@/components/video_analysis/FrameStrip.vue'
+import TagSearchBar, { type SearchToken } from '@/components/video_analysis/TagSearchBar.vue'
 
 const isAnalyzing = ref(false)
 const selectedFile = ref<File | null>(null)
 const selectedHistory = ref('')
+const searchTokens = ref<SearchToken[]>([])
+const fuzzySearch = ref(false)
+const splitScenes = ref(true)
 
-// 模拟历史记录列表
-const historyOptions = [
-  { value: 'history-1', label: '2026-04-20 10:30 汽车内饰展示' },
-  { value: 'history-2', label: '2026-04-19 15:45 风景航拍' },
-  { value: 'history-3', label: '2026-04-18 09:12 人物访谈' }
-]
-
-// 模拟后端返回的数据结构
-const mockData = {
-  description: "视频片段展示汽车内部场景，以白色皮质座椅为核心，呈现前排驾驶座、可调节的副驾驶座（靠背从直立逐步倾斜）及后排座椅，车顶配天窗，内饰含杯架、车门饰板等细节，光线明亮柔和，整体设计简约豪华。",
-  subject: "汽车座椅（汽车内饰）",
-  object: ["座椅", "天窗", "杯架", "车门", "中控台"],
-  movement: "副驾驶座椅靠背调节（从直立向倾斜调整）",
-  adjective: ["豪华", "舒适", "明亮", "简约", "高档", "整洁", "现代", "精致"],
-  search_tags: ["汽车内饰", "白色皮质座椅", "座椅调节", "豪华汽车", "车载天窗", "舒适驾乘", "汽车内部设计", "中高端汽车"],
-  marketing_tags: ["产品展示", "使用场景"],
-  appealing_audience: ["汽车爱好者", "购车人群", "中高端消费者", "追求舒适出行者", "有车族"],
-  visual_quality: [8, 7, 8, 7]
+type ShotCard = {
+  scene_id: number
+  start_time: number
+  end_time: number
+  duration_seconds: number
+  thumbnail?: string | null
+  frame_urls?: string[]
+  description?: string | null
+  subject?: string | null
+  object?: string[] | null
+  movement?: string | null
+  adjective?: string[] | null
+  search_tags?: string[] | null
+  marketing_tags?: string[] | null
+  appealing_audience?: string[] | null
+  visual_quality?: number[] | null
+  error?: string | null
 }
 
-const analysisResults = ref<any[]>([])
+type VideoAnalysisHistoryItem = {
+  id: string
+  name: string
+  time: string
+  video_url?: string | null
+  cards: ShotCard[]
+}
+
+const historyItems = ref<VideoAnalysisHistoryItem[]>([])
+const historyOptions = computed(() =>
+  [
+    { value: '__all__', label: 'All（全部卡片）' },
+    ...historyItems.value.map((it) => ({
+      value: it.id,
+      label: `${it.time} ${it.name}`,
+    })),
+  ],
+)
+
+type UiShotCard = ShotCard & { id: number | string; time: string }
+const analysisResults = ref<UiShotCard[]>([])
+
+// ─── 详情抽屉（承载卡片容不下的字段） ─────────────────────────────
+const drawerOpen = ref(false)
+const activeShot = ref<UiShotCard | null>(null)
+
+function openShotDetail(shot: UiShotCard) {
+  activeShot.value = shot
+  drawerOpen.value = true
+}
+
+// 卡片内帧预览：hover/click 缩略图切主图
+const activeFrameIndex = ref<Record<string, number>>({})
+function getActiveFrameUrl(shot: UiShotCard) {
+  const urls = (shot.frame_urls ?? []).filter(Boolean)
+  const idx = activeFrameIndex.value[String(shot.id)] ?? 0
+  return urls[idx] || shot.thumbnail
+}
 
 const handleFileChange = (file: any) => {
   selectedFile.value = file.raw
 }
 
-const handleHistoryChange = (val: string) => {
-  if (val) {
-    // 模拟加载历史数据
+function formatTime(seconds: number) {
+  const s = Math.max(0, Math.floor(seconds))
+  const mm = String(Math.floor(s / 60)).padStart(2, '0')
+  const ss = String(s % 60).padStart(2, '0')
+  return `${mm}:${ss}`
+}
+
+function toUiCards(cards: ShotCard[]) {
+  return (cards || []).map((c) => ({
+    ...c,
+    id: c.scene_id,
+    time: `${formatTime(c.start_time)} - ${formatTime(c.end_time)}`,
+    object: c.object ?? [],
+    adjective: c.adjective ?? [],
+    appealing_audience: c.appealing_audience ?? [],
+    visual_quality: (c.visual_quality && c.visual_quality.length ? c.visual_quality : [0, 0, 0, 0]) as any,
+  }))
+}
+
+const handleHistoryChange = async (val: string) => {
+  if (!val) return
+
+  if (val === '__all__') {
     isAnalyzing.value = true
-    setTimeout(() => {
+    try {
+      const res = await getVideoAnalysisCardsApi('__all__')
+      if (!res?.success || !Array.isArray(res.cards)) {
+        analysisResults.value = []
+        return
+      }
+      analysisResults.value = toUiCards(res.cards || [])
+    } finally {
       isAnalyzing.value = false
-      generateMockCards(5) // 加载历史数据也模拟 5 张卡片
-    }, 800)
+    }
+    return
+  }
+
+  isAnalyzing.value = true
+  try {
+    const res = await getVideoAnalysisHistoryItemApi(val)
+    if (!res?.success || !res?.item) {
+      analysisResults.value = []
+      return
+    }
+    const item = res.item as VideoAnalysisHistoryItem
+    analysisResults.value = toUiCards(item.cards || [])
+  } finally {
+    isAnalyzing.value = false
   }
 }
 
-const generateMockCards = (count: number) => {
-  const newResults = []
-  for (let i = 1; i <= count; i++) {
-    newResults.push({
-      ...mockData,
-      id: i,
-      time: `00:${(i-1)*5 < 10 ? '0'+(i-1)*5 : (i-1)*5} - 00:${i*5 < 10 ? '0'+i*5 : i*5}`,
-      thumbnail: `https://via.placeholder.com/640x360?text=Shot+${i}`
-    })
-  }
-  analysisResults.value = newResults
+function buildBag(shot: UiShotCard) {
+  return [
+    ...(shot.search_tags ?? []),
+    ...(shot.object ?? []),
+    ...(shot.adjective ?? []),
+    ...(shot.appealing_audience ?? []),
+    ...(shot.marketing_tags ?? []),
+  ].filter(Boolean)
 }
 
-const handleUpload = () => {
-  if (selectedFile.value) {
-    isAnalyzing.value = true
-    setTimeout(() => {
-      isAnalyzing.value = false
-      // 模拟生成 5 个分镜以测试横向滚动
-      generateMockCards(5)
-    }, 1500)
+function matchTag(tags: string[], token: string, fuzzy: boolean) {
+  const q = token.trim()
+  if (!q) return true
+  if (!fuzzy) return tags.includes(q)
+  const qq = q.toLowerCase()
+  return tags.some((t) => {
+    const s = String(t).toLowerCase()
+    return s.includes(qq) || qq.includes(s)
+  })
+}
+
+const filteredResults = computed(() => {
+  const tokens = (searchTokens.value ?? []).filter((t) => t.text && t.text.trim())
+  if (!tokens.length) return analysisResults.value
+
+  return analysisResults.value.filter((shot) => {
+    const tags = buildBag(shot)
+    const hay = `${shot.subject ?? ''} ${shot.description ?? ''} ${tags.join(' ')}`.toLowerCase()
+
+    let acc = true
+    for (let i = 0; i < tokens.length; i++) {
+      const t = tokens[i]
+      const join = (t.join ?? 'AND').toUpperCase() as 'AND' | 'OR'
+      const not = !!t.not
+
+      let ok = true
+      // >=10 chars => treat as natural language, else treat as tag (with optional fuzzy)
+      if ((t.text ?? '').trim().length >= 10) ok = hay.includes(t.text.toLowerCase())
+      else ok = matchTag(tags, t.text, fuzzySearch.value)
+      if (not) ok = !ok
+
+      if (i === 0) acc = ok
+      else if (join === 'OR') acc = acc || ok
+      else acc = acc && ok
+    }
+    return acc
+  })
+})
+
+async function refreshHistory() {
+  try {
+    const res = await getVideoAnalysisHistoryApi()
+    if (res?.success && Array.isArray(res.history)) {
+      historyItems.value = res.history
+    } else {
+      historyItems.value = []
+    }
+  } catch (e) {
+    historyItems.value = []
+  }
+}
+
+const handleUpload = async () => {
+  if (!selectedFile.value) return
+
+  isAnalyzing.value = true
+  try {
+    const res = await analyzeVideoApi(selectedFile.value, { splitScenes: splitScenes.value })
+    if (!res?.success || !res?.item) {
+      ElMessage.error(res?.error || '视频分析失败')
+      return
+    }
+    const item = res.item as VideoAnalysisHistoryItem
+    // 更新历史并选中新结果
+    historyItems.value = [item, ...historyItems.value.filter((x) => x.id !== item.id)]
+    selectedHistory.value = item.id
+    analysisResults.value = toUiCards(item.cards)
+    ElMessage.success('视频分析完成')
+  } catch (e: any) {
+    ElMessage.error(e?.message || '视频分析出错')
+  } finally {
+    isAnalyzing.value = false
   }
 }
 
@@ -73,12 +219,13 @@ const getQualityColor = (score: number) => {
 }
 
 const qualityLabels = ['光影', '构图', '清晰', '色彩']
+const TAG_PREVIEW_COUNT = 3
 
 // 处理卡片 hover 滚动逻辑
 const handleCardHover = (e: MouseEvent) => {
   const card = (e.currentTarget as HTMLElement)
   const container = document.querySelector('.storyboard-scroll-container') as HTMLElement
-  
+
   if (!card || !container) return
 
   const cardRect = card.getBoundingClientRect()
@@ -95,6 +242,10 @@ const handleCardHover = (e: MouseEvent) => {
     container.scrollBy({ left: -scrollAmount, behavior: 'smooth' })
   }
 }
+
+onMounted(async () => {
+  await refreshHistory()
+})
 </script>
 
 <template>
@@ -104,10 +255,10 @@ const handleCardHover = (e: MouseEvent) => {
       <div class="header-controls">
         <div class="left-controls">
           <h3 class="section-title">视频分析</h3>
-          <el-select 
-            v-model="selectedHistory" 
-            placeholder="选择历史分析记录" 
-            clearable 
+          <el-select
+            v-model="selectedHistory"
+            placeholder="选择历史分析记录"
+            clearable
             class="history-select"
             @change="handleHistoryChange"
           >
@@ -118,9 +269,22 @@ const handleCardHover = (e: MouseEvent) => {
               :value="item.value"
             />
           </el-select>
+
+          <el-tag
+            :type="splitScenes ? 'success' : 'info'"
+            effect="dark"
+            size="small"
+            round
+            class="toggle-tag"
+            @click="splitScenes = !splitScenes"
+          >
+            <el-icon class="toggle-icon"><i-ep-scissor /></el-icon>
+            {{ splitScenes ? '拆分镜' : '不拆分镜' }}
+          </el-tag>
         </div>
 
         <div class="right-controls">
+          <TagSearchBar v-model="searchTokens" v-model:fuzzy="fuzzySearch" class="tag-search" />
           <el-upload
             class="compact-uploader"
             action="#"
@@ -134,14 +298,14 @@ const handleCardHover = (e: MouseEvent) => {
               选择视频
             </el-button>
           </el-upload>
-          
+
           <span v-if="selectedFile" class="compact-file-info">
             {{ selectedFile.name }}
           </span>
 
-          <el-button 
-            type="primary" 
-            @click="handleUpload" 
+          <el-button
+            type="primary"
+            @click="handleUpload"
             :loading="isAnalyzing"
             :disabled="!selectedFile"
           >
@@ -155,27 +319,39 @@ const handleCardHover = (e: MouseEvent) => {
     <div class="results-area" v-if="analysisResults.length > 0">
       <div class="storyboard-scroll-container">
         <div class="storyboard-track">
-          <el-card 
-            v-for="shot in analysisResults" 
-            :key="shot.id" 
-            class="storyboard-card" 
+          <el-card
+            v-for="shot in filteredResults" 
+            :key="shot.id"
+            class="storyboard-card"
             :body-style="{ padding: '0px' }"
             @mouseenter="handleCardHover"
+            @click="openShotDetail(shot)"
           >
             <!-- 视觉层 -->
             <div class="media-layer">
-              <el-image :src="shot.thumbnail" fit="cover" class="thumbnail" />
+              <el-image :src="getActiveFrameUrl(shot)" fit="cover" class="thumbnail" />
               <div class="time-badge">{{ shot.time }}</div>
             </div>
-            
+
             <div class="card-content">
+              <!-- 帧胶片条：不进抽屉也能看到多帧信息 -->
+              <div v-if="(shot.frame_urls ?? []).length" class="frame-strip">
+                <FrameStrip
+                  :urls="shot.frame_urls ?? []"
+                  :active-index="activeFrameIndex[String(shot.id)] ?? 0"
+                  :max="7"
+                  :height="42"
+                  :radius="10"
+                  @select="(i) => (activeFrameIndex[String(shot.id)] = i)"
+                />
+              </div>
               <!-- 核心信息层 -->
               <div class="core-info">
                 <h4 class="subject-title">{{ shot.subject }}</h4>
-                <el-alert 
-                  :title="shot.movement" 
-                  type="info" 
-                  :closable="false" 
+                <el-alert
+                  :title="shot.movement"
+                  type="info"
+                  :closable="false"
                   class="movement-alert"
                 >
                   <template #icon><el-icon><i-ep-video-camera /></el-icon></template>
@@ -187,28 +363,59 @@ const handleCardHover = (e: MouseEvent) => {
 
               <!-- 标签分类层 -->
               <div class="tags-section">
-                <div class="tag-group">
-                  <span class="group-label">实体:</span>
-                  <el-tag v-for="obj in shot.object" :key="obj" size="small" type="info" round class="mr-1 mb-1">{{ obj }}</el-tag>
-                </div>
-                <div class="tag-group">
-                  <span class="group-label">特征:</span>
-                  <el-tag v-for="adj in shot.adjective" :key="adj" size="small" type="success" effect="plain" class="mr-1 mb-1">{{ adj }}</el-tag>
-                </div>
-                <div class="tag-group">
-                  <span class="group-label">受众:</span>
-                  <el-tag v-for="aud in shot.appealing_audience" :key="aud" size="small" type="warning" class="mr-1 mb-1">{{ aud }}</el-tag>
-                </div>
+                <TagPills
+                  label="搜索"
+                  :tags="shot.search_tags ?? []"
+                  :max="TAG_PREVIEW_COUNT"
+                  :show-more="true"
+                  type="primary"
+                  effect="plain"
+                  border-radius="999px"
+                  :clickable="true"
+                />
+                <TagPills
+                  label="实体"
+                  :tags="shot.object ?? []"
+                  type="info"
+                  effect="light"
+                  border-radius="999px"
+                  :clickable="true"
+                />
+                <TagPills
+                  label="特征"
+                  :tags="shot.adjective ?? []"
+                  type="success"
+                  effect="plain"
+                  border-radius="999px"
+                  :clickable="true"
+                />
+                <TagPills
+                  label="受众"
+                  :tags="shot.appealing_audience ?? []"
+                  type="warning"
+                  effect="light"
+                  border-radius="999px"
+                  :clickable="true"
+                />
+                <TagPills
+                  v-if="(shot.marketing_tags ?? []).length"
+                  label="营销"
+                  :tags="shot.marketing_tags ?? []"
+                  type="danger"
+                  effect="plain"
+                  border-radius="999px"
+                  :clickable="true"
+                />
               </div>
 
               <!-- 质量评分层 -->
               <div class="quality-section">
-                <div class="quality-item" v-for="(score, index) in shot.visual_quality" :key="index">
+                <div class="quality-item" v-for="(score, index) in (shot.visual_quality ?? [0,0,0,0])" :key="index">
                   <span class="q-label">{{ qualityLabels[index] }}</span>
-                  <el-progress 
-                    :percentage="score * 10" 
-                    :color="getQualityColor(score)" 
-                    :show-text="false" 
+                  <el-progress
+                    :percentage="score * 10"
+                    :color="getQualityColor(score)"
+                    :show-text="false"
                     :stroke-width="6"
                   />
                   <span class="q-score">{{ score }}</span>
@@ -219,9 +426,11 @@ const handleCardHover = (e: MouseEvent) => {
         </div>
       </div>
     </div>
-    
+
     <!-- 空状态 -->
     <el-empty v-else-if="!isAnalyzing" description="暂无分析数据，请选择历史记录或上传视频" class="empty-state" />
+
+    <ShotDetailDrawer v-model="drawerOpen" :shot="activeShot" />
   </div>
 </template>
 
@@ -255,6 +464,20 @@ const handleCardHover = (e: MouseEvent) => {
   gap: 16px;
 }
 
+.toggle-tag {
+  cursor: pointer;
+  user-select: none;
+}
+
+.toggle-icon {
+  margin-right: 6px;
+}
+
+
+.muted {
+  color: #9ca3af;
+}
+
 .section-title {
   font-size: 16px;
   font-weight: 600;
@@ -274,6 +497,10 @@ const handleCardHover = (e: MouseEvent) => {
   gap: 12px;
 }
 
+.tag-search {
+  width: min(720px, 54vw);
+}
+
 .compact-uploader {
   display: inline-block;
 }
@@ -290,18 +517,23 @@ const handleCardHover = (e: MouseEvent) => {
   border-radius: 4px;
 }
 
+.frame-strip {
+  margin: 10px 12px 0 12px;
+}
+
 /* 结果区：横向滚动容器 */
 .results-area {
   flex: 1;
   min-height: 0; /* 允许内部元素滚动 */
   position: relative;
+  overflow-y: auto; /* 卡片变高时允许纵向滚动，不裁切 */
 }
 
 .storyboard-scroll-container {
   width: 100%;
-  height: 100%;
+  height: auto; /* 让高度随卡片内容增长 */
   overflow-x: auto;
-  overflow-y: hidden;
+  overflow-y: visible; /* 不裁切卡片底部（比如打分区） */
   padding-bottom: 16px; /* 为滚动条留出空间 */
   /* 隐藏滚动条但保留功能 (可选) */
   /* scrollbar-width: none; */
@@ -327,7 +559,8 @@ const handleCardHover = (e: MouseEvent) => {
   display: inline-flex;
   gap: 20px;
   padding: 4px;
-  height: 100%;
+  height: auto;
+  align-items: flex-start; /* 以最高卡片为准，不拉伸 */
 }
 
 /* 卡片样式 */
@@ -366,7 +599,7 @@ const handleCardHover = (e: MouseEvent) => {
   border-radius: 4px;
   font-size: 12px;
   font-weight: 500;
-  font-family: monospace;
+  font-family: Inter;
 }
 
 .card-content {

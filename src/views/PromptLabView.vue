@@ -71,6 +71,11 @@ function handleBeautify() {
   })
 }
 
+function handleTemplateRefresh() {
+  // Force refresh when the dropdown opens
+  loadTemplates(true)
+}
+
 function handleGenerate() {
   generateImages(form, computedSize.value)
 }
@@ -140,6 +145,7 @@ function handleGenerate() {
               @edit-template="openEditTemplate"
               @download-template="downloadSelectedTemplate"
               @delete-template="deleteTemplateByName"
+              @refresh-templates="handleTemplateRefresh"
               @beautify="handleBeautify"
             />
           </el-form-item>

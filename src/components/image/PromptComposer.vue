@@ -30,6 +30,7 @@ const emit = defineEmits<{
   (e: 'editTemplate'): void
   (e: 'downloadTemplate'): void
   (e: 'deleteTemplate', name: string): void
+  (e: 'refreshTemplates'): void
   (e: 'beautify'): void
 }>()
 </script>
@@ -85,6 +86,7 @@ const emit = defineEmits<{
         :templates="templates"
         @create="emit('createTemplate')"
         @delete="(name) => emit('deleteTemplate', name)"
+        @refresh="emit('refreshTemplates')"
       />
 
       <el-button

@@ -29,8 +29,8 @@ export function usePromptTemplates() {
     return cleaned || 'untitled'
   }
 
-  async function loadTemplates() {
-    if (templates.value.length === 0) {
+  async function loadTemplates(force = false) {
+    if (templates.value.length === 0 || force) {
       const defaultName = '默认模板'
       const defaultContent =
         '你是一个提示词工程师。请将用户的图片生成提示词重写为更清晰、可控、富有画面感的版本；保留原意但补充必要细节（主体/风格/构图/光照/镜头/质感/色彩）。仅输出最终提示词，不要解释。'
@@ -39,7 +39,9 @@ export function usePromptTemplates() {
         const res = await loadTemplatesApi()
         if (Array.isArray(res) && res.length > 0) {
           templates.value = res
-          selectedTemplate.value = res[0].name
+          if (!selectedTemplate.value || !res.some((t) => t.name === selectedTemplate.value)) {
+            selectedTemplate.value = res[0].name
+          }
           return
         }
       } catch (e) {

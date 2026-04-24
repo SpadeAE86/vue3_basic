@@ -17,6 +17,7 @@ const emit = defineEmits<{
   (e: 'update:modelValue', v: string): void
   (e: 'create'): void
   (e: 'delete', name: string): void
+  (e: 'refresh'): void
 }>()
 
 const value = computed({
@@ -51,6 +52,7 @@ function handleDelete(e: MouseEvent, name: string) {
     placement="top-start"
     popper-class="template-select-dropdown"
     style="width: 220px"
+    @visible-change="(v: boolean) => v && emit('refresh')"
   >
     <el-option :value="'__create__'" :label="'＋ 新建模板'" />
 

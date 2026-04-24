@@ -36,6 +36,7 @@ const {
   templates,
   selectedTemplate,
   beautifying,
+  loadTemplates,
   openNewTemplate,
   openEditTemplate,
   deleteTemplateByName,
@@ -43,6 +44,10 @@ const {
   getTemplateContent,
   beautifyPrompt
 } = usePromptTemplates()
+
+function handleTemplateRefresh() {
+  loadTemplates(true)
+}
 
 // 历史记录（用于保存 VS 生成的结果）
 const {
@@ -339,6 +344,7 @@ function handleBeautifyRawPrompt() {
             @edit-template="openEditTemplate"
             @download-template="downloadSelectedTemplate"
             @delete-template="deleteTemplateByName"
+            @refresh-templates="handleTemplateRefresh"
             @beautify="handleBeautifyRawPrompt"
           />
         </el-form-item>
