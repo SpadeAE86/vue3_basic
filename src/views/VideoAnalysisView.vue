@@ -1,7 +1,14 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch, onBeforeUnmount } from 'vue'
 import { ElMessage } from 'element-plus'
-import { analyzeVideoApi, getVideoAnalysisHistoryApi, getVideoAnalysisHistoryItemApi, getVideoAnalysisCardsApi } from '@/api/generate'
+import {
+  analyzeVideoApi,
+  getVideoAnalysisHistoryApi,
+  getVideoAnalysisHistoryItemApi,
+  getVideoAnalysisCardsApi,
+  searchVideoAnalysisCardsApi,
+  type VideoAnalysisSearchToken,
+} from '@/api/video_analysis'
 import ShotDetailDrawer from '@/components/video_analysis/ShotDetailDrawer.vue'
 import TagPills from '@/components/video_analysis/TagPills.vue'
 import FrameStrip from '@/components/video_analysis/FrameStrip.vue'
@@ -15,6 +22,7 @@ const fuzzySearch = ref(false)
 const splitScenes = ref(true)
 
 type ShotCard = {
+  history_id?: string
   scene_id: number
   start_time: number
   end_time: number
@@ -31,6 +39,8 @@ type ShotCard = {
   appealing_audience?: string[] | null
   visual_quality?: number[] | null
   error?: string | null
+  os_index_status?: 'PENDING' | 'OK' | 'FAILED' | string | null
+  os_index_error?: string | null
 }
 
 type VideoAnalysisHistoryItem = {
@@ -54,6 +64,9 @@ const historyOptions = computed(() =>
 
 type UiShotCard = ShotCard & { id: number | string; time: string }
 const analysisResults = ref<UiShotCard[]>([])
+const remoteSearching = ref(false)
+let searchAbort: AbortController | null = null
+let searchSeq = 0
 
 // ─── 详情抽屉（承载卡片容不下的字段） ─────────────────────────────
 const drawerOpen = ref(false)
@@ -92,7 +105,79 @@ function toUiCards(cards: ShotCard[]) {
     adjective: c.adjective ?? [],
     appealing_audience: c.appealing_audience ?? [],
     visual_quality: (c.visual_quality && c.visual_quality.length ? c.visual_quality : [0, 0, 0, 0]) as any,
+    os_index_status: c.os_index_status ?? 'PENDING',
   }))
+}
+
+function statusType(s?: string | null) {
+  if (s === 'OK') return 'success'
+  if (s === 'FAILED') return 'danger'
+  return 'warning'
+}
+
+function statusText(s?: string | null) {
+  if (s === 'OK') return '已入库'
+  if (s === 'FAILED') return '入库失败'
+  return '待入库'
+}
+
+async function reindexOne(e: MouseEvent, shot: UiShotCard) {
+  e.stopPropagation()
+  if (!shot?.history_id) return
+  try {
+    shot.os_index_status = 'PENDING'
+    const res = await fetch('/api/video-analysis/reindex', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ history_id: shot.history_id, scene_ids: [shot.scene_id] }),
+    }).then((r) => r.json())
+    if (res?.success && Array.isArray(res.updated) && res.updated.length) {
+      const updated = res.updated[0] as ShotCard
+      shot.os_index_status = updated.os_index_status ?? 'OK'
+      shot.os_index_error = updated.os_index_error ?? null
+    } else {
+      shot.os_index_status = 'FAILED'
+    }
+  } catch {
+    shot.os_index_status = 'FAILED'
+  }
+}
+
+async function reindexAllBad() {
+  const bad = (filteredResults.value || []).filter((s) => (s.os_index_status ?? 'PENDING') !== 'OK' && s.history_id)
+  if (!bad.length) return
+  const byHistory = new Map<string, number[]>()
+  for (const s of bad) {
+    const hid = String(s.history_id)
+    if (!byHistory.has(hid)) byHistory.set(hid, [])
+    byHistory.get(hid)!.push(Number(s.scene_id))
+    s.os_index_status = 'PENDING'
+  }
+  for (const [hid, sceneIds] of byHistory.entries()) {
+    try {
+      const res = await fetch('/api/video-analysis/reindex', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ history_id: hid, scene_ids: sceneIds }),
+      }).then((r) => r.json())
+      if (res?.success && Array.isArray(res.updated)) {
+        const map = new Map<number, any>(res.updated.map((u: any) => [Number(u.scene_id), u]))
+        for (const s of bad.filter((x) => x.history_id === hid)) {
+          const u = map.get(Number(s.scene_id))
+          if (u) {
+            s.os_index_status = u.os_index_status ?? 'OK'
+            s.os_index_error = u.os_index_error ?? null
+          } else {
+            s.os_index_status = s.os_index_status === 'PENDING' ? 'FAILED' : s.os_index_status
+          }
+        }
+      } else {
+        for (const s of bad.filter((x) => x.history_id === hid)) s.os_index_status = 'FAILED'
+      }
+    } catch {
+      for (const s of bad.filter((x) => x.history_id === hid)) s.os_index_status = 'FAILED'
+    }
+  }
 }
 
 const handleHistoryChange = async (val: string) => {
@@ -176,6 +261,62 @@ const filteredResults = computed(() => {
   })
 })
 
+const hasBadCards = computed(() =>
+  (filteredResults.value ?? []).some((s) => (s.os_index_status ?? 'PENDING') !== 'OK')
+)
+
+function toBackendTokens(tokens: SearchToken[]): VideoAnalysisSearchToken[] {
+  return (tokens || [])
+    .filter((t) => t.text && t.text.trim())
+    .map((t) => ({
+      text: t.text.trim(),
+      join: (t.join ?? 'AND') as any,
+      not: !!t.not,
+    }))
+}
+
+function kickRemoteSearch() {
+  const tokens = (searchTokens.value ?? []).filter((t) => t.text && t.text.trim())
+  if (!tokens.length) {
+    // clear remote state
+    remoteSearching.value = false
+    if (searchAbort) searchAbort.abort()
+    searchAbort = null
+    return
+  }
+
+  // abort previous request
+  if (searchAbort) searchAbort.abort()
+  searchAbort = new AbortController()
+  const mySeq = ++searchSeq
+  remoteSearching.value = true
+
+  const historyId =
+    selectedHistory.value && selectedHistory.value !== '__all__' ? selectedHistory.value : undefined
+
+  searchVideoAnalysisCardsApi(
+    { tokens: toBackendTokens(tokens), fuzzy: fuzzySearch.value, history_id: historyId, size: 80 },
+    { signal: searchAbort.signal }
+  )
+    .then((res) => {
+      if (mySeq !== searchSeq) return // stale
+      if (!res?.success || !Array.isArray(res.cards)) return
+      // 用后端搜索结果覆盖当前列表（前端本地过滤仍然会生效）
+      analysisResults.value = toUiCards(res.cards || [])
+    })
+    .catch((e: any) => {
+      // ignore abort
+      if (e?.name === 'AbortError') return
+      // 不打扰用户，只在控制台留痕
+      // eslint-disable-next-line no-console
+      console.warn('video-analysis remote search failed', e)
+    })
+    .finally(() => {
+      if (mySeq !== searchSeq) return
+      remoteSearching.value = false
+    })
+}
+
 async function refreshHistory() {
   try {
     const res = await getVideoAnalysisHistoryApi()
@@ -246,6 +387,16 @@ const handleCardHover = (e: MouseEvent) => {
 onMounted(async () => {
   await refreshHistory()
 })
+
+watch([searchTokens, fuzzySearch, selectedHistory], () => {
+  // 先前端 computed 立即过滤出结果，再异步从后端拉更准的结果覆盖
+  kickRemoteSearch()
+})
+
+onBeforeUnmount(() => {
+  if (searchAbort) searchAbort.abort()
+  searchAbort = null
+})
 </script>
 
 <template>
@@ -281,6 +432,10 @@ onMounted(async () => {
             <el-icon class="toggle-icon"><i-ep-scissor /></el-icon>
             {{ splitScenes ? '拆分镜' : '不拆分镜' }}
           </el-tag>
+
+          <el-button v-if="hasBadCards" size="small" type="warning" plain @click="reindexAllBad">
+            重入库异常卡片
+          </el-button>
         </div>
 
         <div class="right-controls">
@@ -331,6 +486,18 @@ onMounted(async () => {
             <div class="media-layer">
               <el-image :src="getActiveFrameUrl(shot)" fit="cover" class="thumbnail" />
               <div class="time-badge">{{ shot.time }}</div>
+              <el-tag
+                v-if="(shot.os_index_status ?? 'PENDING') !== 'OK'"
+                class="index-badge"
+                size="small"
+                :type="statusType(shot.os_index_status)"
+                effect="dark"
+                round
+                @click="(e) => reindexOne(e as any, shot)"
+                :title="shot.os_index_error || ''"
+              >
+                {{ statusText(shot.os_index_status) }}
+              </el-tag>
             </div>
 
             <div class="card-content">
@@ -600,6 +767,14 @@ onMounted(async () => {
   font-size: 12px;
   font-weight: 500;
   font-family: Inter;
+}
+
+.index-badge {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  cursor: pointer;
+  user-select: none;
 }
 
 .card-content {
