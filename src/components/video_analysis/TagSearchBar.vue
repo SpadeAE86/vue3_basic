@@ -15,6 +15,7 @@ const props = withDefaults(
   defineProps<{
     modelValue: SearchToken[]
     fuzzy?: boolean
+    loading?: boolean
     placeholder?: string
     maxPreviewChars?: number
     radius?: string
@@ -22,6 +23,7 @@ const props = withDefaults(
   {
     modelValue: () => [],
     fuzzy: false,
+    loading: false,
     placeholder: '输入标签回车添加；空格可分词',
     maxPreviewChars: 6,
     radius: '999px',
@@ -31,6 +33,7 @@ const props = withDefaults(
 const emit = defineEmits<{
   (e: 'update:modelValue', v: SearchToken[]): void
   (e: 'update:fuzzy', v: boolean): void
+  (e: 'search'): void
 }>()
 
 const inputText = ref('')
@@ -107,6 +110,16 @@ function tagType(t: SearchToken): 'primary' | 'success' | 'danger' | 'info' {
   return 'primary'
 }
 
+function handleEnterKey() {
+  if (inputText.value.trim()) {
+    // 有文字 → 先形成 label
+    addFromInput()
+  } else if (tokens.value.length > 0) {
+    // 输入框已空且有 label → 发起搜索
+    emit('search')
+  }
+}
+
 function toggleFuzzy() {
   emit('update:fuzzy', !props.fuzzy)
 }
@@ -137,8 +150,12 @@ function toggleFuzzy() {
         v-model="inputText"
         :placeholder="placeholder"
         class="inp"
-        @keydown.enter.prevent="addFromInput"
+        @keydown.enter.prevent="handleEnterKey"
       />
+
+      <el-icon v-if="loading" class="search-loading" title="远程搜索中…">
+        <i-ep-loading />
+      </el-icon>
 
       <el-tag
         :type="fuzzy ? 'warning' : 'success'"
@@ -274,6 +291,17 @@ function toggleFuzzy() {
 
 .ic {
   margin-right: 6px;
+}
+
+.search-loading {
+  font-size: 16px;
+  color: #409eff;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
 }
 
 .editor {

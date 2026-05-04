@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch, onBeforeUnmount } from 'vue'
+import { ref, reactive, computed, onMounted, watch, onBeforeUnmount } from 'vue'
 import { ElMessage } from 'element-plus'
 import {
   analyzeVideoApi,
@@ -7,12 +7,20 @@ import {
   getVideoAnalysisHistoryItemApi,
   getVideoAnalysisCardsApi,
   searchVideoAnalysisCardsApi,
+  getVideoAnalysisWorkspacesApi,
   type VideoAnalysisSearchToken,
 } from '@/api/video_analysis'
 import ShotDetailDrawer from '@/components/video_analysis/ShotDetailDrawer.vue'
-import TagPills from '@/components/video_analysis/TagPills.vue'
-import FrameStrip from '@/components/video_analysis/FrameStrip.vue'
+import ShotCardGrid from '@/components/video_analysis/ShotCardGrid.vue'
 import TagSearchBar, { type SearchToken } from '@/components/video_analysis/TagSearchBar.vue'
+import type { ShotCard, VideoAnalysisHistoryItem, UiShotCard, WorkspaceOption } from '@/types/videoAnalysis'
+import {
+  buildSearchCacheKey,
+  loadPageSnapshot,
+  savePageSnapshot,
+  videoAnalysisSearchCache,
+  type VideoAnalysisPageSnapshot,
+} from '@/utils/videoAnalysisSessionCache'
 
 const isAnalyzing = ref(false)
 const selectedFile = ref<File | null>(null)
@@ -21,35 +29,35 @@ const searchTokens = ref<SearchToken[]>([])
 const fuzzySearch = ref(false)
 const splitScenes = ref(true)
 
-type ShotCard = {
-  history_id?: string
-  scene_id: number
-  start_time: number
-  end_time: number
-  duration_seconds: number
-  thumbnail?: string | null
-  frame_urls?: string[]
-  description?: string | null
-  subject?: string | null
-  object?: string[] | null
-  movement?: string | null
-  adjective?: string[] | null
-  search_tags?: string[] | null
-  marketing_tags?: string[] | null
-  appealing_audience?: string[] | null
-  visual_quality?: number[] | null
-  error?: string | null
-  os_index_status?: 'PENDING' | 'OK' | 'FAILED' | string | null
-  os_index_error?: string | null
+// ─── 模块级搜索缓存（跨路由导航保持，keep-alive 替代方案）────────────────
+let _cachedResults: UiShotCard[] = []
+
+/** 从 sessionStorage 批量还原时跳过 workspace 等 watcher 的副作用 */
+const restoringSnapshot = ref(false)
+/** 最近一次成功 /search（或缓存命中）对应的 cache key，写入快照 */
+const lastSuccessfulSearchKey = ref<string | null>(null)
+
+// ─── Workspace ─────────────────────────────────────────────────────────────
+const currentWorkspace = ref('v1')
+const workspaceOptions = ref<WorkspaceOption[]>([
+  { key: 'v1', label: '经典分析 v1', description: '', is_default: true },
+])
+
+async function fetchWorkspaces() {
+  try {
+    const res = await getVideoAnalysisWorkspacesApi()
+    if (res?.success && Array.isArray(res.workspaces)) {
+      workspaceOptions.value = res.workspaces
+      const def = res.workspaces.find((w: WorkspaceOption) => w.is_default)
+      if (def && !currentWorkspace.value) currentWorkspace.value = def.key
+    }
+  } catch {
+    // keep defaults
+  }
 }
 
-type VideoAnalysisHistoryItem = {
-  id: string
-  name: string
-  time: string
-  video_url?: string | null
-  cards: ShotCard[]
-}
+// ─── Types imported from src/types/videoAnalysis.ts ─────────────────────────
+// ShotCard, UiShotCard, VideoAnalysisHistoryItem, WorkspaceOption
 
 const historyItems = ref<VideoAnalysisHistoryItem[]>([])
 const historyOptions = computed(() =>
@@ -62,11 +70,31 @@ const historyOptions = computed(() =>
   ],
 )
 
-type UiShotCard = ShotCard & { id: number | string; time: string }
+// analysisResults = 当前历史/上传加载的卡片（不因搜索而改变）
 const analysisResults = ref<UiShotCard[]>([])
+// remoteSearchCards = /search 接口返回的结果（与 analysisResults 独立，清 token 后清空）
+const remoteSearchCards = ref<UiShotCard[]>([])
 const remoteSearching = ref(false)
 let searchAbort: AbortController | null = null
 let searchSeq = 0
+
+let persistTimer: ReturnType<typeof setTimeout> | null = null
+function schedulePersistPageState() {
+  if (restoringSnapshot.value) return
+  if (persistTimer) clearTimeout(persistTimer)
+  persistTimer = setTimeout(() => {
+    persistTimer = null
+    const snap: VideoAnalysisPageSnapshot = {
+      currentWorkspace: currentWorkspace.value,
+      selectedHistory: selectedHistory.value,
+      splitScenes: splitScenes.value,
+      fuzzySearch: fuzzySearch.value,
+      searchTokens: [...searchTokens.value],
+      lastSearchCacheKey: lastSuccessfulSearchKey.value,
+    }
+    savePageSnapshot(snap)
+  }, 350)
+}
 
 // ─── 详情抽屉（承载卡片容不下的字段） ─────────────────────────────
 const drawerOpen = ref(false)
@@ -77,12 +105,13 @@ function openShotDetail(shot: UiShotCard) {
   drawerOpen.value = true
 }
 
-// 卡片内帧预览：hover/click 缩略图切主图
-const activeFrameIndex = ref<Record<string, number>>({})
-function getActiveFrameUrl(shot: UiShotCard) {
-  const urls = (shot.frame_urls ?? []).filter(Boolean)
-  const idx = activeFrameIndex.value[String(shot.id)] ?? 0
-  return urls[idx] || shot.thumbnail
+// 帧预览活跃索引（reactive 字典：避免 ref.value 在模板/事件链里偶发 undefined）
+const activeFrameIndex = reactive<Record<string, number>>({})
+function onFrameSelect(id: string, idx: number) {
+  const k = String(id)
+  const n = Number(idx)
+  if (!Number.isFinite(n)) return
+  activeFrameIndex[k] = n
 }
 
 const handleFileChange = (file: any) => {
@@ -99,26 +128,16 @@ function formatTime(seconds: number) {
 function toUiCards(cards: ShotCard[]) {
   return (cards || []).map((c) => ({
     ...c,
-    id: c.scene_id,
+    // 复合 ID 防止跨 history 的 scene_id 冲突（frame hover bug 根因）
+    id: `${c.history_id || (c as any).video_id || ''}_${c.scene_id}`,
     time: `${formatTime(c.start_time)} - ${formatTime(c.end_time)}`,
     object: c.object ?? [],
     adjective: c.adjective ?? [],
     appealing_audience: c.appealing_audience ?? [],
-    visual_quality: (c.visual_quality && c.visual_quality.length ? c.visual_quality : [0, 0, 0, 0]) as any,
+    // 只有真正有非零质量分时才保留（v2 通常无此字段）
+    visual_quality: (c.visual_quality?.some(s => (s as number) > 0) ? c.visual_quality : null) as any,
     os_index_status: c.os_index_status ?? 'PENDING',
   }))
-}
-
-function statusType(s?: string | null) {
-  if (s === 'OK') return 'success'
-  if (s === 'FAILED') return 'danger'
-  return 'warning'
-}
-
-function statusText(s?: string | null) {
-  if (s === 'OK') return '已入库'
-  if (s === 'FAILED') return '入库失败'
-  return '待入库'
 }
 
 async function reindexOne(e: MouseEvent, shot: UiShotCard) {
@@ -186,7 +205,7 @@ const handleHistoryChange = async (val: string) => {
   if (val === '__all__') {
     isAnalyzing.value = true
     try {
-      const res = await getVideoAnalysisCardsApi('__all__')
+      const res = await getVideoAnalysisCardsApi('__all__', currentWorkspace.value)
       if (!res?.success || !Array.isArray(res.cards)) {
         analysisResults.value = []
         return
@@ -200,7 +219,7 @@ const handleHistoryChange = async (val: string) => {
 
   isAnalyzing.value = true
   try {
-    const res = await getVideoAnalysisHistoryItemApi(val)
+    const res = await getVideoAnalysisHistoryItemApi(val, currentWorkspace.value)
     if (!res?.success || !res?.item) {
       analysisResults.value = []
       return
@@ -213,12 +232,29 @@ const handleHistoryChange = async (val: string) => {
 }
 
 function buildBag(shot: UiShotCard) {
+  // 兼容 v1 + v2 所有标签字段，确保本地过滤对 v2 卡片立即生效
+  const strField = (k: string) => { const v = shot[k]; return typeof v === 'string' && v ? [v] : [] }
   return [
-    ...(shot.search_tags ?? []),
+    ...(shot.key_words ?? []),            // v2
+    ...(shot.search_tags ?? []),          // v1
     ...(shot.object ?? []),
-    ...(shot.adjective ?? []),
+    ...(shot.design_adjectives ?? []),    // v2
+    ...(shot.function_adjectives ?? []), // v2
+    ...(shot.adjective ?? []),            // v1
     ...(shot.appealing_audience ?? []),
     ...(shot.marketing_tags ?? []),
+    ...(shot.marketing_phrases ?? []),    // v2
+    ...(shot.scenario_a ?? []),           // v2
+    ...(shot.scenario_b ?? []),           // v2
+    ...(shot.design_selling_points ?? []),   // v2
+    ...(shot.function_selling_points ?? []), // v2
+    ...(shot.scene_location ?? []),      // v2
+    ...(shot.text ?? []),                 // v2 画面文字
+    ...strField('footage_type'),          // v2
+    ...strField('shot_type'),             // v2
+    ...strField('shot_style'),            // v2
+    ...strField('topic'),                 // v2
+    ...strField('product_status_scene'),  // v2
   ].filter(Boolean)
 }
 
@@ -233,11 +269,28 @@ function matchTag(tags: string[], token: string, fuzzy: boolean) {
   })
 }
 
+// effectiveResults 状态分离设计：
+//   有搜索 token → 优先显示 remoteSearchCards；尚未返回时用 analysisResults 做本地过滤垫底
+//   无搜索 token → 始终显示历史卡片 analysisResults（搜索结果不混入）
+const effectiveResults = computed(() => {
+  const hasTokens = (searchTokens.value ?? []).some(t => t.text?.trim())
+  if (!hasTokens) {
+    // 无 token：历史卡片或模块级缓存
+    return analysisResults.value.length > 0 ? analysisResults.value : _cachedResults
+  }
+  // 有 token：搜索结果（加载完前先用历史卡片做本地过滤，不出现空卡片状态）
+  return remoteSearchCards.value.length > 0 ? remoteSearchCards.value : analysisResults.value
+})
+
 const filteredResults = computed(() => {
   const tokens = (searchTokens.value ?? []).filter((t) => t.text && t.text.trim())
-  if (!tokens.length) return analysisResults.value
+  if (!tokens.length) return effectiveResults.value
 
-  return analysisResults.value.filter((shot) => {
+  // 若 remoteSearchCards 已返回，这些卡片是后端已精确排好序的结果，直接展示不再过滤
+  if (remoteSearchCards.value.length > 0) return remoteSearchCards.value
+
+  // 远程结果尚未回来时：用本地集合过滤 analysisResults 立即呈现
+  return effectiveResults.value.filter((shot) => {
     const tags = buildBag(shot)
     const hay = `${shot.subject ?? ''} ${shot.description ?? ''} ${tags.join(' ')}`.toLowerCase()
 
@@ -275,39 +328,71 @@ function toBackendTokens(tokens: SearchToken[]): VideoAnalysisSearchToken[] {
     }))
 }
 
+function applySearchHit(cards: ShotCard[], search_mode: 'precise' | 'fuzzy' | null) {
+  const rawCards = cards.map((c) => ({ ...c, _search_mode: search_mode }))
+  const fresh = toUiCards(rawCards)
+  _cachedResults = fresh
+  remoteSearchCards.value = fresh
+}
+
 function kickRemoteSearch() {
   const tokens = (searchTokens.value ?? []).filter((t) => t.text && t.text.trim())
   if (!tokens.length) {
-    // clear remote state
+    // token 全清：中止进行中的请求，清空搜索结果 → effectiveResults 自动回到历史卡片
+    if (searchAbort) { searchAbort.abort(); searchAbort = null }
+    remoteSearchCards.value = []
     remoteSearching.value = false
-    if (searchAbort) searchAbort.abort()
-    searchAbort = null
+    lastSuccessfulSearchKey.value = null
+    schedulePersistPageState()
     return
   }
 
-  // abort previous request
+  const historyId =
+    selectedHistory.value && selectedHistory.value !== '__all__' ? selectedHistory.value : undefined
+  const backendTok = toBackendTokens(tokens)
+  const cacheKey = buildSearchCacheKey({
+    workspace: currentWorkspace.value,
+    historyId,
+    fuzzy: fuzzySearch.value,
+    tokens: backendTok,
+    size: 80,
+  })
+
+  const cached = videoAnalysisSearchCache.get(cacheKey)
+  if (cached?.cards?.length) {
+    applySearchHit(cached.cards as ShotCard[], (cached.search_mode as 'precise' | 'fuzzy') ?? null)
+    lastSuccessfulSearchKey.value = cacheKey
+    schedulePersistPageState()
+    remoteSearching.value = false
+    return
+  }
+
   if (searchAbort) searchAbort.abort()
   searchAbort = new AbortController()
   const mySeq = ++searchSeq
   remoteSearching.value = true
 
-  const historyId =
-    selectedHistory.value && selectedHistory.value !== '__all__' ? selectedHistory.value : undefined
-
   searchVideoAnalysisCardsApi(
-    { tokens: toBackendTokens(tokens), fuzzy: fuzzySearch.value, history_id: historyId, size: 80 },
+    {
+      tokens: backendTok,
+      fuzzy: fuzzySearch.value,
+      history_id: historyId,
+      size: 80,
+      workspace: currentWorkspace.value,
+    },
     { signal: searchAbort.signal }
   )
     .then((res) => {
       if (mySeq !== searchSeq) return // stale
       if (!res?.success || !Array.isArray(res.cards)) return
-      // 用后端搜索结果覆盖当前列表（前端本地过滤仍然会生效）
-      analysisResults.value = toUiCards(res.cards || [])
+      const mode = res.search_mode as 'precise' | 'fuzzy' | null ?? null
+      applySearchHit(res.cards as ShotCard[], mode)
+      videoAnalysisSearchCache.set(cacheKey, res.cards as ShotCard[], mode)
+      lastSuccessfulSearchKey.value = cacheKey
+      schedulePersistPageState()
     })
     .catch((e: any) => {
-      // ignore abort
       if (e?.name === 'AbortError') return
-      // 不打扰用户，只在控制台留痕
       // eslint-disable-next-line no-console
       console.warn('video-analysis remote search failed', e)
     })
@@ -335,7 +420,10 @@ const handleUpload = async () => {
 
   isAnalyzing.value = true
   try {
-    const res = await analyzeVideoApi(selectedFile.value, { splitScenes: splitScenes.value })
+    const res = await analyzeVideoApi(selectedFile.value, {
+      splitScenes: splitScenes.value,
+      workspace: currentWorkspace.value,
+    })
     if (!res?.success || !res?.item) {
       ElMessage.error(res?.error || '视频分析失败')
       return
@@ -353,49 +441,89 @@ const handleUpload = async () => {
   }
 }
 
-const getQualityColor = (score: number) => {
-  if (score >= 8) return '#67c23a'
-  if (score >= 6) return '#e6a23c'
-  return '#f56c6c'
-}
-
-const qualityLabels = ['光影', '构图', '清晰', '色彩']
-const TAG_PREVIEW_COUNT = 3
-
-// 处理卡片 hover 滚动逻辑
-const handleCardHover = (e: MouseEvent) => {
-  const card = (e.currentTarget as HTMLElement)
-  const container = document.querySelector('.storyboard-scroll-container') as HTMLElement
-
-  if (!card || !container) return
-
-  const cardRect = card.getBoundingClientRect()
-  const containerRect = container.getBoundingClientRect()
-
-  // 检查卡片右侧是否超出容器右边界
-  if (cardRect.right > containerRect.right) {
-    const scrollAmount = cardRect.right - containerRect.right + 20 // 20px padding
-    container.scrollBy({ left: scrollAmount, behavior: 'smooth' })
-  }
-  // 检查卡片左侧是否超出容器左边界
-  else if (cardRect.left < containerRect.left) {
-    const scrollAmount = containerRect.left - cardRect.left + 20 // 20px padding
-    container.scrollBy({ left: -scrollAmount, behavior: 'smooth' })
-  }
-}
+watch(
+  [searchTokens, fuzzySearch, currentWorkspace, selectedHistory, splitScenes],
+  () => schedulePersistPageState(),
+  { deep: true },
+)
 
 onMounted(async () => {
+  await fetchWorkspaces()
+
+  const snap = loadPageSnapshot()
+  if (snap) {
+    restoringSnapshot.value = true
+    try {
+      if (snap.currentWorkspace) currentWorkspace.value = snap.currentWorkspace
+      selectedHistory.value = snap.selectedHistory ?? ''
+      splitScenes.value = snap.splitScenes ?? true
+      fuzzySearch.value = snap.fuzzySearch ?? false
+      searchTokens.value = Array.isArray(snap.searchTokens) ? [...snap.searchTokens] : []
+      lastSuccessfulSearchKey.value = snap.lastSearchCacheKey ?? null
+    } finally {
+      restoringSnapshot.value = false
+    }
+  }
+
   await refreshHistory()
+
+  if (selectedHistory.value) {
+    await handleHistoryChange(selectedHistory.value)
+  }
+
+  const tok = (searchTokens.value ?? []).filter((t) => t.text?.trim())
+  if (tok.length) {
+    const hid =
+      selectedHistory.value && selectedHistory.value !== '__all__' ? selectedHistory.value : undefined
+    const key = buildSearchCacheKey({
+      workspace: currentWorkspace.value,
+      historyId: hid,
+      fuzzy: fuzzySearch.value,
+      tokens: toBackendTokens(tok),
+      size: 80,
+    })
+    const hit = videoAnalysisSearchCache.get(key)
+    if (hit?.cards?.length) {
+      applySearchHit(hit.cards as ShotCard[], (hit.search_mode as 'precise' | 'fuzzy') ?? null)
+      lastSuccessfulSearchKey.value = key
+    }
+  }
+
+  schedulePersistPageState()
 })
 
-watch([searchTokens, fuzzySearch, selectedHistory], () => {
-  // 先前端 computed 立即过滤出结果，再异步从后端拉更准的结果覆盖
-  kickRemoteSearch()
+// 切换 workspace 时重新加载当前历史，清空搜索状态（批量还原快照时不要触发）
+watch(currentWorkspace, () => {
+  if (restoringSnapshot.value) return
+  analysisResults.value = []
+  remoteSearchCards.value = []
+  searchTokens.value = []
+  lastSuccessfulSearchKey.value = null
+  if (selectedHistory.value) handleHistoryChange(selectedHistory.value)
+  schedulePersistPageState()
+})
+
+// token 变化：
+//   - 有 token → 本地过滤立即生效（filteredResults computed）；不自动触发远程搜索
+//   - 无 token → 清空搜索结果，恢复历史卡片
+watch(searchTokens, (tokens) => {
+  if (!(tokens ?? []).some(t => t.text?.trim())) {
+    kickRemoteSearch() // 内部 tokens.length===0 分支：中止请求 + 清空 remoteSearchCards
+  }
+})
+
+// 切换精准/模糊模式时：若有 token 则重新搜索
+watch(fuzzySearch, () => {
+  if ((searchTokens.value ?? []).some(t => t.text?.trim())) {
+    kickRemoteSearch()
+  }
 })
 
 onBeforeUnmount(() => {
   if (searchAbort) searchAbort.abort()
   searchAbort = null
+  if (persistTimer) clearTimeout(persistTimer)
+  persistTimer = null
 })
 </script>
 
@@ -433,13 +561,36 @@ onBeforeUnmount(() => {
             {{ splitScenes ? '拆分镜' : '不拆分镜' }}
           </el-tag>
 
+          <el-select
+            v-model="currentWorkspace"
+            size="small"
+            class="workspace-select"
+            title="切换分析 workspace（schema / index / 卡片表）"
+          >
+            <el-option
+              v-for="ws in workspaceOptions"
+              :key="ws.key"
+              :value="ws.key"
+              :label="ws.label"
+            >
+              <span>{{ ws.label }}</span>
+              <span v-if="ws.is_default" class="workspace-default-badge">默认</span>
+            </el-option>
+          </el-select>
+
           <el-button v-if="hasBadCards" size="small" type="warning" plain @click="reindexAllBad">
             重入库异常卡片
           </el-button>
         </div>
 
         <div class="right-controls">
-          <TagSearchBar v-model="searchTokens" v-model:fuzzy="fuzzySearch" class="tag-search" />
+          <TagSearchBar
+            v-model="searchTokens"
+            v-model:fuzzy="fuzzySearch"
+            :loading="remoteSearching"
+            @search="kickRemoteSearch"
+            class="tag-search"
+          />
           <el-upload
             class="compact-uploader"
             action="#"
@@ -470,128 +621,15 @@ onBeforeUnmount(() => {
       </div>
     </el-card>
 
-    <!-- 分析结果展示区：横向滚动 -->
-    <div class="results-area" v-if="analysisResults.length > 0">
-      <div class="storyboard-scroll-container">
-        <div class="storyboard-track">
-          <el-card
-            v-for="shot in filteredResults" 
-            :key="shot.id"
-            class="storyboard-card"
-            :body-style="{ padding: '0px' }"
-            @mouseenter="handleCardHover"
-            @click="openShotDetail(shot)"
-          >
-            <!-- 视觉层 -->
-            <div class="media-layer">
-              <el-image :src="getActiveFrameUrl(shot)" fit="cover" class="thumbnail" />
-              <div class="time-badge">{{ shot.time }}</div>
-              <el-tag
-                v-if="(shot.os_index_status ?? 'PENDING') !== 'OK'"
-                class="index-badge"
-                size="small"
-                :type="statusType(shot.os_index_status)"
-                effect="dark"
-                round
-                @click="(e) => reindexOne(e as any, shot)"
-                :title="shot.os_index_error || ''"
-              >
-                {{ statusText(shot.os_index_status) }}
-              </el-tag>
-            </div>
-
-            <div class="card-content">
-              <!-- 帧胶片条：不进抽屉也能看到多帧信息 -->
-              <div v-if="(shot.frame_urls ?? []).length" class="frame-strip">
-                <FrameStrip
-                  :urls="shot.frame_urls ?? []"
-                  :active-index="activeFrameIndex[String(shot.id)] ?? 0"
-                  :max="7"
-                  :height="42"
-                  :radius="10"
-                  @select="(i) => (activeFrameIndex[String(shot.id)] = i)"
-                />
-              </div>
-              <!-- 核心信息层 -->
-              <div class="core-info">
-                <h4 class="subject-title">{{ shot.subject }}</h4>
-                <el-alert
-                  :title="shot.movement"
-                  type="info"
-                  :closable="false"
-                  class="movement-alert"
-                >
-                  <template #icon><el-icon><i-ep-video-camera /></el-icon></template>
-                </el-alert>
-                <p class="description">{{ shot.description }}</p>
-              </div>
-
-              <el-divider border-style="dashed" class="divider" />
-
-              <!-- 标签分类层 -->
-              <div class="tags-section">
-                <TagPills
-                  label="搜索"
-                  :tags="shot.search_tags ?? []"
-                  :max="TAG_PREVIEW_COUNT"
-                  :show-more="true"
-                  type="primary"
-                  effect="plain"
-                  border-radius="999px"
-                  :clickable="true"
-                />
-                <TagPills
-                  label="实体"
-                  :tags="shot.object ?? []"
-                  type="info"
-                  effect="light"
-                  border-radius="999px"
-                  :clickable="true"
-                />
-                <TagPills
-                  label="特征"
-                  :tags="shot.adjective ?? []"
-                  type="success"
-                  effect="plain"
-                  border-radius="999px"
-                  :clickable="true"
-                />
-                <TagPills
-                  label="受众"
-                  :tags="shot.appealing_audience ?? []"
-                  type="warning"
-                  effect="light"
-                  border-radius="999px"
-                  :clickable="true"
-                />
-                <TagPills
-                  v-if="(shot.marketing_tags ?? []).length"
-                  label="营销"
-                  :tags="shot.marketing_tags ?? []"
-                  type="danger"
-                  effect="plain"
-                  border-radius="999px"
-                  :clickable="true"
-                />
-              </div>
-
-              <!-- 质量评分层 -->
-              <div class="quality-section">
-                <div class="quality-item" v-for="(score, index) in (shot.visual_quality ?? [0,0,0,0])" :key="index">
-                  <span class="q-label">{{ qualityLabels[index] }}</span>
-                  <el-progress
-                    :percentage="score * 10"
-                    :color="getQualityColor(score)"
-                    :show-text="false"
-                    :stroke-width="6"
-                  />
-                  <span class="q-score">{{ score }}</span>
-                </div>
-              </div>
-            </div>
-          </el-card>
-        </div>
-      </div>
+    <!-- 分析结果展示区 -->
+    <div class="results-area" v-if="effectiveResults.length > 0">
+      <ShotCardGrid
+        :shots="filteredResults"
+        :active-frame-index="activeFrameIndex"
+        @select-shot="openShotDetail"
+        @frame-select="onFrameSelect"
+        @reindex="reindexOne"
+      />
     </div>
 
     <!-- 空状态 -->
@@ -640,6 +678,16 @@ onBeforeUnmount(() => {
   margin-right: 6px;
 }
 
+.workspace-select {
+  width: 130px;
+}
+
+.workspace-default-badge {
+  font-size: 11px;
+  color: #909399;
+  margin-left: 6px;
+}
+
 
 .muted {
   color: #9ca3af;
@@ -684,193 +732,12 @@ onBeforeUnmount(() => {
   border-radius: 4px;
 }
 
-.frame-strip {
-  margin: 10px 12px 0 12px;
-}
-
-/* 结果区：横向滚动容器 */
+/* 结果区：包裹 ShotCardGrid */
 .results-area {
   flex: 1;
-  min-height: 0; /* 允许内部元素滚动 */
+  min-height: 0;
   position: relative;
-  overflow-y: auto; /* 卡片变高时允许纵向滚动，不裁切 */
-}
-
-.storyboard-scroll-container {
-  width: 100%;
-  height: auto; /* 让高度随卡片内容增长 */
-  overflow-x: auto;
-  overflow-y: visible; /* 不裁切卡片底部（比如打分区） */
-  padding-bottom: 16px; /* 为滚动条留出空间 */
-  /* 隐藏滚动条但保留功能 (可选) */
-  /* scrollbar-width: none; */
-}
-
-/* 自定义滚动条样式 */
-.storyboard-scroll-container::-webkit-scrollbar {
-  height: 8px;
-}
-.storyboard-scroll-container::-webkit-scrollbar-track {
-  background: #f1f1f1;
-  border-radius: 4px;
-}
-.storyboard-scroll-container::-webkit-scrollbar-thumb {
-  background: #c0c4cc;
-  border-radius: 4px;
-}
-.storyboard-scroll-container::-webkit-scrollbar-thumb:hover {
-  background: #909399;
-}
-
-.storyboard-track {
-  display: inline-flex;
-  gap: 20px;
-  padding: 4px;
-  height: auto;
-  align-items: flex-start; /* 以最高卡片为准，不拉伸 */
-}
-
-/* 卡片样式 */
-.storyboard-card {
-  width: 360px; /* 固定宽度 */
-  flex-shrink: 0; /* 防止被挤压 */
-  border-radius: 12px;
-  overflow: hidden;
-  transition: transform 0.3s, box-shadow 0.3s;
-  height: max-content; /* 适应内容高度 */
-}
-
-.storyboard-card:hover {
-  transform: translateY(-4px);
-  box-shadow: 0 12px 24px rgba(0,0,0,0.1);
-}
-
-.media-layer {
-  position: relative;
-  height: 200px;
-  background-color: #f5f7fa;
-}
-
-.thumbnail {
-  width: 100%;
-  height: 100%;
-}
-
-.time-badge {
-  position: absolute;
-  bottom: 8px;
-  right: 8px;
-  background: rgba(0, 0, 0, 0.7);
-  color: white;
-  padding: 4px 8px;
-  border-radius: 4px;
-  font-size: 12px;
-  font-weight: 500;
-  font-family: Inter;
-}
-
-.index-badge {
-  position: absolute;
-  top: 8px;
-  left: 8px;
-  cursor: pointer;
-  user-select: none;
-}
-
-.card-content {
-  padding: 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.core-info {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.subject-title {
-  margin: 0;
-  font-size: 16px;
-  color: #303133;
-}
-
-.movement-alert {
-  padding: 6px 12px;
-  margin: 4px 0;
-}
-
-:deep(.el-alert__title) {
-  font-size: 13px;
-}
-
-.description {
-  margin: 0;
-  font-size: 13px;
-  color: #606266;
-  line-height: 1.5;
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-
-.divider {
-  margin: 8px 0;
-}
-
-.tags-section {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.tag-group {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-}
-
-.group-label {
-  font-size: 12px;
-  color: #909399;
-  margin-right: 8px;
-  margin-bottom: 4px;
-  width: 32px;
-}
-
-.mr-1 { margin-right: 4px; }
-.mb-1 { margin-bottom: 4px; }
-
-.quality-section {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px 16px;
-  background: #fafafa;
-  padding: 12px;
-  border-radius: 8px;
-  margin-top: 4px;
-}
-
-.quality-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.q-label {
-  font-size: 12px;
-  color: #606266;
-  width: 24px;
-}
-
-.q-score {
-  font-size: 12px;
-  color: #303133;
-  font-weight: bold;
-  width: 14px;
-  text-align: right;
+  overflow-y: auto;
 }
 
 .empty-state {
