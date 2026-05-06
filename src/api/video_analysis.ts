@@ -5,8 +5,10 @@ export async function getVideoAnalysisWorkspacesApi() {
   return resp.json()
 }
 
-export async function getVideoAnalysisHistoryApi() {
-  const resp = await fetch(`${API_BASE}/video-analysis/history`)
+export async function getVideoAnalysisHistoryApi(workspace?: string) {
+  const params = new URLSearchParams()
+  if (workspace) params.set('workspace', workspace)
+  const resp = await fetch(`${API_BASE}/video-analysis/history?${params.toString()}`)
   return resp.json()
 }
 
@@ -29,6 +31,7 @@ export async function analyzeVideoApi(
     customPrompt?: string
     splitScenes?: boolean
     workspace?: string
+    carModel?: string
   },
 ) {
   const form = new FormData()
@@ -38,6 +41,7 @@ export async function analyzeVideoApi(
   if (opts?.customPrompt) form.append('custom_prompt', opts.customPrompt)
   if (opts?.splitScenes != null) form.append('split_scenes', String(opts.splitScenes))
   if (opts?.workspace) form.append('workspace', opts.workspace)
+  if (opts?.carModel) form.append('car_model', opts.carModel)
 
   const controller = new AbortController()
   const t = window.setTimeout(() => controller.abort(), 5 * 60_000)
@@ -54,7 +58,7 @@ export async function analyzeVideoApi(
 }
 
 export async function getVideoAnalysisCardsApi(historyId?: string, workspace = 'v1') {
-  const params = new URLSearchParams({ shot_cards_version: workspace })
+  const params = new URLSearchParams({ shot_cards_version: workspace, workspace })
   if (historyId) params.set('history_id', historyId)
   const resp = await fetch(`${API_BASE}/video-analysis/cards?${params.toString()}`)
   return resp.json()

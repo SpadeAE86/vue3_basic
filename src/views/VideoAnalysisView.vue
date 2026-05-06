@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted, watch, onBeforeUnmount } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   analyzeVideoApi,
   getVideoAnalysisHistoryApi,
@@ -19,15 +19,23 @@ import {
   loadPageSnapshot,
   savePageSnapshot,
   videoAnalysisSearchCache,
+  rewriteTaskState,
   type VideoAnalysisPageSnapshot,
 } from '@/utils/videoAnalysisSessionCache'
 
 const isAnalyzing = ref(false)
-const selectedFile = ref<File | null>(null)
+const selectedFiles = ref<File[]>([])
 const selectedHistory = ref('')
 const searchTokens = ref<SearchToken[]>([])
-const fuzzySearch = ref(false)
 const splitScenes = ref(true)
+
+watch(() => rewriteTaskState.pendingTokens, (tokens) => {
+  if (tokens && tokens.length > 0) {
+    searchTokens.value = tokens
+    rewriteTaskState.pendingTokens = null
+    kickRemoteSearch()
+  }
+}, { immediate: true })
 
 // ─── 模块级搜索缓存（跨路由导航保持，keep-alive 替代方案）────────────────
 let _cachedResults: UiShotCard[] = []
@@ -88,7 +96,6 @@ function schedulePersistPageState() {
       currentWorkspace: currentWorkspace.value,
       selectedHistory: selectedHistory.value,
       splitScenes: splitScenes.value,
-      fuzzySearch: fuzzySearch.value,
       searchTokens: [...searchTokens.value],
       lastSearchCacheKey: lastSuccessfulSearchKey.value,
     }
@@ -114,8 +121,8 @@ function onFrameSelect(id: string, idx: number) {
   activeFrameIndex[k] = n
 }
 
-const handleFileChange = (file: any) => {
-  selectedFile.value = file.raw
+const handleFileChange = (uploadFile: any, uploadFiles: any[]) => {
+  selectedFiles.value = uploadFiles.map(f => f.raw)
 }
 
 function formatTime(seconds: number) {
@@ -258,10 +265,9 @@ function buildBag(shot: UiShotCard) {
   ].filter(Boolean)
 }
 
-function matchTag(tags: string[], token: string, fuzzy: boolean) {
+function matchTag(tags: string[], token: string) {
   const q = token.trim()
   if (!q) return true
-  if (!fuzzy) return tags.includes(q)
   const qq = q.toLowerCase()
   return tags.some((t) => {
     const s = String(t).toLowerCase()
@@ -301,9 +307,8 @@ const filteredResults = computed(() => {
       const not = !!t.not
 
       let ok = true
-      // >=10 chars => treat as natural language, else treat as tag (with optional fuzzy)
-      if ((t.text ?? '').trim().length >= 10) ok = hay.includes(t.text.toLowerCase())
-      else ok = matchTag(tags, t.text, fuzzySearch.value)
+      if (t.type === 'text') ok = hay.includes(t.text.toLowerCase())
+      else ok = matchTag(tags, t.text)
       if (not) ok = !ok
 
       if (i === 0) acc = ok
@@ -325,6 +330,7 @@ function toBackendTokens(tokens: SearchToken[]): VideoAnalysisSearchToken[] {
       text: t.text.trim(),
       join: (t.join ?? 'AND') as any,
       not: !!t.not,
+      type: t.type,
     }))
 }
 
@@ -353,7 +359,7 @@ function kickRemoteSearch() {
   const cacheKey = buildSearchCacheKey({
     workspace: currentWorkspace.value,
     historyId,
-    fuzzy: fuzzySearch.value,
+    fuzzy: true,
     tokens: backendTok,
     size: 80,
   })
@@ -375,7 +381,7 @@ function kickRemoteSearch() {
   searchVideoAnalysisCardsApi(
     {
       tokens: backendTok,
-      fuzzy: fuzzySearch.value,
+      fuzzy: true,
       history_id: historyId,
       size: 80,
       workspace: currentWorkspace.value,
@@ -404,7 +410,7 @@ function kickRemoteSearch() {
 
 async function refreshHistory() {
   try {
-    const res = await getVideoAnalysisHistoryApi()
+    const res = await getVideoAnalysisHistoryApi(currentWorkspace.value)
     if (res?.success && Array.isArray(res.history)) {
       historyItems.value = res.history
     } else {
@@ -415,34 +421,171 @@ async function refreshHistory() {
   }
 }
 
-const handleUpload = async () => {
-  if (!selectedFile.value) return
+const carModelDialogVisible = ref(false)
+const batchCarModel = ref('')
+
+const openCarModelDialog = () => {
+  if (!selectedFiles.value.length) return
+  batchCarModel.value = ''
+  carModelDialogVisible.value = true
+}
+
+const confirmUpload = async () => {
+  carModelDialogVisible.value = false
+  if (!selectedFiles.value.length) return
 
   isAnalyzing.value = true
   try {
-    const res = await analyzeVideoApi(selectedFile.value, {
-      splitScenes: splitScenes.value,
-      workspace: currentWorkspace.value,
-    })
-    if (!res?.success || !res?.item) {
-      ElMessage.error(res?.error || '视频分析失败')
-      return
+    const concurrencyLimit = 3
+    const files = [...selectedFiles.value]
+    const carModelVal = batchCarModel.value.trim()
+    let currentIndex = 0
+    
+    const processNext = async (): Promise<void> => {
+      if (currentIndex >= files.length) return
+      const file = files[currentIndex++]
+      try {
+        const res = await analyzeVideoApi(file, {
+          splitScenes: splitScenes.value,
+          workspace: currentWorkspace.value,
+          carModel: carModelVal || undefined
+        })
+        if (res?.success && res?.item) {
+          const item = res.item as VideoAnalysisHistoryItem
+          // 更新历史并选中新结果
+          historyItems.value = [item, ...historyItems.value.filter((x) => x.id !== item.id)]
+          selectedHistory.value = item.id
+          analysisResults.value = toUiCards(item.cards)
+          ElMessage.success(`视频 ${file.name} 分析完成`)
+        } else {
+          ElMessage.error(`视频 ${file.name} 分析失败: ${res?.error || '未知错误'}`)
+        }
+      } catch (e: any) {
+        ElMessage.error(`视频 ${file.name} 分析出错: ${e?.message || '未知错误'}`)
+      } finally {
+        await processNext()
+      }
     }
-    const item = res.item as VideoAnalysisHistoryItem
-    // 更新历史并选中新结果
-    historyItems.value = [item, ...historyItems.value.filter((x) => x.id !== item.id)]
-    selectedHistory.value = item.id
-    analysisResults.value = toUiCards(item.cards)
-    ElMessage.success('视频分析完成')
-  } catch (e: any) {
-    ElMessage.error(e?.message || '视频分析出错')
+
+    const initialWorkers = Math.min(concurrencyLimit, files.length)
+    const workers = []
+    for (let i = 0; i < initialWorkers; i++) {
+      workers.push(processNext())
+    }
+    await Promise.all(workers)
+    
+    if (files.length > 1) {
+      ElMessage.success('所有选中的视频批量分析任务已完成')
+    }
+    selectedFiles.value = [] // 成功后清空已选文件
   } finally {
     isAnalyzing.value = false
   }
 }
 
+const submitRewrite = async () => {
+  if (!rewriteTaskState.form.script.trim()) {
+    ElMessage.warning('口播脚本不能为空')
+    return
+  }
+  
+  rewriteTaskState.dialogVisible = false
+  rewriteTaskState.isRewriting = true
+  
+  try {
+    const res = await fetch('/api/video-analysis/rewrite-script', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        script: rewriteTaskState.form.script.trim(),
+        topic: rewriteTaskState.form.topic.trim() || undefined,
+        title: rewriteTaskState.form.title.trim() || undefined,
+        car_model: rewriteTaskState.form.car_model.trim() || undefined,
+      })
+    }).then(r => r.json())
+
+    if (res?.success && res.tags?.segment_result?.length > 0) {
+      const seg = res.tags.segment_result[0]
+      const newTokens: SearchToken[] = []
+      
+      const addToken = (text: any, isMust: boolean, type: 'keyword' | 'text' = 'keyword') => {
+        const t = String(text || '').trim()
+        if (!t || t === '未知') return
+        if (newTokens.some(x => x.text === t)) return
+        
+        newTokens.push({
+          id: `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
+          text: t,
+          join: isMust ? 'AND' : 'OR',
+          not: false,
+          type
+        })
+      }
+
+      // MUST: car_model, product_status_scene, footage_type, movement
+      addToken(seg.car_model, true, 'keyword')
+      addToken(seg.product_status_scene, true, 'keyword')
+      addToken(seg.footage_type, true, 'keyword')
+      addToken(seg.movement, true, 'keyword')
+
+      // OR (keyword)
+      addToken(seg.subject, false, 'keyword')
+      addToken(seg.camera_movement, false, 'keyword')
+      addToken(seg.topic, false, 'keyword')
+      addToken(seg.shot_style, false, 'keyword')
+      addToken(seg.shot_type, false, 'keyword')
+      addToken(seg.weather, false, 'keyword')
+      addToken(seg.time, false, 'keyword')
+
+      const orKeywordArrays = [
+        ...(seg.object || []),
+        ...(seg.scene_location || []),
+        ...(seg.design_selling_points || []),
+        ...(seg.function_selling_points || []),
+        ...(seg.design_adjectives || []),
+        ...(seg.function_adjectives || []),
+        ...(seg.scenario_a || []),
+        ...(seg.scenario_b || []),
+        ...(seg.marketing_tags || []),
+        ...(seg.appealing_audience || []),
+        ...(seg.extra_tags || [])
+      ]
+
+      for (const t of orKeywordArrays) {
+        addToken(t, false, 'keyword')
+      }
+
+      // OR (text)
+      addToken(seg.description, false, 'text')
+      addToken(seg.segment_text, false, 'text')
+      
+      const orTextArrays = [
+        ...(seg.marketing_phrases || []),
+        ...(seg.text || [])
+      ]
+      
+      for (const t of orTextArrays) {
+        addToken(t, false, 'text')
+      }
+
+      if (newTokens.length > 0) {
+        newTokens[0].join = 'AND'
+      }
+
+      rewriteTaskState.pendingTokens = newTokens
+      ElMessage.success('提取成功')
+    } else {
+      ElMessage.error(res?.error || '提取失败或无结果')
+    }
+  } catch (e) {
+    ElMessage.error('提取请求出错')
+  } finally {
+    rewriteTaskState.isRewriting = false
+  }
+}
+
 watch(
-  [searchTokens, fuzzySearch, currentWorkspace, selectedHistory, splitScenes],
+  [searchTokens, currentWorkspace, selectedHistory, splitScenes],
   () => schedulePersistPageState(),
   { deep: true },
 )
@@ -457,7 +600,6 @@ onMounted(async () => {
       if (snap.currentWorkspace) currentWorkspace.value = snap.currentWorkspace
       selectedHistory.value = snap.selectedHistory ?? ''
       splitScenes.value = snap.splitScenes ?? true
-      fuzzySearch.value = snap.fuzzySearch ?? false
       searchTokens.value = Array.isArray(snap.searchTokens) ? [...snap.searchTokens] : []
       lastSuccessfulSearchKey.value = snap.lastSearchCacheKey ?? null
     } finally {
@@ -478,7 +620,7 @@ onMounted(async () => {
     const key = buildSearchCacheKey({
       workspace: currentWorkspace.value,
       historyId: hid,
-      fuzzy: fuzzySearch.value,
+      fuzzy: true,
       tokens: toBackendTokens(tok),
       size: 80,
     })
@@ -493,13 +635,14 @@ onMounted(async () => {
 })
 
 // 切换 workspace 时重新加载当前历史，清空搜索状态（批量还原快照时不要触发）
-watch(currentWorkspace, () => {
+watch(currentWorkspace, async () => {
   if (restoringSnapshot.value) return
   analysisResults.value = []
   remoteSearchCards.value = []
   searchTokens.value = []
   lastSuccessfulSearchKey.value = null
-  if (selectedHistory.value) handleHistoryChange(selectedHistory.value)
+  selectedHistory.value = '' // 清空选中的历史，因为不同 workspace 历史不同
+  await refreshHistory()
   schedulePersistPageState()
 })
 
@@ -509,13 +652,6 @@ watch(currentWorkspace, () => {
 watch(searchTokens, (tokens) => {
   if (!(tokens ?? []).some(t => t.text?.trim())) {
     kickRemoteSearch() // 内部 tokens.length===0 分支：中止请求 + 清空 remoteSearchCards
-  }
-})
-
-// 切换精准/模糊模式时：若有 token 则重新搜索
-watch(fuzzySearch, () => {
-  if ((searchTokens.value ?? []).some(t => t.text?.trim())) {
-    kickRemoteSearch()
   }
 })
 
@@ -584,9 +720,13 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="right-controls">
+          <el-tooltip :content="rewriteTaskState.isRewriting ? '正在提取...' : '智能提取搜索条件'" placement="bottom">
+            <el-button circle @click="rewriteTaskState.dialogVisible = true" :loading="rewriteTaskState.isRewriting" :disabled="rewriteTaskState.isRewriting">
+              <el-icon v-if="!rewriteTaskState.isRewriting"><i-ep-magic-stick /></el-icon>
+            </el-button>
+          </el-tooltip>
           <TagSearchBar
             v-model="searchTokens"
-            v-model:fuzzy="fuzzySearch"
             :loading="remoteSearching"
             @search="kickRemoteSearch"
             class="tag-search"
@@ -596,6 +736,7 @@ onBeforeUnmount(() => {
             action="#"
             :auto-upload="false"
             :show-file-list="false"
+            multiple
             @change="handleFileChange"
             accept="video/*"
           >
@@ -605,15 +746,15 @@ onBeforeUnmount(() => {
             </el-button>
           </el-upload>
 
-          <span v-if="selectedFile" class="compact-file-info">
-            {{ selectedFile.name }}
+          <span v-if="selectedFiles.length > 0" class="compact-file-info" :title="selectedFiles.map(f => f.name).join(', ')">
+            已选 {{ selectedFiles.length }} 个文件
           </span>
 
           <el-button
             type="primary"
-            @click="handleUpload"
+            @click="openCarModelDialog"
             :loading="isAnalyzing"
-            :disabled="!selectedFile"
+            :disabled="selectedFiles.length === 0"
           >
             {{ isAnalyzing ? '分析中...' : '开始分析' }}
           </el-button>
@@ -636,6 +777,62 @@ onBeforeUnmount(() => {
     <el-empty v-else-if="!isAnalyzing" description="暂无分析数据，请选择历史记录或上传视频" class="empty-state" />
 
     <ShotDetailDrawer v-model="drawerOpen" :shot="activeShot" />
+
+    <!-- 智能提取弹窗 -->
+    <el-dialog
+      v-model="rewriteTaskState.dialogVisible"
+      title="智能提取搜索条件"
+      width="500px"
+    >
+      <el-form :model="rewriteTaskState.form" label-width="80px">
+        <el-form-item label="口播脚本">
+          <el-input
+            v-model="rewriteTaskState.form.script"
+            type="textarea"
+            :rows="4"
+            placeholder="例如：智己LS6，城市道路，展示一键泊车功能..."
+          />
+        </el-form-item>
+        <el-form-item label="主题">
+          <el-input v-model="rewriteTaskState.form.topic" placeholder="选填" />
+        </el-form-item>
+        <el-form-item label="标题">
+          <el-input v-model="rewriteTaskState.form.title" placeholder="选填" />
+        </el-form-item>
+        <el-form-item label="车型">
+          <el-input v-model="rewriteTaskState.form.car_model" placeholder="选填" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <span class="dialog-footer">
+          <el-button @click="rewriteTaskState.dialogVisible = false">取消</el-button>
+          <el-button type="primary" @click="submitRewrite" :loading="rewriteTaskState.isRewriting">
+            提取
+          </el-button>
+        </span>
+      </template>
+    </el-dialog>
+
+    <!-- 车型输入弹窗 -->
+    <el-dialog
+      v-model="carModelDialogVisible"
+      title="输入车型信息"
+      width="400px"
+    >
+      <el-form label-width="80px" @submit.prevent>
+        <el-form-item label="车型">
+          <el-input v-model="batchCarModel" placeholder="例如：智己LS6 (选填)" @keyup.enter="confirmUpload" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <span class="dialog-footer">
+          <el-button @click="carModelDialogVisible = false">取消</el-button>
+          <el-button type="primary" @click="confirmUpload">
+            确认并开始分析
+          </el-button>
+        </span>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
