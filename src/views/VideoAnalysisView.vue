@@ -27,6 +27,7 @@ const isAnalyzing = ref(false)
 const selectedFiles = ref<File[]>([])
 const selectedHistory = ref('')
 const searchTokens = ref<SearchToken[]>([])
+const searchStrategyWeights = ref({ bm25_weight: 0.3, vector_weight: 0.7 })
 const splitScenes = ref(true)
 
 watch(() => rewriteTaskState.pendingTokens, (tokens) => {
@@ -385,6 +386,10 @@ function kickRemoteSearch() {
       history_id: historyId,
       size: 80,
       workspace: currentWorkspace.value,
+      bm25_weight: searchStrategyWeights.value.bm25_weight,
+      vector_weight: searchStrategyWeights.value.vector_weight,
+      text_weights: searchStrategyWeights.value.text_weights,
+      vector_weights: searchStrategyWeights.value.vector_weights,
     },
     { signal: searchAbort.signal }
   )
@@ -727,6 +732,8 @@ onBeforeUnmount(() => {
           </el-tooltip>
           <TagSearchBar
             v-model="searchTokens"
+            v-model:strategyWeights="searchStrategyWeights"
+            :workspace="currentWorkspace"
             :loading="remoteSearching"
             @search="kickRemoteSearch"
             class="tag-search"

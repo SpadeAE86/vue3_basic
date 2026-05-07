@@ -66,6 +66,27 @@ function getTagGroup(shot: UiShotCard, keys: readonly string[]): string[] {
   return []
 }
 
+// 提取高亮词汇列表
+function getHighlightTerms(shot: UiShotCard): string[] {
+  const hl = shot._highlight
+  if (!hl) return []
+  
+  const terms = new Set<string>()
+  for (const snippets of Object.values(hl)) {
+    for (const snip of snippets) {
+      // 提取 <em>...</em> 之间的内容
+      const matches = snip.match(/<em>(.*?)<\/em>/g)
+      if (matches) {
+        matches.forEach(m => {
+          const term = m.replace(/<\/?em>/g, '')
+          if (term) terms.add(term)
+        })
+      }
+    }
+  }
+  return Array.from(terms)
+}
+
 // ─── Misc helpers ──────────────────────────────────────────────────────────────
 function getActiveFrameUrl(shot: UiShotCard): string {
   const urls = (shot.frame_urls ?? []).filter(Boolean)
@@ -195,6 +216,7 @@ function handleCardHover(e: MouseEvent) {
                 :effect="group.effect"
                 border-radius="999px"
                 :clickable="true"
+                :highlight-terms="getHighlightTerms(shot)"
               />
             </template>
           </div>

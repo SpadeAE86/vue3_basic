@@ -77,6 +77,10 @@ export async function searchVideoAnalysisCardsApi(
     history_id?: string
     size?: number
     workspace?: string
+    bm25_weight?: number
+    vector_weight?: number
+    text_weights?: Record<string, number>
+    vector_weights?: Record<string, number>
   },
   opts?: { signal?: AbortSignal },
 ) {
@@ -85,6 +89,39 @@ export async function searchVideoAnalysisCardsApi(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
     signal: opts?.signal,
+  })
+  return resp.json()
+}
+
+// ---------------- 搜索策略 API ----------------
+
+export type SearchStrategy = {
+  id?: number
+  name: string
+  bm25_weight: number
+  vector_weight: number
+  text_weights?: Record<string, number>
+  vector_weights?: Record<string, number>
+  is_default: boolean
+}
+
+export async function getSearchStrategiesApi() {
+  const resp = await fetch(`${API_BASE}/video-analysis/search-strategies`)
+  return resp.json()
+}
+
+export async function saveSearchStrategyApi(strategy: SearchStrategy) {
+  const resp = await fetch(`${API_BASE}/video-analysis/search-strategies`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(strategy),
+  })
+  return resp.json()
+}
+
+export async function deleteSearchStrategyApi(id: number) {
+  const resp = await fetch(`${API_BASE}/video-analysis/search-strategies/${id}`, {
+    method: 'DELETE',
   })
   return resp.json()
 }
