@@ -55,6 +55,8 @@ export type ShotCard = {
   _highlight?: Record<string, string[]> | null
   /** 'precise' = BM25 only  /  'fuzzy' = BM25 + KNN hybrid */
   _search_mode?: 'precise' | 'fuzzy' | null
+  /** Raw explanation tree from OpenSearch */
+  _explanation?: any | null
   // Allow any additional workspace-specific fields
   [key: string]: unknown
 }

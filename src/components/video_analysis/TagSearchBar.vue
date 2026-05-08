@@ -3,6 +3,8 @@ import { computed, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { getSearchStrategiesApi, saveSearchStrategyApi, deleteSearchStrategyApi, type SearchStrategy } from '@/api/video_analysis'
 import SearchStrategySelect from './SearchStrategySelect.vue'
+import SearchStrategyDialog from './SearchStrategyDialog.vue'
+import TokenEditPopover from './TokenEditPopover.vue'
 
 export type TokenJoin = 'AND' | 'OR'
 
@@ -27,6 +29,7 @@ const props = withDefaults(
     }
     workspace?: string
     loading?: boolean
+    fuzzy?: boolean
     placeholder?: string
     maxPreviewChars?: number
     radius?: string
@@ -35,6 +38,7 @@ const props = withDefaults(
     modelValue: () => [],
     workspace: 'v2',
     loading: false,
+    fuzzy: true,
     placeholder: '输入标签回车添加；空格可分词',
     maxPreviewChars: 6,
     radius: '999px',
@@ -49,6 +53,7 @@ const emit = defineEmits<{
     text_weights?: Record<string, number>;
     vector_weights?: Record<string, number>;
   }): void
+  (e: 'update:fuzzy', v: boolean): void
   (e: 'search'): void
 }>()
 
@@ -150,25 +155,21 @@ function emitUpdate() {
   emit('search')
 }
 
-async function handleSaveStrategy() {
-  if (!newStrategyName.value.trim()) {
-    ElMessage.warning('请输入策略名称')
-    return
-  }
+async function handleSaveStrategy(data: { name: string; isDefault: boolean }) {
   try {
     const res = await saveSearchStrategyApi({
-      name: newStrategyName.value.trim(),
+      name: data.name,
       bm25_weight: localBm25.value,
       vector_weight: localVector.value,
       text_weights: localTextWeights.value,
       vector_weights: localVectorWeights.value,
-      is_default: newStrategyIsDefault.value,
+      is_default: data.isDefault,
     })
     if (res.success) {
       ElMessage.success('保存成功')
       createDialogVisible.value = false
       await loadStrategies()
-      selectedStrategy.value = newStrategyName.value.trim()
+      selectedStrategy.value = data.name
     } else {
       ElMessage.error(res.error || '保存失败')
     }
@@ -389,6 +390,21 @@ function handleEnterKey() {
 
       <!-- 搜索策略配置工具栏，和 PromptComposer 类似的一体化设计 -->
       <div class="toolbar">
+        <el-button
+          v-if="fuzzy !== undefined"
+          size="small"
+          class="ghost-btn fuzzy-toggle-btn"
+          :class="{ 'is-fuzzy': fuzzy }"
+          @click="emit('update:fuzzy', !fuzzy)"
+          :title="fuzzy ? '当前：模糊检索 (包含向量)' : '当前：精准检索 (仅关键词)'"
+        >
+          <el-icon class="fuzzy-icon">
+            <i-ep-connection v-if="fuzzy" />
+            <i-ep-aim v-else />
+          </el-icon>
+          <span>{{ fuzzy ? '模糊' : '精准' }}</span>
+        </el-button>
+        
         <SearchStrategySelect
           v-model="selectedStrategy"
           :strategies="strategies"
@@ -411,281 +427,46 @@ function handleEnterKey() {
       </div>
     </div>
 
-    <!-- 弹出层：编辑权重 -->
-    <el-dialog v-model="editDialogVisible" title="编辑搜索权重" width="500px" append-to-body>
-      <div class="sliders-container">
-        <div class="sliders">
-          <div class="slider-row">
-            <span class="label">BM25 权重</span>
-            <div class="custom-slider-group">
-              <el-slider
-                :model-value="Math.min(localBm25, 2)"
-                @update:model-value="localBm25 = $event; onSliderChange()"
-                :min="0"
-                :max="2"
-                :step="0.1"
-                :show-input="false"
-              />
-              <el-input-number
-                v-model="localBm25"
-                :min="0"
-                :max="10"
-                :step="0.1"
-                size="small"
-                controls-position="right"
-                @change="onSliderChange"
-              />
-            </div>
-          </div>
-          <div class="slider-row">
-            <span class="label">向量 权重</span>
-            <div class="custom-slider-group">
-              <el-slider
-                :model-value="Math.min(localVector, 2)"
-                @update:model-value="localVector = $event; onSliderChange()"
-                :min="0"
-                :max="2"
-                :step="0.1"
-                :show-input="false"
-              />
-              <el-input-number
-                v-model="localVector"
-                :min="0"
-                :max="10"
-                :step="0.1"
-                size="small"
-                controls-position="right"
-                @change="onSliderChange"
-              />
-            </div>
-          </div>
-          
-          <el-divider v-if="indexFields.text_fields.length || indexFields.vector_fields.length" border-style="dashed" />
-          
-          <div v-if="indexFields.text_fields.length" class="field-weights-section">
-            <div class="section-title">文本字段权重 (BM25)</div>
-            <div v-for="field in indexFields.text_fields" :key="field" class="slider-row mini">
-              <span class="label" :title="field">{{ field }}</span>
-              <div class="custom-slider-group">
-                <el-slider
-                  :model-value="Math.min(localTextWeights[field] || 0, 2)"
-                  @update:model-value="localTextWeights[field] = $event; onSliderChange()"
-                  :min="0"
-                  :max="2"
-                  :step="0.1"
-                  :show-input="false"
-                />
-                <el-input-number
-                  v-model="localTextWeights[field]"
-                  :min="0"
-                  :max="10"
-                  :step="0.1"
-                  size="small"
-                  controls-position="right"
-                  @change="onSliderChange"
-                />
-              </div>
-            </div>
-          </div>
-          
-          <div v-if="indexFields.vector_fields.length" class="field-weights-section">
-            <div class="section-title">向量字段权重 (KNN)</div>
-            <div v-for="field in indexFields.vector_fields" :key="field" class="slider-row mini">
-              <span class="label" :title="field">{{ field }}</span>
-              <div class="custom-slider-group">
-                <el-slider
-                  :model-value="Math.min(localVectorWeights[field] || 0, 2)"
-                  @update:model-value="localVectorWeights[field] = $event; onSliderChange()"
-                  :min="0"
-                  :max="2"
-                  :step="0.1"
-                  :show-input="false"
-                />
-                <el-input-number
-                  v-model="localVectorWeights[field]"
-                  :min="0"
-                  :max="10"
-                  :step="0.1"
-                  size="small"
-                  controls-position="right"
-                  @change="onSliderChange"
-                />
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-      <template #footer>
-        <el-button @click="editDialogVisible = false">关闭</el-button>
-      </template>
-    </el-dialog>
+    <SearchStrategyDialog
+      v-model="editDialogVisible"
+      mode="edit"
+      :bm25-weight="localBm25"
+      :vector-weight="localVector"
+      :text-weights="localTextWeights"
+      :vector-weights="localVectorWeights"
+      :index-fields="indexFields"
+      @update:bm25-weight="localBm25 = $event"
+      @update:vector-weight="localVector = $event"
+      @update:text-weights="localTextWeights = $event"
+      @update:vector-weights="localVectorWeights = $event"
+      @change="onSliderChange"
+    />
 
-    <!-- 弹出层：新建模板 -->
-    <el-dialog v-model="createDialogVisible" title="保存搜索策略" width="500px" append-to-body>
-      <div class="sliders-container">
-        <el-form label-width="80px">
-          <el-form-item label="策略名称">
-            <el-input v-model="newStrategyName" placeholder="例如：偏向关键词匹配" />
-          </el-form-item>
-          <el-form-item label="设为默认">
-            <el-switch v-model="newStrategyIsDefault" />
-          </el-form-item>
-        </el-form>
-        
-        <div class="sliders" style="margin-top: 20px; padding: 0 10px;">
-          <div class="slider-row">
-            <span class="label">BM25 权重</span>
-            <div class="custom-slider-group">
-              <el-slider
-                :model-value="Math.min(localBm25, 2)"
-                @update:model-value="localBm25 = $event; onSliderChange()"
-                :min="0"
-                :max="2"
-                :step="0.1"
-                :show-input="false"
-              />
-              <el-input-number
-                v-model="localBm25"
-                :min="0"
-                :max="10"
-                :step="0.1"
-                size="small"
-                controls-position="right"
-                @change="onSliderChange"
-              />
-            </div>
-          </div>
-          <div class="slider-row">
-            <span class="label">向量 权重</span>
-            <div class="custom-slider-group">
-              <el-slider
-                :model-value="Math.min(localVector, 2)"
-                @update:model-value="localVector = $event; onSliderChange()"
-                :min="0"
-                :max="2"
-                :step="0.1"
-                :show-input="false"
-              />
-              <el-input-number
-                v-model="localVector"
-                :min="0"
-                :max="10"
-                :step="0.1"
-                size="small"
-                controls-position="right"
-                @change="onSliderChange"
-              />
-            </div>
-          </div>
-          
-          <el-divider v-if="indexFields.text_fields.length || indexFields.vector_fields.length" border-style="dashed" />
-          
-          <div v-if="indexFields.text_fields.length" class="field-weights-section">
-            <div class="section-title">文本字段权重 (BM25)</div>
-            <div v-for="field in indexFields.text_fields" :key="field" class="slider-row mini">
-              <span class="label" :title="field">{{ field }}</span>
-              <div class="custom-slider-group">
-                <el-slider
-                  :model-value="Math.min(localTextWeights[field] || 0, 2)"
-                  @update:model-value="localTextWeights[field] = $event; onSliderChange()"
-                  :min="0"
-                  :max="2"
-                  :step="0.1"
-                  :show-input="false"
-                />
-                <el-input-number
-                  v-model="localTextWeights[field]"
-                  :min="0"
-                  :max="10"
-                  :step="0.1"
-                  size="small"
-                  controls-position="right"
-                  @change="onSliderChange"
-                />
-              </div>
-            </div>
-          </div>
-          
-          <div v-if="indexFields.vector_fields.length" class="field-weights-section">
-            <div class="section-title">向量字段权重 (KNN)</div>
-            <div v-for="field in indexFields.vector_fields" :key="field" class="slider-row mini">
-              <span class="label" :title="field">{{ field }}</span>
-              <div class="custom-slider-group">
-                <el-slider
-                  :model-value="Math.min(localVectorWeights[field] || 0, 2)"
-                  @update:model-value="localVectorWeights[field] = $event; onSliderChange()"
-                  :min="0"
-                  :max="2"
-                  :step="0.1"
-                  :show-input="false"
-                />
-                <el-input-number
-                  v-model="localVectorWeights[field]"
-                  :min="0"
-                  :max="10"
-                  :step="0.1"
-                  size="small"
-                  controls-position="right"
-                  @change="onSliderChange"
-                />
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-      
-      <template #footer>
-        <el-button @click="createDialogVisible = false">取消</el-button>
-        <el-button type="primary" @click="handleSaveStrategy">保存</el-button>
-      </template>
-    </el-dialog>
+    <SearchStrategyDialog
+      v-model="createDialogVisible"
+      mode="create"
+      :initial-name="newStrategyName"
+      :initial-is-default="newStrategyIsDefault"
+      :bm25-weight="localBm25"
+      :vector-weight="localVector"
+      :text-weights="localTextWeights"
+      :vector-weights="localVectorWeights"
+      :index-fields="indexFields"
+      @update:bm25-weight="localBm25 = $event"
+      @update:vector-weight="localVector = $event"
+      @update:text-weights="localTextWeights = $event"
+      @update:vector-weights="localVectorWeights = $event"
+      @change="onSliderChange"
+      @save="handleSaveStrategy"
+    />
 
-    <el-popover
-      v-model:visible="editorOpen"
-      placement="bottom-start"
-      :width="360"
-      trigger="manual"
-      :virtual-ref="popoverAnchor"
-      virtual-triggering
-    >
-
-      <div v-if="editing" class="editor">
-        <div class="row">
-          <span class="lab">类型</span>
-          <el-segmented
-            v-model="editing.type"
-            :options="[{label: 'Keyword', value: 'keyword'}, {label: 'Text', value: 'text'}]"
-            size="small"
-            style="width: 160px"
-          />
-        </div>
-
-        <div class="row">
-          <span class="lab">逻辑</span>
-          <el-checkbox v-model="editing.not" label="NOT" />
-        </div>
-
-        <div class="row">
-          <span class="lab">连接</span>
-          <el-segmented
-            v-model="editing.join"
-            :options="['AND', 'OR']"
-            size="small"
-            style="width: 160px"
-          />
-        </div>
-
-        <div class="row">
-          <span class="lab">内容</span>
-          <el-input v-model="editing.text" type="textarea" :autosize="{ minRows: 2, maxRows: 6 }" />
-        </div>
-
-        <div class="btns">
-          <el-button size="small" @click="cancelEditor">取消</el-button>
-          <el-button size="small" type="primary" @click="saveEditor">保存</el-button>
-        </div>
-      </div>
-    </el-popover>
+    <TokenEditPopover
+      v-model="editorOpen"
+      :anchor="popoverAnchor"
+      :editing-token="editing"
+      @save="saveEditor"
+      @cancel="cancelEditor"
+    />
   </div>
 </template>
 
@@ -849,12 +630,31 @@ function handleEnterKey() {
 }
 
 :deep(.toolbar .ghost-btn:hover) {
-  background: rgba(99, 102, 241, 0.08);
+  background: rgba(99, 102, 241, 0.08) !important;
   color: #6366f1;
 }
 
 :deep(.toolbar .ghost-btn:disabled) {
   opacity: 0.4;
+}
+
+/* 幽灵按钮模糊状态 */
+:deep(.toolbar .fuzzy-toggle-btn) {
+  transition: all 0.2s ease;
+  padding: 5px 10px;
+  border-radius: 999px !important;
+}
+:deep(.toolbar .fuzzy-toggle-btn .el-icon) {
+  margin-right: 4px;
+  font-size: 14px;
+  transition: color 0.2s ease;
+}
+:deep(.toolbar .fuzzy-toggle-btn.is-fuzzy) {
+  color: #6366f1; /* 文字变为紫色 */
+  background: rgba(99, 102, 241, 0.1) !important; /* 极浅的紫色背景 */
+}
+:deep(.toolbar .fuzzy-toggle-btn.is-fuzzy .el-icon) {
+  color: #eab308; /* 黄色高亮 */
 }
 
 :deep(.toolbar .el-select__wrapper) {
@@ -877,106 +677,6 @@ function handleEnterKey() {
   border-radius: 999px;
 }
 
-.sliders-container {
-  max-height: 60vh;
-  overflow-y: auto;
-  padding-right: 10px;
-}
 
-.sliders-container::-webkit-scrollbar {
-  width: 6px;
-}
-.sliders-container::-webkit-scrollbar-track {
-  background: transparent;
-}
-.sliders-container::-webkit-scrollbar-thumb {
-  background: #dcdfe6;
-  border-radius: 3px;
-}
-
-.sliders {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  padding: 0 10px;
-}
-
-.slider-row {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-}
-
-.slider-row .label {
-  width: 80px;
-  font-size: 13px;
-  color: #606266;
-}
-
-.custom-slider-group {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex: 1;
-}
-
-.custom-slider-group :deep(.el-slider) {
-  flex: 1;
-}
-
-.custom-slider-group :deep(.el-input-number) {
-  width: 100px;
-}
-
-.slider-row.mini {
-  gap: 8px;
-}
-
-.slider-row.mini .label {
-  width: 100px;
-  font-size: 12px;
-  color: #909399;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.field-weights-section {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.section-title {
-  font-size: 13px;
-  font-weight: 600;
-  color: #303133;
-  margin-bottom: 4px;
-}
-
-.editor {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.lab {
-  width: 48px;
-  color: #6b7280;
-  font-size: 12px;
-}
-
-.btns {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  margin-top: 4px;
-}
 </style>
 

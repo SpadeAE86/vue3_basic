@@ -87,6 +87,8 @@ const remoteSearching = ref(false)
 let searchAbort: AbortController | null = null
 let searchSeq = 0
 
+const searchFuzzy = ref(true)
+
 let persistTimer: ReturnType<typeof setTimeout> | null = null
 function schedulePersistPageState() {
   if (restoringSnapshot.value) return
@@ -99,6 +101,7 @@ function schedulePersistPageState() {
       splitScenes: splitScenes.value,
       searchTokens: [...searchTokens.value],
       lastSearchCacheKey: lastSuccessfulSearchKey.value,
+      searchFuzzy: searchFuzzy.value,
     }
     savePageSnapshot(snap)
   }, 350)
@@ -357,10 +360,15 @@ function kickRemoteSearch() {
   const historyId =
     selectedHistory.value && selectedHistory.value !== '__all__' ? selectedHistory.value : undefined
   const backendTok = toBackendTokens(tokens)
+  
+  // 动态决定是否模糊检索：如果存在 text 类型的 token，则使用模糊（混合）检索；否则使用精确（BM25）检索
+  // 除非用户手动切换了 searchFuzzy 的状态，我们以 searchFuzzy.value 为准
+  const isFuzzy = searchFuzzy.value
+
   const cacheKey = buildSearchCacheKey({
     workspace: currentWorkspace.value,
     historyId,
-    fuzzy: true,
+    fuzzy: isFuzzy,
     tokens: backendTok,
     size: 80,
   })
@@ -382,7 +390,7 @@ function kickRemoteSearch() {
   searchVideoAnalysisCardsApi(
     {
       tokens: backendTok,
-      fuzzy: true,
+      fuzzy: isFuzzy,
       history_id: historyId,
       size: 80,
       workspace: currentWorkspace.value,
@@ -590,7 +598,7 @@ const submitRewrite = async () => {
 }
 
 watch(
-  [searchTokens, currentWorkspace, selectedHistory, splitScenes],
+  [searchTokens, currentWorkspace, selectedHistory, splitScenes, searchFuzzy],
   () => schedulePersistPageState(),
   { deep: true },
 )
@@ -607,6 +615,7 @@ onMounted(async () => {
       splitScenes.value = snap.splitScenes ?? true
       searchTokens.value = Array.isArray(snap.searchTokens) ? [...snap.searchTokens] : []
       lastSuccessfulSearchKey.value = snap.lastSearchCacheKey ?? null
+      if (snap.searchFuzzy !== undefined) searchFuzzy.value = snap.searchFuzzy
     } finally {
       restoringSnapshot.value = false
     }
@@ -622,11 +631,12 @@ onMounted(async () => {
   if (tok.length) {
     const hid =
       selectedHistory.value && selectedHistory.value !== '__all__' ? selectedHistory.value : undefined
+    const backendTok = toBackendTokens(tok)
     const key = buildSearchCacheKey({
       workspace: currentWorkspace.value,
       historyId: hid,
-      fuzzy: true,
-      tokens: toBackendTokens(tok),
+      fuzzy: searchFuzzy.value,
+      tokens: backendTok,
       size: 80,
     })
     const hit = videoAnalysisSearchCache.get(key)
@@ -651,12 +661,15 @@ watch(currentWorkspace, async () => {
   schedulePersistPageState()
 })
 
-// token 变化：
+// token 变化 或 searchFuzzy 变化：
 //   - 有 token → 本地过滤立即生效（filteredResults computed）；不自动触发远程搜索
 //   - 无 token → 清空搜索结果，恢复历史卡片
-watch(searchTokens, (tokens) => {
+watch([searchTokens, searchFuzzy], ([tokens, fuzzy], [oldTokens, oldFuzzy]) => {
   if (!(tokens ?? []).some(t => t.text?.trim())) {
     kickRemoteSearch() // 内部 tokens.length===0 分支：中止请求 + 清空 remoteSearchCards
+  } else if (fuzzy !== oldFuzzy) {
+    // 如果仅仅是 searchFuzzy 变化，且有 token，我们应该触发重新搜索
+    kickRemoteSearch()
   }
 })
 
@@ -733,6 +746,7 @@ onBeforeUnmount(() => {
           <TagSearchBar
             v-model="searchTokens"
             v-model:strategyWeights="searchStrategyWeights"
+            v-model:fuzzy="searchFuzzy"
             :workspace="currentWorkspace"
             :loading="remoteSearching"
             @search="kickRemoteSearch"
@@ -774,6 +788,7 @@ onBeforeUnmount(() => {
       <ShotCardGrid
         :shots="filteredResults"
         :active-frame-index="activeFrameIndex"
+        :strategy-weights="searchStrategyWeights"
         @select-shot="openShotDetail"
         @frame-select="onFrameSelect"
         @reindex="reindexOne"
