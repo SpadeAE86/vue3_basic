@@ -66,6 +66,8 @@ export function buildSearchCacheKey(parts: {
   fuzzy: boolean
   tokens: VideoAnalysisSearchToken[]
   size: number
+  /** 权重 / RRF 开关变化须使缓存失效 */
+  strategySig?: string
 }): string {
   const h = (parts.historyId || '').trim() || '*'
   const payload = parts.tokens.map((t) => ({
@@ -73,7 +75,8 @@ export function buildSearchCacheKey(parts: {
     join: t.join ?? 'AND',
     not: !!t.not,
   }))
-  return `${parts.workspace}|${h}|${parts.fuzzy ? 1 : 0}|${parts.size}|${JSON.stringify(payload)}`
+  const sig = (parts.strategySig ?? '').trim()
+  return `${parts.workspace}|${h}|${parts.fuzzy ? 1 : 0}|${parts.size}|${sig}|${JSON.stringify(payload)}`
 }
 
 function loadSearchFile(): SearchCacheFile {

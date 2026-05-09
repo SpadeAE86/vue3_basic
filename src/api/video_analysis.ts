@@ -81,6 +81,7 @@ export async function searchVideoAnalysisCardsApi(
     vector_weight?: number
     text_weights?: Record<string, number>
     vector_weights?: Record<string, number>
+    use_rrf?: boolean
   },
   opts?: { signal?: AbortSignal },
 ) {
@@ -103,6 +104,8 @@ export type SearchStrategy = {
   text_weights?: Record<string, number>
   vector_weights?: Record<string, number>
   is_default: boolean
+  /** 模糊检索使用 RRF；为 true 时宏观 BM25/向量滑杆不参与后端融合 */
+  use_rrf?: boolean
 }
 
 export async function getSearchStrategiesApi() {

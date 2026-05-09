@@ -21,11 +21,12 @@ export type SearchToken = {
 const props = withDefaults(
   defineProps<{
     modelValue: SearchToken[]
-    strategyWeights: { 
-      bm25_weight: number; 
-      vector_weight: number;
-      text_weights?: Record<string, number>;
-      vector_weights?: Record<string, number>;
+    strategyWeights: {
+      bm25_weight: number
+      vector_weight: number
+      text_weights?: Record<string, number>
+      vector_weights?: Record<string, number>
+      use_rrf?: boolean
     }
     workspace?: string
     loading?: boolean
@@ -47,11 +48,12 @@ const props = withDefaults(
 
 const emit = defineEmits<{
   (e: 'update:modelValue', v: SearchToken[]): void
-  (e: 'update:strategyWeights', v: { 
-    bm25_weight: number; 
-    vector_weight: number;
-    text_weights?: Record<string, number>;
-    vector_weights?: Record<string, number>;
+  (e: 'update:strategyWeights', v: {
+    bm25_weight: number
+    vector_weight: number
+    text_weights?: Record<string, number>
+    vector_weights?: Record<string, number>
+    use_rrf?: boolean
   }): void
   (e: 'update:fuzzy', v: boolean): void
   (e: 'search'): void
@@ -65,6 +67,7 @@ const createDialogVisible = ref(false)
 
 const localBm25 = ref(props.strategyWeights.bm25_weight)
 const localVector = ref(props.strategyWeights.vector_weight)
+const localUseRrf = ref(!!props.strategyWeights.use_rrf)
 const localTextWeights = ref<Record<string, number>>(props.strategyWeights.text_weights || {})
 const localVectorWeights = ref<Record<string, number>>(props.strategyWeights.vector_weights || {})
 
@@ -90,8 +93,9 @@ async function fetchIndexFields() {
       res.text_fields.forEach((f: string) => {
         if (localTextWeights.value[f] === undefined) localTextWeights.value[f] = 1.0
       })
+      // 向量路默认 0：未配置的字段不参与 KNN（避免误以为「全开」）；与 hybrid 最多 4 路策略一致
       res.vector_fields.forEach((f: string) => {
-        if (localVectorWeights.value[f] === undefined) localVectorWeights.value[f] = 1.0
+        if (localVectorWeights.value[f] === undefined) localVectorWeights.value[f] = 0
       })
     }
   } catch (e) {
@@ -120,6 +124,7 @@ function applyStrategy(s: SearchStrategy) {
   selectedStrategy.value = s.name
   localBm25.value = s.bm25_weight
   localVector.value = s.vector_weight
+  localUseRrf.value = !!s.use_rrf
   localTextWeights.value = s.text_weights || {}
   localVectorWeights.value = s.vector_weights || {}
   emitUpdate()
@@ -127,16 +132,29 @@ function applyStrategy(s: SearchStrategy) {
 
 watch(selectedStrategy, (newVal) => {
   if (newVal) {
-    const s = strategies.value.find(x => x.name === newVal)
+    const s = strategies.value.find((x) => x.name === newVal)
     if (s) {
       localBm25.value = s.bm25_weight
       localVector.value = s.vector_weight
+      localUseRrf.value = !!s.use_rrf
       localTextWeights.value = s.text_weights || {}
       localVectorWeights.value = s.vector_weights || {}
       emitUpdate()
     }
   }
 })
+
+watch(
+  () => props.strategyWeights,
+  (sw) => {
+    localBm25.value = sw.bm25_weight
+    localVector.value = sw.vector_weight
+    localUseRrf.value = !!sw.use_rrf
+    localTextWeights.value = { ...(sw.text_weights || {}) }
+    localVectorWeights.value = { ...(sw.vector_weights || {}) }
+  },
+  { deep: true },
+)
 
 function onSliderChange() {
   // 如果修改了权重，但当前选中了某个预设，我们自动取消选中（或者你可以选择覆盖它，这里选择保持原逻辑：修改即自定义）
@@ -145,12 +163,18 @@ function onSliderChange() {
   emitUpdate()
 }
 
+function onUpdateUseRrf(v: boolean) {
+  localUseRrf.value = v
+  onSliderChange()
+}
+
 function emitUpdate() {
   emit('update:strategyWeights', {
     bm25_weight: localBm25.value,
     vector_weight: localVector.value,
     text_weights: localTextWeights.value,
-    vector_weights: localVectorWeights.value
+    vector_weights: localVectorWeights.value,
+    use_rrf: localUseRrf.value,
   })
   emit('search')
 }
@@ -164,6 +188,7 @@ async function handleSaveStrategy(data: { name: string; isDefault: boolean }) {
       text_weights: localTextWeights.value,
       vector_weights: localVectorWeights.value,
       is_default: data.isDefault,
+      use_rrf: localUseRrf.value,
     })
     if (res.success) {
       ElMessage.success('保存成功')
@@ -197,6 +222,17 @@ async function handleDeleteStrategy(name: string) {
 
 watch(() => props.workspace, () => {
   fetchIndexFields()
+})
+
+watch(createDialogVisible, (open) => {
+  if (!open) return
+  const fields = indexFields.value.vector_fields
+  if (!fields.length) return
+  const next = { ...localVectorWeights.value }
+  for (const f of fields) {
+    next[f] = 0
+  }
+  localVectorWeights.value = next
 })
 
 import { onMounted } from 'vue'
@@ -434,11 +470,13 @@ function handleEnterKey() {
       :vector-weight="localVector"
       :text-weights="localTextWeights"
       :vector-weights="localVectorWeights"
+      :use-rrf="localUseRrf"
       :index-fields="indexFields"
       @update:bm25-weight="localBm25 = $event"
       @update:vector-weight="localVector = $event"
       @update:text-weights="localTextWeights = $event"
       @update:vector-weights="localVectorWeights = $event"
+      @update:use-rrf="onUpdateUseRrf"
       @change="onSliderChange"
     />
 
@@ -451,11 +489,13 @@ function handleEnterKey() {
       :vector-weight="localVector"
       :text-weights="localTextWeights"
       :vector-weights="localVectorWeights"
+      :use-rrf="localUseRrf"
       :index-fields="indexFields"
       @update:bm25-weight="localBm25 = $event"
       @update:vector-weight="localVector = $event"
       @update:text-weights="localTextWeights = $event"
       @update:vector-weights="localVectorWeights = $event"
+      @update:use-rrf="onUpdateUseRrf"
       @change="onSliderChange"
       @save="handleSaveStrategy"
     />

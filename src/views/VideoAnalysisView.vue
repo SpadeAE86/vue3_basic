@@ -27,7 +27,11 @@ const isAnalyzing = ref(false)
 const selectedFiles = ref<File[]>([])
 const selectedHistory = ref('')
 const searchTokens = ref<SearchToken[]>([])
-const searchStrategyWeights = ref({ bm25_weight: 0.3, vector_weight: 0.7 })
+const searchStrategyWeights = ref({
+  bm25_weight: 0.3,
+  vector_weight: 0.7,
+  use_rrf: false,
+})
 const splitScenes = ref(true)
 
 watch(() => rewriteTaskState.pendingTokens, (tokens) => {
@@ -338,7 +342,10 @@ function toBackendTokens(tokens: SearchToken[]): VideoAnalysisSearchToken[] {
     }))
 }
 
-function applySearchHit(cards: ShotCard[], search_mode: 'precise' | 'fuzzy' | null) {
+function applySearchHit(
+  cards: ShotCard[],
+  search_mode: 'precise' | 'fuzzy' | 'fuzzy_rrf' | null,
+) {
   const rawCards = cards.map((c) => ({ ...c, _search_mode: search_mode }))
   const fresh = toUiCards(rawCards)
   _cachedResults = fresh
@@ -347,6 +354,13 @@ function applySearchHit(cards: ShotCard[], search_mode: 'precise' | 'fuzzy' | nu
 
 function kickRemoteSearch() {
   const tokens = (searchTokens.value ?? []).filter((t) => t.text && t.text.trim())
+  const stratSig = JSON.stringify({
+    r: !!searchStrategyWeights.value.use_rrf,
+    b: searchStrategyWeights.value.bm25_weight,
+    v: searchStrategyWeights.value.vector_weight,
+    tw: searchStrategyWeights.value.text_weights ?? {},
+    vw: searchStrategyWeights.value.vector_weights ?? {},
+  })
   if (!tokens.length) {
     // token 全清：中止进行中的请求，清空搜索结果 → effectiveResults 自动回到历史卡片
     if (searchAbort) { searchAbort.abort(); searchAbort = null }
@@ -371,11 +385,15 @@ function kickRemoteSearch() {
     fuzzy: isFuzzy,
     tokens: backendTok,
     size: 80,
+    strategySig: stratSig,
   })
 
   const cached = videoAnalysisSearchCache.get(cacheKey)
   if (cached?.cards?.length) {
-    applySearchHit(cached.cards as ShotCard[], (cached.search_mode as 'precise' | 'fuzzy') ?? null)
+    applySearchHit(
+      cached.cards as ShotCard[],
+      (cached.search_mode as 'precise' | 'fuzzy' | 'fuzzy_rrf') ?? null,
+    )
     lastSuccessfulSearchKey.value = cacheKey
     schedulePersistPageState()
     remoteSearching.value = false
@@ -398,13 +416,14 @@ function kickRemoteSearch() {
       vector_weight: searchStrategyWeights.value.vector_weight,
       text_weights: searchStrategyWeights.value.text_weights,
       vector_weights: searchStrategyWeights.value.vector_weights,
+      use_rrf: !!searchStrategyWeights.value.use_rrf,
     },
     { signal: searchAbort.signal }
   )
     .then((res) => {
       if (mySeq !== searchSeq) return // stale
       if (!res?.success || !Array.isArray(res.cards)) return
-      const mode = res.search_mode as 'precise' | 'fuzzy' | null ?? null
+      const mode = res.search_mode as 'precise' | 'fuzzy' | 'fuzzy_rrf' | null ?? null
       applySearchHit(res.cards as ShotCard[], mode)
       videoAnalysisSearchCache.set(cacheKey, res.cards as ShotCard[], mode)
       lastSuccessfulSearchKey.value = cacheKey
@@ -638,10 +657,17 @@ onMounted(async () => {
       fuzzy: searchFuzzy.value,
       tokens: backendTok,
       size: 80,
+      strategySig: JSON.stringify({
+        r: !!searchStrategyWeights.value.use_rrf,
+        b: searchStrategyWeights.value.bm25_weight,
+        v: searchStrategyWeights.value.vector_weight,
+        tw: searchStrategyWeights.value.text_weights ?? {},
+        vw: searchStrategyWeights.value.vector_weights ?? {},
+      }),
     })
     const hit = videoAnalysisSearchCache.get(key)
     if (hit?.cards?.length) {
-      applySearchHit(hit.cards as ShotCard[], (hit.search_mode as 'precise' | 'fuzzy') ?? null)
+      applySearchHit(hit.cards as ShotCard[], (hit.search_mode as 'precise' | 'fuzzy' | 'fuzzy_rrf') ?? null)
       lastSuccessfulSearchKey.value = key
     }
   }

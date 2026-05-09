@@ -268,13 +268,30 @@ function parseExplanation(explanation: any, matchedQueries: string[] = []): { it
 
           <!-- Score badge: only show normalized 0-1 scores -->
           <el-tooltip
-            v-if="shot._score != null && (shot._score as number) >= 0"
+            v-if="shot._score != null && (shot._search_mode === 'fuzzy_rrf' || (shot._score as number) >= 0)"
             placement="bottom-end"
             effect="dark"
             popper-class="score-tooltip"
           >
             <template #content>
-              <div v-for="parsed in [parseExplanation(shot._explanation, (shot._matched_queries as string[]) || [])]" :key="shot.id" class="score-breakdown">
+              <template v-if="shot._search_mode === 'fuzzy_rrf'">
+                <div class="score-breakdown">
+                  <div class="score-title">RRF 混合检索</div>
+                  <p class="rrf-plain">
+                    分数为排名融合值，与 BM25 / 旧版混合归一化百分比不可比；未请求分项 explain。
+                  </p>
+                  <div class="score-row total">
+                    <span class="score-name">RRF score</span>
+                    <span class="score-val">{{ Number(shot._score).toFixed(4) }}</span>
+                  </div>
+                </div>
+              </template>
+              <template v-else>
+                <div
+                  v-for="parsed in [parseExplanation(shot._explanation, (shot._matched_queries as string[]) || [])]"
+                  :key="shot.id"
+                  class="score-breakdown"
+                >
                 <div class="score-title">得分明细 ({{ shot._search_mode?.includes('fuzzy') ? '混合检索' : '精确检索' }})</div>
                 <div v-if="shot._explanation">
 
@@ -322,12 +339,19 @@ function parseExplanation(explanation: any, matchedQueries: string[] = []): { it
                   </div>
                 </div>
               </div>
+              </template>
             </template>
             <div
               class="score-badge"
               style="pointer-events: auto; cursor: help;"
             >
-              {{ shot._search_mode?.includes('fuzzy') ? Math.round((shot._score as number) * 100) + '%' : (shot._score as number).toFixed(2) }}
+              {{
+                shot._search_mode === 'fuzzy_rrf'
+                  ? Number(shot._score).toFixed(2)
+                  : shot._search_mode?.includes('fuzzy')
+                    ? Math.round((shot._score as number) * 100) + '%'
+                    : (shot._score as number).toFixed(2)
+              }}
             </div>
           </el-tooltip>
 
@@ -669,6 +693,12 @@ function parseExplanation(explanation: any, matchedQueries: string[] = []): { it
 .formula-subtext {
   font-size: 9px;
   color: #6b7280;
+}
+.rrf-plain {
+  margin: 0 0 8px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: #d1d5db;
 }
 </style>
 <style>
