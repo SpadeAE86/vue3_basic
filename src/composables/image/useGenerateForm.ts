@@ -9,6 +9,7 @@ export const IMAGE_MODELS = [
   { value: 'Seedream 4.0', label: 'Seedream 4.0' },
   { value: 'Seedream 4.5', label: 'Seedream 4.5' },
   { value: 'Seedream 5.0', label: 'Seedream 5.0' },
+  { value: 'gpt-image-2', label: 'GPT Image 2' },
 ]
 
 export const VIDEO_MODELS = [
@@ -43,12 +44,14 @@ export const IMAGE_MODEL_LEVEL_OPTIONS: Record<string, SizeLevel[]> = {
   'Seedream 4.0': ['1K', '2K', '4K'],
   'Seedream 4.5': ['2K', '4K'],
   'Seedream 5.0': ['2K', '3K'],
+  'gpt-image-2': ['1K', '2K'],
 }
 
 export const IMAGE_MODEL_DEFAULT_LEVEL: Record<string, SizeLevel> = {
   'Seedream 4.0': '1K',
   'Seedream 4.5': '2K',
   'Seedream 5.0': '2K',
+  'gpt-image-2': '1K',
 }
 
 const LEVEL_TARGET_PIXELS: Record<SizeLevel, number> = {
@@ -67,6 +70,10 @@ function clamp(v: number, min: number, max: number) {
 }
 
 function modelPixelBounds(model: string) {
+  if (model === 'gpt-image-2') {
+    // 与 Seedream 4.0 同档像素预算即可；宽高仍由 computeSizePx 对齐 16
+    return { min: 1280 * 720, max: 4096 * 4096 }
+  }
   if (model === 'Seedream 4.5' || model === 'Seedream 5.0') {
     return { min: 2560 * 1440, max: 4096 * 4096 }
   }

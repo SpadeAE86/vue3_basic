@@ -1,6 +1,14 @@
 import { ref, onUnmounted, type Ref } from 'vue'
 import type { GeneratedItem, GenerateMode } from '@/types/generate'
-import { loadHistoryApi, saveHistoryApi, getVideoStatusApi, generateVideoApi, generateImageApi } from '@/api/generate'
+import { ElMessage } from 'element-plus'
+import {
+  loadHistoryApi,
+  saveHistoryApi,
+  deleteImageHistoryItemApi,
+  getVideoStatusApi,
+  generateVideoApi,
+  generateImageApi
+} from '@/api/generate'
 
 export function useGenerateHistory(currentMode: Ref<GenerateMode>) {
   const generatedImages = ref<GeneratedItem[]>([])
@@ -122,7 +130,8 @@ export function useGenerateHistory(currentMode: Ref<GenerateMode>) {
 
     generating.value = true
     
-    const newImageId = Math.random().toString(36).substring(2, 15)
+    // 仅用于本次请求内在列表中定位行；持久化 id 必须与接口返回的 history_id 一致
+    const pendingRowKey = crypto.randomUUID()
     const isI2I = form.referenceMedia.length > 0
     const now = new Date()
     const timeStr = `${now.getMonth() + 1}-${now.getDate()} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
@@ -130,7 +139,7 @@ export function useGenerateHistory(currentMode: Ref<GenerateMode>) {
     const isVideo = currentMode.value === 'video'
     
     const newItem: GeneratedItem = {
-      id: newImageId,
+      id: pendingRowKey,
       model: isVideo ? form.videoModel : form.imageModel,
       url: null,
       loading: true,
@@ -165,13 +174,13 @@ export function useGenerateHistory(currentMode: Ref<GenerateMode>) {
           reference_audio_list: form.referenceMedia.filter((m: any) => m.type === 'audio').map((m: any) => m.url)
         })
         
-        const imgIndex = generatedImages.value.findIndex(img => img.id === newImageId)
+        const imgIndex = generatedImages.value.findIndex(img => img.id === pendingRowKey)
         if (imgIndex === -1) return
         
         if (data.success && data.task_id) {
           generatedImages.value[imgIndex]!.taskId = data.task_id
           await saveHistory()
-          startPolling(newImageId, data.task_id)
+          startPolling(pendingRowKey, data.task_id)
         } else {
           generatedImages.value[imgIndex]!.error = data.error || '任务提交失败'
           generatedImages.value[imgIndex]!.loading = false
@@ -182,6 +191,9 @@ export function useGenerateHistory(currentMode: Ref<GenerateMode>) {
           prompt: form.prompt,
           size: computedSize,
           model: form.imageModel,
+          ratio: form.ratio,
+          resolution: form.sizeLevel,
+          type: isI2I ? 'i2i' : 't2i',
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           reference_image_list: form.referenceMedia.filter((m: any) => m.type === 'image').map((m: any) => m.url).length > 0 
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -189,8 +201,12 @@ export function useGenerateHistory(currentMode: Ref<GenerateMode>) {
             : undefined
         })
 
-        const imgIndex = generatedImages.value.findIndex(img => img.id === newImageId)
+        const imgIndex = generatedImages.value.findIndex(img => img.id === pendingRowKey)
         if (imgIndex === -1) return
+
+        if (typeof data.history_id === 'string' && data.history_id.length > 0) {
+          generatedImages.value[imgIndex]!.id = data.history_id
+        }
         
         if (data.success) {
           generatedImages.value[imgIndex]!.url = data.image_url
@@ -207,7 +223,7 @@ export function useGenerateHistory(currentMode: Ref<GenerateMode>) {
           ? '请求超时：生成较慢，请稍后重试'
           : (err?.message || '网络错误')
           
-      const imgIndex = generatedImages.value.findIndex(img => img.id === newImageId)
+      const imgIndex = generatedImages.value.findIndex(img => img.id === pendingRowKey)
       if (imgIndex !== -1) {
         generatedImages.value[imgIndex]!.error = msg
         generatedImages.value[imgIndex]!.loading = false
@@ -224,8 +240,29 @@ export function useGenerateHistory(currentMode: Ref<GenerateMode>) {
   }
 
   async function deleteImage(id: string) {
-    generatedImages.value = generatedImages.value.filter(img => img.id !== id)
-    await saveHistory()
+    try {
+      if (currentMode.value === 'image') {
+        const resp = await deleteImageHistoryItemApi(id)
+        if (!resp.ok) {
+          const err = await resp.json().catch(() => null)
+          const d = err?.detail
+          let msg = '删除失败'
+          if (typeof d === 'string') msg = d
+          else if (Array.isArray(d))
+            msg = d.map((x: { msg?: string }) => x.msg).filter(Boolean).join('; ') || msg
+          else msg = `HTTP ${resp.status}`
+          ElMessage.error(msg)
+          return
+        }
+      }
+      generatedImages.value = generatedImages.value.filter(img => img.id !== id)
+      if (currentMode.value === 'video') {
+        await saveHistory()
+      }
+    } catch (e) {
+      console.error('deleteImage failed', e)
+      ElMessage.error('删除失败')
+    }
   }
 
   function clearPolling() {
