@@ -10,12 +10,12 @@ WORKDIR /app
 # electron 的 postinstall 下载二进制时使用该镜像（不走 npm registry）
 ENV ELECTRON_MIRROR=https://repo.huaweicloud.com/electron/
 
-# 设置 npm/pnpm 镜像源，并安装 pnpm（避免 corepack 拉取 pnpm tarball 失败）
+# 设置 npm/pnpm 镜像源；固定 pnpm 9.x，避免 pnpm 10 默认 strict 构建策略在 CI 报 ERR_PNPM_IGNORED_BUILDS
 RUN npm config set registry https://repo.huaweicloud.com/repository/npm/ && \
-    npm install -g pnpm && \
+    npm install -g pnpm@9.15.9 && \
     pnpm config set registry https://repo.huaweicloud.com/repository/npm/
 
-COPY package.json pnpm-lock.yaml ./
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile
 
 COPY . .
