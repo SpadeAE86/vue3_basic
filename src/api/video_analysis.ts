@@ -44,14 +44,26 @@ export async function analyzeVideoApi(
   if (opts?.carModel) form.append('car_model', opts.carModel)
 
   const controller = new AbortController()
-  const t = window.setTimeout(() => controller.abort(), 5 * 60_000)
+  const t = window.setTimeout(() => controller.abort(), 12 * 60_000)
   try {
     const resp = await fetch(`${API_BASE}/video-analysis`, {
       method: 'POST',
       body: form,
       signal: controller.signal,
     })
-    return await resp.json()
+    const raw = await resp.text()
+    if (!raw.trim()) {
+      throw new Error(
+        `空响应 HTTP ${resp.status}（多为网关超时或未转发到后端，请查 Nginx proxy_read_timeout / 入口 LB；上传大文件还需 client_max_body_size）`,
+      )
+    }
+    try {
+      return JSON.parse(raw) as Record<string, unknown>
+    } catch {
+      throw new Error(
+        `非 JSON 响应 HTTP ${resp.status}: ${raw.slice(0, 240).replace(/\s+/g, ' ')}`,
+      )
+    }
   } finally {
     window.clearTimeout(t)
   }
