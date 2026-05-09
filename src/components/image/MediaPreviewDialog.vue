@@ -103,7 +103,7 @@ function close() {
   position: absolute;
   top: 14px;
   right: 14px;
-  z-index: 20;·
+  z-index: 20;
   display: flex;
   align-items: center;
   justify-content: center;
