@@ -54,7 +54,7 @@ export async function analyzeVideoApi(
     const raw = await resp.text()
     if (!raw.trim()) {
       throw new Error(
-        `空响应 HTTP ${resp.status}（多为网关超时或未转发到后端，请查 Nginx proxy_read_timeout / 入口 LB；上传大文件还需 client_max_body_size）`,
+        `服务器忙或分析超时 (HTTP ${resp.status})。请检查视频是否过大，或稍后在历史记录中查看结果。`,
       )
     }
     try {
