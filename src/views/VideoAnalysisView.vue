@@ -129,8 +129,11 @@ function onFrameSelect(id: string, idx: number) {
   activeFrameIndex[k] = n
 }
 
-const handleFileChange = (uploadFile: any, uploadFiles: any[]) => {
-  selectedFiles.value = uploadFiles.map(f => f.raw)
+const handleFileChange = (uploadFile: any) => {
+  // 只保留当前选择的这一个文件，修复多次选择累积的 bug
+  if (uploadFile && uploadFile.raw) {
+    selectedFiles.value = [uploadFile.raw]
+  }
 }
 
 function formatTime(seconds: number) {
@@ -783,7 +786,7 @@ onBeforeUnmount(() => {
             action="#"
             :auto-upload="false"
             :show-file-list="false"
-            multiple
+            :limit="1"
             @change="handleFileChange"
             accept="video/*"
           >
