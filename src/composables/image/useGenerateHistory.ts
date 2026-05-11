@@ -1,6 +1,7 @@
 import { ref, onUnmounted, type Ref } from 'vue'
 import type { GeneratedItem, GenerateMode } from '@/types/generate'
 import { ElMessage } from 'element-plus'
+import { generateUUID } from '@/utils/browser'
 import {
   loadHistoryApi,
   saveHistoryApi,
@@ -131,7 +132,7 @@ export function useGenerateHistory(currentMode: Ref<GenerateMode>) {
     generating.value = true
     
     // 仅用于本次请求内在列表中定位行；持久化 id 必须与接口返回的 history_id 一致
-    const pendingRowKey = crypto.randomUUID()
+    const pendingRowKey = generateUUID()
     const isI2I = form.referenceMedia.length > 0
     const now = new Date()
     const timeStr = `${now.getMonth() + 1}-${now.getDate()} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`

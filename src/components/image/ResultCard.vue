@@ -2,6 +2,7 @@
 import { ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import type { GeneratedItem } from '@/types/generate'
+import { copyToClipboard } from '@/utils/browser'
 import MediaPreviewDialog from './MediaPreviewDialog.vue'
 
 const props = defineProps<{
@@ -28,10 +29,10 @@ const emit = defineEmits<{
 }>()
 
 async function copyPrompt(prompt: string) {
-  try {
-    await navigator.clipboard.writeText(prompt)
+  const success = await copyToClipboard(prompt)
+  if (success) {
     ElMessage.success('提示词已复制')
-  } catch {
+  } else {
     ElMessage.error('复制失败')
   }
 }

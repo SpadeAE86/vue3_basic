@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { ElMessage } from 'element-plus'
+import { copyToClipboard } from '@/utils/browser'
 
 type TagType = 'primary' | 'success' | 'warning' | 'danger' | 'info'
 type TagEffect = 'dark' | 'light' | 'plain'
@@ -65,10 +66,10 @@ function isHighlighted(tag: string): boolean {
 
 async function copy(text: string) {
   if (!props.clickable) return
-  try {
-    await navigator.clipboard.writeText(text)
+  const success = await copyToClipboard(text)
+  if (success) {
     ElMessage.success('已复制')
-  } catch {
+  } else {
     ElMessage.warning('复制失败')
   }
 }
