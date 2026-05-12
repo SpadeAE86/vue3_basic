@@ -67,7 +67,22 @@ onUnmounted(() => {
           <template #title>视频分析</template>
         </el-menu-item>
 
-        <el-sub-menu index="/tools">
+        <el-sub-menu index="menu-task-board">
+          <template #title>
+            <el-icon><i-ep-grid /></el-icon>
+            <span>任务看板</span>
+          </template>
+          <el-menu-item index="/task-board/image">
+            <el-icon><i-ep-picture /></el-icon>
+            <template #title>图像生成</template>
+          </el-menu-item>
+          <el-menu-item index="/task-board/video-analysis">
+            <el-icon><i-ep-video-camera /></el-icon>
+            <template #title>视频分析</template>
+          </el-menu-item>
+        </el-sub-menu>
+
+        <el-sub-menu index="menu-tools">
           <template #title>
             <el-icon><i-ep-setting /></el-icon>
             <span>工具</span>

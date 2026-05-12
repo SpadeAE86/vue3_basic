@@ -40,7 +40,16 @@ export async function saveHistoryApi(mode: GenerateMode, history: any[]) {
 }
 
 export async function getVideoStatusApi(taskId: string) {
-  const resp = await fetch(`${API_BASE}/video/status/${taskId}`)
+  const resp = await fetch(`${API_BASE}/video/status/${encodeURIComponent(taskId)}`)
+  return resp.json()
+}
+
+/** 异步生图：轮询 DB 中的任务状态（与 POST /image 返回的 task_id 对应） */
+export async function getImageStatusApi(taskId: string) {
+  const resp = await fetch(`${API_BASE}/image/status/${encodeURIComponent(taskId)}`)
+  if (!resp.ok) {
+    return { success: false, error: `HTTP ${resp.status}`, status: 'unknown', url: null }
+  }
   return resp.json()
 }
 

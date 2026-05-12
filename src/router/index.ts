@@ -35,6 +35,22 @@ const router = createRouter({
       meta: { title: '提示词对比' },
     },
     {
+      path: '/task-board',
+      redirect: { name: 'task-board-image' },
+    },
+    {
+      path: '/task-board/image',
+      name: 'task-board-image',
+      component: () => import('../views/TaskBoardView.vue'),
+      meta: { title: '图像生成任务', boardSection: 'image' },
+    },
+    {
+      path: '/task-board/video-analysis',
+      name: 'task-board-video-analysis',
+      component: () => import('../views/TaskBoardView.vue'),
+      meta: { title: '视频分析任务', boardSection: 'video' },
+    },
+    {
       path: '/video-analysis',
       name: 'video-analysis',
       component: () => import('../views/VideoAnalysisView.vue'),

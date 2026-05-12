@@ -1,6 +1,6 @@
 import { ref, onUnmounted, type Ref } from 'vue'
 import type { GeneratedItem, GenerateMode } from '@/types/generate'
-import { loadHistoryApi, saveHistoryApi, getVideoStatusApi, generateVideoApi, generateImageApi } from '@/api/generate'
+import { loadHistoryApi, saveHistoryApi, getVideoStatusApi, getImageStatusApi, generateVideoApi, generateImageApi } from '@/api/generate'
 
 export function useGenerateHistory(currentMode: Ref<GenerateMode>) {
   const generatedImages = ref<GeneratedItem[]>([])
@@ -24,7 +24,11 @@ export function useGenerateHistory(currentMode: Ref<GenerateMode>) {
         
         generatedImages.value.forEach(item => {
           if (item.loading && item.taskId) {
-            startPolling(item.id, item.taskId)
+            if (currentMode.value === 'video') {
+              startVideoPolling(item.id, item.taskId)
+            } else {
+              startImagePolling(item.taskId)
+            }
           }
         })
       }
@@ -62,19 +66,19 @@ export function useGenerateHistory(currentMode: Ref<GenerateMode>) {
     }
   }
 
-  async function startPolling(imgId: string, taskId: string) {
-    if (pollingIntervals[imgId]) {
-      clearInterval(pollingIntervals[imgId])
+  async function startVideoPolling(localRowId: string, taskId: string) {
+    if (pollingIntervals[localRowId]) {
+      clearInterval(pollingIntervals[localRowId])
     }
     
     const startTime = Date.now()
     const MAX_POLLING_TIME = 15 * 60 * 1000
     
-    pollingIntervals[imgId] = window.setInterval(async () => {
+    pollingIntervals[localRowId] = window.setInterval(async () => {
       try {
         if (Date.now() - startTime > MAX_POLLING_TIME) {
-          clearInterval(pollingIntervals[imgId])
-          const imgIndex = generatedImages.value.findIndex(img => img.id === imgId)
+          clearInterval(pollingIntervals[localRowId])
+          const imgIndex = generatedImages.value.findIndex(img => img.id === localRowId)
           if (imgIndex !== -1) {
             generatedImages.value[imgIndex]!.error = '任务超时：生成时间过长'
             generatedImages.value[imgIndex]!.loading = false
@@ -85,9 +89,9 @@ export function useGenerateHistory(currentMode: Ref<GenerateMode>) {
 
         const data = await getVideoStatusApi(taskId)
         
-        const imgIndex = generatedImages.value.findIndex(img => img.id === imgId)
+        const imgIndex = generatedImages.value.findIndex(img => img.id === localRowId)
         if (imgIndex === -1) {
-          clearInterval(pollingIntervals[imgId])
+          clearInterval(pollingIntervals[localRowId])
           return
         }
         
@@ -96,24 +100,102 @@ export function useGenerateHistory(currentMode: Ref<GenerateMode>) {
           if (status === 'succeed' || status === 'succeeded') {
             generatedImages.value[imgIndex]!.url = data.data.video_url
             generatedImages.value[imgIndex]!.loading = false
-            clearInterval(pollingIntervals[imgId])
+            clearInterval(pollingIntervals[localRowId])
             await saveHistory()
           } else if (status === 'failed') {
             generatedImages.value[imgIndex]!.error = data.data.error || '视频生成失败'
             generatedImages.value[imgIndex]!.loading = false
-            clearInterval(pollingIntervals[imgId])
+            clearInterval(pollingIntervals[localRowId])
             await saveHistory()
           }
         } else {
           generatedImages.value[imgIndex]!.error = data.error || '查询状态失败'
           generatedImages.value[imgIndex]!.loading = false
-          clearInterval(pollingIntervals[imgId])
+          clearInterval(pollingIntervals[localRowId])
           await saveHistory()
         }
       } catch (e) {
         console.error('Polling error:', e)
       }
     }, 10000)
+  }
+
+  /** 异步生图：轮询 /image/status/{taskId}，与视频接口路径与响应结构不同 */
+  function _findImageIndexByTaskId(taskId: string): number {
+    return generatedImages.value.findIndex(
+      img => img.taskId === taskId || img.id === taskId,
+    )
+  }
+
+  async function startImagePolling(taskId: string) {
+    const key = `img:${taskId}`
+    if (pollingIntervals[key]) {
+      clearInterval(pollingIntervals[key])
+    }
+
+    const startTime = Date.now()
+    const MAX_POLLING_TIME = 15 * 60 * 1000
+
+    const tick = async () => {
+      try {
+        if (Date.now() - startTime > MAX_POLLING_TIME) {
+          clearInterval(pollingIntervals[key])
+          const imgIndex = _findImageIndexByTaskId(taskId)
+          if (imgIndex !== -1) {
+            generatedImages.value[imgIndex]!.error = '任务超时：生成时间过长'
+            generatedImages.value[imgIndex]!.loading = false
+            await saveHistory()
+          }
+          return
+        }
+
+        const data = await getImageStatusApi(taskId)
+        const imgIndex = _findImageIndexByTaskId(taskId)
+        if (imgIndex === -1) {
+          clearInterval(pollingIntervals[key])
+          return
+        }
+
+        if (!data.success) {
+          generatedImages.value[imgIndex]!.error = (data as { error?: string }).error || '查询状态失败'
+          generatedImages.value[imgIndex]!.loading = false
+          clearInterval(pollingIntervals[key])
+          await saveHistory()
+          return
+        }
+
+        const st = String((data as { status?: string }).status || '').toLowerCase()
+        const url = (data as { url?: string | null }).url
+
+        if (st === 'failed' || st === 'error') {
+          generatedImages.value[imgIndex]!.error =
+            (data as { error?: string | null }).error || '图片生成失败'
+          generatedImages.value[imgIndex]!.loading = false
+          clearInterval(pollingIntervals[key])
+          await saveHistory()
+          return
+        }
+
+        if (url) {
+          generatedImages.value[imgIndex]!.url = url
+          generatedImages.value[imgIndex]!.loading = false
+          clearInterval(pollingIntervals[key])
+          await saveHistory()
+          return
+        }
+
+        if (st === 'success' || st === 'succeed' || st === 'succeeded') {
+          generatedImages.value[imgIndex]!.loading = false
+          clearInterval(pollingIntervals[key])
+          await saveHistory()
+        }
+      } catch (e) {
+        console.error('Image polling error:', e)
+      }
+    }
+
+    pollingIntervals[key] = window.setInterval(tick, 3000)
+    void tick()
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -171,7 +253,7 @@ export function useGenerateHistory(currentMode: Ref<GenerateMode>) {
         if (data.success && data.task_id) {
           generatedImages.value[imgIndex]!.taskId = data.task_id
           await saveHistory()
-          startPolling(newImageId, data.task_id)
+          startVideoPolling(newImageId, data.task_id)
         } else {
           generatedImages.value[imgIndex]!.error = data.error || '任务提交失败'
           generatedImages.value[imgIndex]!.loading = false
@@ -193,11 +275,24 @@ export function useGenerateHistory(currentMode: Ref<GenerateMode>) {
         if (imgIndex === -1) return
         
         if (data.success) {
-          generatedImages.value[imgIndex]!.url = data.image_url
+          if (data.task_id) {
+            generatedImages.value[imgIndex]!.taskId = data.task_id
+            generatedImages.value[imgIndex]!.id = data.task_id
+          }
+          if (data.image_url) {
+            generatedImages.value[imgIndex]!.url = data.image_url
+            generatedImages.value[imgIndex]!.loading = false
+          } else if (data.task_id) {
+            // 异步：仅拿到 task_id，需轮询 /image/status 直至 success + url
+            generatedImages.value[imgIndex]!.loading = true
+            startImagePolling(data.task_id)
+          } else {
+            generatedImages.value[imgIndex]!.loading = false
+          }
         } else {
           generatedImages.value[imgIndex]!.error = data.error || '生成失败'
+          generatedImages.value[imgIndex]!.loading = false
         }
-        generatedImages.value[imgIndex]!.loading = false
         await saveHistory()
       }
     } catch (e: unknown) {
