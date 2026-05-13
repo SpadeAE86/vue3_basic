@@ -24,3 +24,9 @@ a,
     background-color: hsla(160, 100%, 37%, 0.2);
   }
 }
+
+/* Element Plus 大图预览：预览图圆角与阴影，贴近卡片/弹窗风格 */
+.el-image-viewer__canvas .el-image-viewer__img {
+  border-radius: 12px;
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.5);
+}

@@ -26,7 +26,15 @@ function onMediaAreaClick(e: MouseEvent) {
 
 const emit = defineEmits<{
   (e: 'delete', id: string): void
+  (e: 'retry', id: string): void
 }>()
+
+/** 大图预览内提示词条显隐（关闭预览再打开会重置为显示） */
+const viewerPromptVisible = ref(true)
+
+function onImagePreviewShow() {
+  viewerPromptVisible.value = true
+}
 
 async function copyPrompt(prompt: string) {
   const success = await copyToClipboard(prompt)
@@ -84,9 +92,18 @@ function pauseVideo(e: Event) {
       <div v-else-if="item.error" class="error-wrapper">
         <el-icon :size="40" color="#f56c6c"><i-ep-warning-filled /></el-icon>
         <span class="error-text">{{ item.error }}</span>
-        <!-- 新增：失败状态下的删除按钮 -->
-        <div class="error-delete-btn" @click="emit('delete', item.id)" title="删除记录">
-          <el-icon><i-ep-delete /></el-icon>
+        <div class="error-actions">
+          <el-tooltip v-if="!item.type.includes('v')" content="重试生成" placement="top">
+            <div
+              class="error-retry-btn"
+              @click.stop="emit('retry', item.id)"
+            >
+              <el-icon><i-ep-refresh-right /></el-icon>
+            </div>
+          </el-tooltip>
+          <div class="error-delete-btn" @click.stop="emit('delete', item.id)" title="删除记录">
+            <el-icon><i-ep-delete /></el-icon>
+          </div>
         </div>
       </div>
       
@@ -100,7 +117,55 @@ function pauseVideo(e: Event) {
         @keydown.space.prevent="openPreview"
       >
         <video v-if="item.type.includes('v')" :src="item.url" class="generated-image" loop muted playsinline></video>
-        <img v-else :src="item.url" class="generated-image" alt="generated" />
+        <el-image
+          v-else
+          :src="item.url"
+          fit="contain"
+          class="generated-image-el"
+          :preview-src-list="item.url ? [item.url] : []"
+          preview-teleported
+          @show="onImagePreviewShow"
+        >
+          <!-- 预览层插槽：与缩放/拖拽共存；右上角关闭与底部旋转/缩放等为 Element Plus 内置 -->
+          <template #viewer>
+            <div
+              class="result-preview-prompt-dock"
+              @mousedown.stop
+              @touchstart.stop
+            >
+              <div v-show="viewerPromptVisible" class="result-preview-prompt-inner">
+                <div class="result-preview-prompt-head">
+                  <span class="result-preview-label">提示词</span>
+                  <el-button
+                    type="info"
+                    link
+                    size="small"
+                    class="result-preview-toggle-link"
+                    @click.stop="viewerPromptVisible = false"
+                  >
+                    隐藏
+                  </el-button>
+                </div>
+                <p class="result-preview-text">{{ item.prompt?.trim() ? item.prompt : '—' }}</p>
+                <div class="result-preview-actions">
+                  <el-button type="primary" link size="small" @click.stop="copyPrompt(item.prompt)">
+                    复制全文
+                  </el-button>
+                </div>
+              </div>
+              <el-button
+                v-show="!viewerPromptVisible"
+                type="primary"
+                round
+                size="small"
+                class="result-preview-restore-btn"
+                @click.stop="viewerPromptVisible = true"
+              >
+                显示提示词
+              </el-button>
+            </div>
+          </template>
+        </el-image>
         
         <!-- Hover Overlay -->
         <div class="result-overlay">
@@ -203,9 +268,6 @@ function pauseVideo(e: Event) {
 }
 
 .error-delete-btn {
-  position: absolute;
-  top: 10px;
-  right: 10px;
   width: 28px;
   height: 28px;
   border-radius: 50%;
@@ -220,6 +282,33 @@ function pauseVideo(e: Event) {
 
 .error-delete-btn:hover {
   background: #f56c6c;
+  color: white;
+}
+
+.error-actions {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.error-retry-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: rgba(64, 158, 255, 0.12);
+  color: #409eff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.error-retry-btn:hover {
+  background: #409eff;
   color: white;
 }
 
@@ -251,6 +340,25 @@ function pauseVideo(e: Event) {
   border-radius: 0 0 12px 12px;
 }
 
+/* 与任务详情里一致：随比例撑满宽度，点击可走 Element Plus 大图预览 */
+.generated-image-el {
+  width: 100%;
+  display: block;
+  border-radius: 0 0 12px 12px;
+}
+
+.generated-image-el :deep(.el-image__wrapper) {
+  width: 100% !important;
+}
+
+.generated-image-el :deep(.el-image__inner) {
+  position: relative;
+  width: 100% !important;
+  height: auto !important;
+  vertical-align: top;
+  border-radius: 0 0 12px 12px;
+}
+
 .result-overlay {
   position: absolute;
   top: 0;
@@ -264,16 +372,17 @@ function pauseVideo(e: Event) {
   flex-direction: column;
   justify-content: space-between;
   padding: 16px;
+  /* 蒙层不抢点击：大图预览点在中间区域；仅底部工具条接收 */
   pointer-events: none;
   border-radius: 0 0 12px 12px;
 }
 
 .result-card:hover .result-overlay {
   opacity: 1;
-  pointer-events: auto;
 }
 
 .overlay-bottom {
+  pointer-events: auto;
   display: flex;
   justify-content: space-between;
   align-items: flex-end;
@@ -312,5 +421,76 @@ function pauseVideo(e: Event) {
 
 .icon-btn.danger:hover {
   background: rgba(245, 108, 108, 0.8);
+}
+
+/* 大图预览内嵌：固定底部，留白避开 Element Plus 底部工具条 */
+.result-preview-prompt-dock {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 2;
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 0 16px;
+  box-sizing: border-box;
+}
+
+.result-preview-prompt-inner {
+  pointer-events: auto;
+  width: min(100%, 720px);
+  max-height: min(30vh, 240px);
+  overflow-y: auto;
+  margin-bottom: 100px;
+  padding: 12px 14px 10px;
+  background: rgba(30, 30, 38, 0.45);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.25);
+}
+
+.result-preview-prompt-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.result-preview-toggle-link {
+  flex-shrink: 0;
+  color: rgba(255, 255, 255, 0.75) !important;
+}
+
+.result-preview-label {
+  font-size: 11px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.55);
+  letter-spacing: 0.06em;
+}
+
+.result-preview-restore-btn {
+  pointer-events: auto;
+  margin-bottom: 100px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+}
+
+.result-preview-text {
+  font-size: 13px;
+  line-height: 1.55;
+  color: rgba(255, 255, 255, 0.92);
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0 0 6px;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+}
+
+.result-preview-actions {
+  display: flex;
+  justify-content: flex-end;
 }
 </style>

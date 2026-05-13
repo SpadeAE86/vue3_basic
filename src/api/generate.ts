@@ -39,10 +39,10 @@ export async function saveHistoryApi(mode: GenerateMode, history: any[]) {
   })
 }
 
-/** 图片模式：从 MySQL 删除一条历史（POST 全量不会删库，删除须调此接口） */
+/** 图片模式：从 MySQL 删除一条历史（POST 全量不会删库）；视频生成暂仍走 JSON 全量 POST */
 export async function deleteImageHistoryItemApi(itemId: string) {
   return fetch(`${API_BASE}/image/history/${encodeURIComponent(itemId)}`, {
-    method: 'DELETE'
+    method: 'DELETE',
   })
 }
 

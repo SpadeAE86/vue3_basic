@@ -1,6 +1,6 @@
-import { ref, onUnmounted, type Ref } from 'vue'
-import type { GeneratedItem, GenerateMode } from '@/types/generate'
+import { ref, onMounted, onUnmounted, type Ref } from 'vue'
 import { ElMessage } from 'element-plus'
+import type { GeneratedItem, GenerateMode } from '@/types/generate'
 import { generateUUID } from '@/utils/browser'
 import {
   loadHistoryApi,
@@ -11,7 +11,15 @@ import {
   generateVideoApi,
   generateImageApi,
 } from '@/api/generate'
+import { retryImageHistoryTask } from '@/api/taskBoard'
 
+/** 任务看板等处重试成功后通知实验室页，使同一 id 的卡片进入转圈 + 轮询（与 DB 异步任务对齐）。 */
+export const IMAGEGEN_RETRY_STARTED_EVENT = 'imagegen:retry-started'
+
+/**
+ * 生图/视频生成历史与轮询。
+ * 未来若视频也改为「任务中心 + DB 状态」，可复用：status→loading、重试接口、以及下面的 CustomEvent 同步模式。
+ */
 export function useGenerateHistory(currentMode: Ref<GenerateMode>) {
   const generatedImages = ref<GeneratedItem[]>([])
   const generating = ref(false)
@@ -19,6 +27,26 @@ export function useGenerateHistory(currentMode: Ref<GenerateMode>) {
 
   onUnmounted(() => {
     Object.values(pollingIntervals).forEach(clearInterval)
+    window.removeEventListener(IMAGEGEN_RETRY_STARTED_EVENT, onImageRetryStartedFromBoard as EventListener)
+  })
+
+  /** 任务看板触发重试后，本页若在单体模式下已展示该卡则同步为 loading 并续轮询 */
+  function onImageRetryStartedFromBoard(e: Event) {
+    if (currentMode.value !== 'image') return
+    const id = (e as CustomEvent<{ id: string }>).detail?.id
+    if (!id) return
+    const idx = generatedImages.value.findIndex((img) => img.id === id || img.taskId === id)
+    if (idx === -1) return
+    const row = generatedImages.value[idx]!
+    if (row.type.includes('v')) return
+    row.loading = true
+    row.error = null
+    row.url = null
+    startImagePolling(id)
+  }
+
+  onMounted(() => {
+    window.addEventListener(IMAGEGEN_RETRY_STARTED_EVENT, onImageRetryStartedFromBoard as EventListener)
   })
 
   async function loadHistory() {
@@ -33,12 +61,13 @@ export function useGenerateHistory(currentMode: Ref<GenerateMode>) {
         }))
         
         generatedImages.value.forEach(item => {
-          if (item.loading && item.taskId) {
-            if (currentMode.value === 'video') {
-              startVideoPolling(item.id, item.taskId)
-            } else {
-              startImagePolling(item.taskId)
-            }
+          if (!item.loading) return
+          const pollKey = currentMode.value === 'video' ? item.taskId : (item.taskId || item.id)
+          if (!pollKey) return
+          if (currentMode.value === 'video') {
+            startVideoPolling(item.id, pollKey)
+          } else {
+            startImagePolling(pollKey)
           }
         })
       }
@@ -332,8 +361,14 @@ export function useGenerateHistory(currentMode: Ref<GenerateMode>) {
   }
 
   async function clearAll() {
-    generatedImages.value = []
-    await saveHistory()
+    if (currentMode.value === 'image') {
+      const ids = generatedImages.value.map((img) => img.id)
+      generatedImages.value = []
+      await Promise.all(ids.map((id) => deleteImageHistoryItemApi(id)))
+    } else {
+      generatedImages.value = []
+      await saveHistory()
+    }
   }
 
   async function deleteImage(id: string) {
@@ -367,6 +402,51 @@ export function useGenerateHistory(currentMode: Ref<GenerateMode>) {
     pollingIntervals = {}
   }
 
+  /** 失败生图：与服务端 POST /image/history/{id}/retry 一致，复用同一行 id */
+  async function retryImageTask(rowId: string) {
+    if (currentMode.value !== 'image') {
+      ElMessage.warning('当前为视频模式，暂不支持在此重试')
+      return
+    }
+    const idx = generatedImages.value.findIndex((img) => img.id === rowId || img.taskId === rowId)
+    if (idx === -1) {
+      ElMessage.warning('列表中找不到该任务')
+      return
+    }
+    const row = generatedImages.value[idx]!
+    if (row.type.includes('v')) {
+      ElMessage.warning('视频任务请使用任务看板或后续统一入口重试')
+      return
+    }
+    if (row.loading) {
+      ElMessage.warning('任务进行中')
+      return
+    }
+    if (!row.error) {
+      ElMessage.warning('仅失败任务可重试')
+      return
+    }
+
+    const canonicalId = row.id
+    row.loading = true
+    row.error = null
+    row.url = null
+    try {
+      const res = (await retryImageHistoryTask(canonicalId)) as { success?: boolean; error?: string }
+      if (!res?.success) {
+        row.loading = false
+        row.error = typeof res?.error === 'string' ? res.error : '重试失败'
+        return
+      }
+      startImagePolling(canonicalId)
+      ElMessage.success('已重新排队生成')
+      await saveHistory()
+    } catch (e: unknown) {
+      row.loading = false
+      row.error = (e as Error)?.message || '重试请求失败'
+    }
+  }
+
   return {
     generatedImages,
     generating,
@@ -375,6 +455,7 @@ export function useGenerateHistory(currentMode: Ref<GenerateMode>) {
     generateImages,
     clearAll,
     deleteImage,
-    clearPolling
+    clearPolling,
+    retryImageTask,
   }
 }

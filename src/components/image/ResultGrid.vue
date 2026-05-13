@@ -8,6 +8,7 @@ defineProps<{
 
 const emit = defineEmits<{
   (e: 'delete', id: string): void
+  (e: 'retry', id: string): void
 }>()
 
 function getModelLabel(model: string) {
@@ -24,6 +25,7 @@ function getModelLabel(model: string) {
       :item="img"
       :model-label="getModelLabel(img.model)"
       @delete="emit('delete', $event)"
+      @retry="emit('retry', $event)"
     />
   </div>
 </template>

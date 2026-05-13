@@ -1,12 +1,15 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
+import { ElMessage } from 'element-plus'
 import {
   fetchImageHistoryForBoard,
   fetchVideoAnalysisHistoryForBoard,
   fetchImageTaskDetail,
   fetchVideoAnalysisTaskDetail,
+  retryImageHistoryTask,
 } from '@/api/taskBoard'
+import { IMAGEGEN_RETRY_STARTED_EVENT } from '@/composables/image/useGenerateHistory'
 
 type BoardSection = 'image' | 'video'
 
@@ -32,6 +35,28 @@ const detailVisible = ref(false)
 const detailLoading = ref(false)
 const detailPayload = ref<Record<string, unknown> | null>(null)
 
+/** 有进行中的生图/视频分析任务时每秒 +1，驱动「耗时」列用当前时间 - 本轮开始时间/创建时间动态展示（仅小表） */
+const durationTick = ref(0)
+let durationLiveTimer: ReturnType<typeof setInterval> | null = null
+
+function syncRunningDurationTimer() {
+  const need =
+    (boardSection.value === 'image' &&
+      imageRows.value.some((r) => rowStatusNorm(r, 'image') === 'running')) ||
+    (boardSection.value === 'video' &&
+      videoRows.value.some((r) => rowStatusNorm(r, 'video') === 'running'))
+  if (need) {
+    if (!durationLiveTimer) {
+      durationLiveTimer = setInterval(() => {
+        durationTick.value++
+      }, 1000)
+    }
+  } else if (durationLiveTimer) {
+    clearInterval(durationLiveTimer)
+    durationLiveTimer = null
+  }
+}
+
 function pickRows(): Record<string, unknown>[] {
   return boardSection.value === 'image' ? imageRows.value : videoRows.value
 }
@@ -50,17 +75,49 @@ function rowUpdatedAt(r: Record<string, unknown>): Date | null {
   return Number.isNaN(d.getTime()) ? null : d
 }
 
-function rowDurationLabel(r: Record<string, unknown>): string {
-  const ca = rowCreatedAt(r)
-  const ua = rowUpdatedAt(r)
-  if (!ca || !ua) return '—'
-  const ms = ua.getTime() - ca.getTime()
+/** 本轮异步运行开始时间（重试时会刷新）；生图看板耗时时优先于 created_at */
+function rowCurrentRunStartedAt(r: Record<string, unknown>): Date | null {
+  const v = r.current_run_started_at as string | undefined
+  if (!v) return null
+  const d = new Date(v)
+  return Number.isNaN(d.getTime()) ? null : d
+}
+
+function rowDurationStartForImage(r: Record<string, unknown>): Date | null {
+  return rowCurrentRunStartedAt(r) ?? rowCreatedAt(r)
+}
+
+function _formatDurationMs(ms: number): string {
   if (ms < 0) return '—'
   if (ms < 1000) return `${ms} ms`
   if (ms < 60_000) return `${(ms / 1000).toFixed(2)} s`
   const m = Math.floor(ms / 60_000)
   const s = ((ms % 60_000) / 1000).toFixed(0)
   return `${m} 分 ${s} 秒`
+}
+
+function rowDurationLabel(r: Record<string, unknown>, section: BoardSection): string {
+  if (section === 'image') {
+    const start = rowDurationStartForImage(r)
+    if (!start) return '—'
+    if (rowStatusNorm(r, section) === 'running') {
+      void durationTick.value
+      return _formatDurationMs(Date.now() - start.getTime())
+    }
+    const ua = rowUpdatedAt(r)
+    if (!ua) return '—'
+    return _formatDurationMs(ua.getTime() - start.getTime())
+  }
+
+  const ca = rowCreatedAt(r)
+  if (!ca) return '—'
+  if (rowStatusNorm(r, section) === 'running') {
+    void durationTick.value
+    return _formatDurationMs(Date.now() - ca.getTime())
+  }
+  const ua = rowUpdatedAt(r)
+  if (!ua) return '—'
+  return _formatDurationMs(ua.getTime() - ca.getTime())
 }
 
 function rowStatusNorm(r: Record<string, unknown>, section: BoardSection): string {
@@ -108,21 +165,31 @@ watch([boardSection, statusFilter, dateRange, workspaceFilter], () => {
   currentPage.value = 1
 })
 
-async function loadImage() {
-  const data = await fetchImageHistoryForBoard()
-  if (data?.success && Array.isArray(data.history)) {
-    imageRows.value = data.history as Record<string, unknown>[]
-  } else {
-    imageRows.value = []
+async function loadImage(silent = false) {
+  if (!silent) loading.value = true
+  try {
+    const data = await fetchImageHistoryForBoard()
+    if (data?.success && Array.isArray(data.history)) {
+      imageRows.value = data.history as Record<string, unknown>[]
+    } else {
+      imageRows.value = []
+    }
+  } finally {
+    if (!silent) loading.value = false
   }
 }
 
-async function loadVideo() {
-  const data = await fetchVideoAnalysisHistoryForBoard(workspaceFilter.value || undefined)
-  if (data?.success && Array.isArray(data.history)) {
-    videoRows.value = data.history as Record<string, unknown>[]
-  } else {
-    videoRows.value = []
+async function loadVideo(silent = false) {
+  if (!silent) loading.value = true
+  try {
+    const data = await fetchVideoAnalysisHistoryForBoard(workspaceFilter.value || undefined)
+    if (data?.success && Array.isArray(data.history)) {
+      videoRows.value = data.history as Record<string, unknown>[]
+    } else {
+      videoRows.value = []
+    }
+  } finally {
+    if (!silent) loading.value = false
   }
 }
 
@@ -140,6 +207,52 @@ async function refresh() {
 }
 
 onMounted(refresh)
+
+watch([boardSection, imageRows, videoRows], syncRunningDurationTimer, { deep: true })
+
+/** 当前看板存在「进行中」任务时定时拉取历史，避免后台已完成仍显示生成中 */
+let boardHistoryPollTimer: ReturnType<typeof setInterval> | null = null
+
+function syncBoardHistoryPoll() {
+  const section = boardSection.value
+  const imageRunning = imageRows.value.some((r) => rowStatusNorm(r, 'image') === 'running')
+  const videoRunning = videoRows.value.some((r) => rowStatusNorm(r, 'video') === 'running')
+  const needPoll =
+    (section === 'image' && imageRunning) || (section === 'video' && videoRunning)
+
+  if (needPoll && !boardHistoryPollTimer) {
+    const tick = async () => {
+      const s = boardSection.value
+      try {
+        if (s === 'image' && imageRows.value.some((r) => rowStatusNorm(r, 'image') === 'running')) {
+          await loadImage(true)
+        } else if (s === 'video' && videoRows.value.some((r) => rowStatusNorm(r, 'video') === 'running')) {
+          await loadVideo(true)
+        }
+      } catch {
+        /* 静默轮询失败不打断 */
+      }
+    }
+    void tick()
+    boardHistoryPollTimer = setInterval(tick, 3000)
+  } else if (!needPoll && boardHistoryPollTimer) {
+    clearInterval(boardHistoryPollTimer)
+    boardHistoryPollTimer = null
+  }
+}
+
+watch([boardSection, imageRows, videoRows], syncBoardHistoryPoll, { deep: true })
+
+onUnmounted(() => {
+  if (durationLiveTimer) {
+    clearInterval(durationLiveTimer)
+    durationLiveTimer = null
+  }
+  if (boardHistoryPollTimer) {
+    clearInterval(boardHistoryPollTimer)
+    boardHistoryPollTimer = null
+  }
+})
 
 watch(
   () => route.path,
@@ -213,6 +326,31 @@ async function openDetail(row: Record<string, unknown>) {
     detailPayload.value = { error: (e as Error)?.message || '请求失败' }
   } finally {
     detailLoading.value = false
+  }
+}
+
+const imageRetryingId = ref('')
+
+async function retryImageRow(row: Record<string, unknown>) {
+  const id = detailLookupKey(row)
+  if (!id) {
+    ElMessage.warning('缺少任务 ID')
+    return
+  }
+  imageRetryingId.value = id
+  try {
+    const res = (await retryImageHistoryTask(id)) as { success?: boolean; error?: string }
+    if (res?.success) {
+      ElMessage.success('已重新排队生成')
+      window.dispatchEvent(new CustomEvent(IMAGEGEN_RETRY_STARTED_EVENT, { detail: { id } }))
+      await loadImage(true)
+    } else {
+      ElMessage.error(typeof res?.error === 'string' ? res.error : '重试失败')
+    }
+  } catch (e: unknown) {
+    ElMessage.error((e as Error)?.message || '重试请求失败')
+  } finally {
+    imageRetryingId.value = ''
   }
 }
 
@@ -328,14 +466,25 @@ const detailResultImageUrl = computed(() => {
         </el-table-column>
         <el-table-column label="耗时" width="120" align="center">
           <template #default="{ row }">
-            {{ rowDurationLabel(row) }}
+            {{ rowDurationLabel(row, 'image') }}
           </template>
         </el-table-column>
         <el-table-column prop="model" label="模型" width="130" show-overflow-tooltip />
         <el-table-column prop="type" label="类型" width="72" />
-        <el-table-column label="操作" width="108" fixed="right" align="center">
+        <el-table-column label="操作" width="168" fixed="right" align="center">
           <template #default="{ row }">
-            <el-button type="primary" link @click="openDetail(row)">查看详情</el-button>
+            <div class="op-links">
+              <el-button type="primary" link @click="openDetail(row)">查看详情</el-button>
+              <el-button
+                v-if="rowStatusNorm(row, 'image') === 'failed'"
+                type="primary"
+                link
+                :loading="imageRetryingId === detailLookupKey(row)"
+                @click="retryImageRow(row)"
+              >
+                重试
+              </el-button>
+            </div>
           </template>
         </el-table-column>
       </el-table>
@@ -352,9 +501,31 @@ const detailResultImageUrl = computed(() => {
         style="width: 100%"
       >
         <el-table-column prop="id" label="分析 ID" min-width="120" show-overflow-tooltip />
+        <el-table-column label="总状态" width="104" align="center">
+          <template #default="{ row }">
+            <el-tag
+              :type="statusTagType(rowStatusNorm(row, 'video'))"
+              effect="light"
+              size="small"
+              class="status-pill status-tag-admin"
+            >
+              {{ statusLabel(rowStatusNorm(row, 'video')) }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="产品名" min-width="100" show-overflow-tooltip>
+          <template #default="{ row }">
+            {{ row.car_model != null && String(row.car_model).trim() ? String(row.car_model).trim() : '—' }}
+          </template>
+        </el-table-column>
         <el-table-column label="创建时间" min-width="168">
           <template #default="{ row }">
             {{ rowCreatedAt(row)?.toLocaleString() ?? '—' }}
+          </template>
+        </el-table-column>
+        <el-table-column label="耗时" width="120" align="center">
+          <template #default="{ row }">
+            {{ rowDurationLabel(row, 'video') }}
           </template>
         </el-table-column>
         <el-table-column label="视频标题" min-width="200" show-overflow-tooltip>
@@ -363,19 +534,6 @@ const detailResultImageUrl = computed(() => {
           </template>
         </el-table-column>
         <el-table-column prop="workspace" label="工作区" width="88" />
-        <el-table-column label="总状态" width="104" align="center">
-          <template #default="{ row }">
-            <el-tag
-              :type="statusTagType(rowStatusNorm(row, 'video'))"
-              effect="dark"
-              round
-              size="small"
-              class="status-pill"
-            >
-              {{ statusLabel(rowStatusNorm(row, 'video')) }}
-            </el-tag>
-          </template>
-        </el-table-column>
         <el-table-column label="视频地址" min-width="200" show-overflow-tooltip>
           <template #default="{ row }">
             {{ shortStr(row.video_url, 40) }}
@@ -523,6 +681,14 @@ const detailResultImageUrl = computed(() => {
 
 .filter-form :deep(.el-form-item) {
   margin-bottom: 12px;
+}
+
+.op-links {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+  justify-content: center;
+  align-items: center;
 }
 
 .admin-table {

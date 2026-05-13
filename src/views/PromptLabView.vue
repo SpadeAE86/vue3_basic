@@ -47,7 +47,8 @@ const {
   generateImages,
   clearAll,
   deleteImage,
-  clearPolling
+  clearPolling,
+  retryImageTask,
 } = useGenerateHistory(currentMode)
 
 onMounted(async () => {
@@ -273,7 +274,7 @@ function handleGenerate() {
 
         <div v-if="generatedImages.length > 0" class="results-section">
           <el-divider />
-          <ResultGrid :items="generatedImages" @delete="deleteImage" />
+          <ResultGrid :items="generatedImages" @delete="deleteImage" @retry="retryImageTask" />
         </div>
       </template>
 
