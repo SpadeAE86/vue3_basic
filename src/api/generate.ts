@@ -39,6 +39,13 @@ export async function saveHistoryApi(mode: GenerateMode, history: any[]) {
   })
 }
 
+/** 图片模式：从 MySQL 删除一条历史（POST 全量不会删库，删除须调此接口） */
+export async function deleteImageHistoryItemApi(itemId: string) {
+  return fetch(`${API_BASE}/image/history/${encodeURIComponent(itemId)}`, {
+    method: 'DELETE'
+  })
+}
+
 export async function getVideoStatusApi(taskId: string) {
   const resp = await fetch(`${API_BASE}/video/status/${encodeURIComponent(taskId)}`)
   return resp.json()
@@ -68,7 +75,7 @@ export async function generateImageApi(payload: any) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
-    timeoutMs: 120_000,
+    timeoutMs: 500_000,
   })
   return resp.json()
 }

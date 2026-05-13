@@ -1,21 +1,38 @@
 <script setup lang="ts">
+import { ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import type { GeneratedItem } from '@/types/generate'
+import { copyToClipboard } from '@/utils/browser'
+import MediaPreviewDialog from './MediaPreviewDialog.vue'
 
-defineProps<{
+const props = defineProps<{
   item: GeneratedItem
   modelLabel: string
 }>()
+
+const previewOpen = ref(false)
+
+function openPreview() {
+  if (!props.item.url || props.item.loading || props.item.error) return
+  previewOpen.value = true
+}
+
+function onMediaAreaClick(e: MouseEvent) {
+  if (!props.item.url || props.item.loading || props.item.error) return
+  const t = e.target as HTMLElement
+  if (t.closest('.action-icons')) return
+  openPreview()
+}
 
 const emit = defineEmits<{
   (e: 'delete', id: string): void
 }>()
 
 async function copyPrompt(prompt: string) {
-  try {
-    await navigator.clipboard.writeText(prompt)
+  const success = await copyToClipboard(prompt)
+  if (success) {
     ElMessage.success('提示词已复制')
-  } catch {
+  } else {
     ElMessage.error('复制失败')
   }
 }
@@ -43,6 +60,14 @@ function pauseVideo(e: Event) {
 
 <template>
   <div class="result-card" @mouseenter="playVideo" @mouseleave="pauseVideo">
+    <MediaPreviewDialog
+      v-if="item.url"
+      v-model="previewOpen"
+      :url="item.url"
+      :media-type="item.type"
+      :prompt="item.prompt"
+    />
+
     <div class="result-header">
       <el-tag size="small" type="info">{{ modelLabel }}</el-tag>
       <el-tag size="small" :type="item.type.includes('i2') ? 'success' : 'primary'">
@@ -65,7 +90,15 @@ function pauseVideo(e: Event) {
         </div>
       </div>
       
-      <div v-else-if="item.url" class="image-wrapper">
+      <div
+        v-else-if="item.url"
+        class="image-wrapper is-clickable"
+        role="button"
+        tabindex="0"
+        @click="onMediaAreaClick"
+        @keydown.enter.prevent="openPreview"
+        @keydown.space.prevent="openPreview"
+      >
         <video v-if="item.type.includes('v')" :src="item.url" class="generated-image" loop muted playsinline></video>
         <img v-else :src="item.url" class="generated-image" alt="generated" />
         
@@ -74,22 +107,29 @@ function pauseVideo(e: Event) {
           <div class="overlay-top"></div>
           <div class="overlay-bottom">
             <div class="time-info">{{ item.time }}</div>
-            <div class="action-icons">
-              <el-tooltip content="复制提示词" placement="top">
-                <div class="icon-btn" @click="copyPrompt(item.prompt)">
-                  <el-icon><i-ep-document-copy /></el-icon>
+            <div class="overlay-actions">
+              <el-tooltip content="大图 / 全屏预览" placement="top">
+                <div class="icon-btn" @click.stop="openPreview">
+                  <el-icon><i-ep-zoom-in /></el-icon>
                 </div>
               </el-tooltip>
-              <el-tooltip :content="item.type.includes('v') ? '下载视频' : '下载图片'" placement="top">
-                <div class="icon-btn" @click="downloadImage(item.url!)">
-                  <el-icon><i-ep-download /></el-icon>
-                </div>
-              </el-tooltip>
-              <el-tooltip content="删除记录" placement="top">
-                <div class="icon-btn danger" @click="emit('delete', item.id)">
-                  <el-icon><i-ep-delete /></el-icon>
-                </div>
-              </el-tooltip>
+              <div class="action-icons">
+                <el-tooltip content="复制提示词" placement="top">
+                  <div class="icon-btn" @click="copyPrompt(item.prompt)">
+                    <el-icon><i-ep-document-copy /></el-icon>
+                  </div>
+                </el-tooltip>
+                <el-tooltip :content="item.type.includes('v') ? '下载视频' : '下载图片'" placement="top">
+                  <div class="icon-btn" @click="downloadImage(item.url!)">
+                    <el-icon><i-ep-download /></el-icon>
+                  </div>
+                </el-tooltip>
+                <el-tooltip content="删除记录" placement="top">
+                  <div class="icon-btn danger" @click="emit('delete', item.id)">
+                    <el-icon><i-ep-delete /></el-icon>
+                  </div>
+                </el-tooltip>
+              </div>
             </div>
           </div>
         </div>
@@ -187,6 +227,21 @@ function pauseVideo(e: Event) {
   width: 100%;
   position: relative;
   padding: 0;
+}
+
+.image-wrapper.is-clickable {
+  cursor: zoom-in;
+}
+
+.image-wrapper.is-clickable:focus-visible {
+  outline: 2px solid var(--el-color-primary);
+  outline-offset: 2px;
+}
+
+.overlay-actions {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
 }
 
 .generated-image {

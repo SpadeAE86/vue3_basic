@@ -54,7 +54,9 @@ export type ShotCard = {
   /** highlight: field → list of snippets with <em> tags wrapping matched terms */
   _highlight?: Record<string, string[]> | null
   /** 'precise' = BM25 only  /  'fuzzy' = BM25 + KNN hybrid */
-  _search_mode?: 'precise' | 'fuzzy' | null
+  _search_mode?: 'precise' | 'fuzzy' | 'fuzzy_rrf' | null
+  /** Raw explanation tree from OpenSearch */
+  _explanation?: any | null
   // Allow any additional workspace-specific fields
   [key: string]: unknown
 }

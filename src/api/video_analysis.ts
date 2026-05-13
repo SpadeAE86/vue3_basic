@@ -5,8 +5,10 @@ export async function getVideoAnalysisWorkspacesApi() {
   return resp.json()
 }
 
-export async function getVideoAnalysisHistoryApi() {
-  const resp = await fetch(`${API_BASE}/video-analysis/history`)
+export async function getVideoAnalysisHistoryApi(workspace?: string) {
+  const params = new URLSearchParams()
+  if (workspace) params.set('workspace', workspace)
+  const resp = await fetch(`${API_BASE}/video-analysis/history?${params.toString()}`)
   return resp.json()
 }
 
@@ -29,6 +31,7 @@ export async function analyzeVideoApi(
     customPrompt?: string
     splitScenes?: boolean
     workspace?: string
+    carModel?: string
   },
 ) {
   const form = new FormData()
@@ -38,23 +41,36 @@ export async function analyzeVideoApi(
   if (opts?.customPrompt) form.append('custom_prompt', opts.customPrompt)
   if (opts?.splitScenes != null) form.append('split_scenes', String(opts.splitScenes))
   if (opts?.workspace) form.append('workspace', opts.workspace)
+  if (opts?.carModel) form.append('car_model', opts.carModel)
 
   const controller = new AbortController()
-  const t = window.setTimeout(() => controller.abort(), 5 * 60_000)
+  const t = window.setTimeout(() => controller.abort(), 12 * 60_000)
   try {
     const resp = await fetch(`${API_BASE}/video-analysis`, {
       method: 'POST',
       body: form,
       signal: controller.signal,
     })
-    return await resp.json()
+    const raw = await resp.text()
+    if (!raw.trim()) {
+      throw new Error(
+        `服务器忙或分析超时 (HTTP ${resp.status})。请检查视频是否过大，或稍后在历史记录中查看结果。`,
+      )
+    }
+    try {
+      return JSON.parse(raw) as Record<string, unknown>
+    } catch {
+      throw new Error(
+        `非 JSON 响应 HTTP ${resp.status}: ${raw.slice(0, 240).replace(/\s+/g, ' ')}`,
+      )
+    }
   } finally {
     window.clearTimeout(t)
   }
 }
 
 export async function getVideoAnalysisCardsApi(historyId?: string, workspace = 'v1') {
-  const params = new URLSearchParams({ shot_cards_version: workspace })
+  const params = new URLSearchParams({ shot_cards_version: workspace, workspace })
   if (historyId) params.set('history_id', historyId)
   const resp = await fetch(`${API_BASE}/video-analysis/cards?${params.toString()}`)
   return resp.json()
@@ -73,6 +89,11 @@ export async function searchVideoAnalysisCardsApi(
     history_id?: string
     size?: number
     workspace?: string
+    bm25_weight?: number
+    vector_weight?: number
+    text_weights?: Record<string, number>
+    vector_weights?: Record<string, number>
+    use_rrf?: boolean
   },
   opts?: { signal?: AbortSignal },
 ) {
@@ -81,6 +102,41 @@ export async function searchVideoAnalysisCardsApi(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
     signal: opts?.signal,
+  })
+  return resp.json()
+}
+
+// ---------------- 搜索策略 API ----------------
+
+export type SearchStrategy = {
+  id?: number
+  name: string
+  bm25_weight: number
+  vector_weight: number
+  text_weights?: Record<string, number>
+  vector_weights?: Record<string, number>
+  is_default: boolean
+  /** 模糊检索使用 RRF；为 true 时宏观 BM25/向量滑杆不参与后端融合 */
+  use_rrf?: boolean
+}
+
+export async function getSearchStrategiesApi() {
+  const resp = await fetch(`${API_BASE}/video-analysis/search-strategies`)
+  return resp.json()
+}
+
+export async function saveSearchStrategyApi(strategy: SearchStrategy) {
+  const resp = await fetch(`${API_BASE}/video-analysis/search-strategies`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(strategy),
+  })
+  return resp.json()
+}
+
+export async function deleteSearchStrategyApi(id: number) {
+  const resp = await fetch(`${API_BASE}/video-analysis/search-strategies/${id}`, {
+    method: 'DELETE',
   })
   return resp.json()
 }

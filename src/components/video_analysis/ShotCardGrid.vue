@@ -7,6 +7,12 @@ import type { UiShotCard } from '@/types/videoAnalysis'
 const props = defineProps<{
   shots: UiShotCard[]
   activeFrameIndex: Record<string, number>
+  strategyWeights?: {
+    bm25_weight: number;
+    vector_weight: number;
+    text_weights?: Record<string, number>;
+    vector_weights?: Record<string, number>;
+  }
 }>()
 
 const emit = defineEmits<{
@@ -66,6 +72,27 @@ function getTagGroup(shot: UiShotCard, keys: readonly string[]): string[] {
   return []
 }
 
+// 提取高亮词汇列表
+function getHighlightTerms(shot: UiShotCard): string[] {
+  const hl = shot._highlight
+  if (!hl) return []
+
+  const terms = new Set<string>()
+  for (const snippets of Object.values(hl)) {
+    for (const snip of snippets) {
+      // 提取 <em>...</em> 之间的内容
+      const matches = snip.match(/<em>(.*?)<\/em>/g)
+      if (matches) {
+        matches.forEach(m => {
+          const term = m.replace(/<\/?em>/g, '')
+          if (term) terms.add(term)
+        })
+      }
+    }
+  }
+  return Array.from(terms)
+}
+
 // ─── Misc helpers ──────────────────────────────────────────────────────────────
 function getActiveFrameUrl(shot: UiShotCard): string {
   const urls = (shot.frame_urls ?? []).filter(Boolean)
@@ -104,6 +131,123 @@ function handleCardHover(e: MouseEvent) {
   else if (cardRect.left < cRect.left)
     container.scrollBy({ left: -(cRect.left - cardRect.left + 20), behavior: 'smooth' })
 }
+
+// 解析 OpenSearch 的 Explain 树，提取分数组成
+type ScoreDetail = { description: string; value: number; isNormalized?: boolean; details?: ScoreDetail[] }
+
+function parseExplanation(explanation: any, matchedQueries: string[] = []): { items: { name: string; score: number }[]; isNormalized: boolean } {
+  const items: { name: string; score: number }[] = []
+  let isNormalized = false
+
+  if (!explanation) return { items, isNormalized }
+
+  function traverse(node: any) {
+    if (!node) return
+
+    const desc = node.description || ''
+
+    if (desc.toLowerCase().includes('normalization')) {
+      isNormalized = true
+    }
+
+    if (desc.startsWith('weight(')) {
+      const match = desc.match(/weight\(([^:]+):/)
+      const fieldName = match ? match[1] : 'text'
+      items.push({ name: `BM25 (${fieldName})`, score: node.value })
+      return
+    }
+
+    if (desc.includes('within top k documents') || desc.includes('knn')) {
+      const match = desc.match(/for (?:field )?([^:]+)/) || desc.match(/knn\(([^)]+)\)/)
+      const fieldName = match ? match[1] : 'Vector'
+      items.push({ name: `KNN (${fieldName})`, score: node.value })
+      return
+    }
+
+    if (desc.includes('score(') || desc.includes('Math.max') || desc.includes('sum of')) {
+       if (node.details && node.details.length > 0) {
+         node.details.forEach(traverse)
+       } else if (node.value > 0.0001) {
+         items.push({ name: 'Sub-query Score', score: node.value })
+       }
+       return
+    }
+
+    if (node.details && node.details.length > 0) {
+      node.details.forEach(traverse)
+    } else if (node.value > 0.0001 && !desc.includes('queryWeight') && !desc.includes('fieldWeight') && !desc.includes('idf') && !desc.includes('tf')) {
+      items.push({ name: 'Score', score: node.value })
+    }
+  }
+
+  traverse(explanation)
+
+  if (items.length === 0 && explanation.details) {
+    explanation.details.forEach((d: any) => {
+      let name = 'Score'
+      if (d.description.includes('weight(')) {
+        const m = d.description.match(/weight\(([^:]+):/)
+        name = m ? `BM25 (${m[1]})` : 'BM25'
+      } else if (d.description.includes('vector') || d.description.includes('knn') || d.description.includes('within top k')) {
+        name = 'KNN'
+      } else if (d.description.includes('Normalization')) {
+        name = 'Normalized'
+      }
+      if (d.value > 0.0001) {
+        items.push({ name, score: d.value })
+      }
+    })
+  }
+
+  // 尝试用 matchedQueries 修复丢失名字的 Score
+  const unknownScores = items.filter(i => i.name === 'Score' || i.name === 'Sub-query Score')
+  if (unknownScores.length > 0 && matchedQueries.length > 0) {
+    let mqIndex = 0
+    items.forEach((item) => {
+      if ((item.name === 'Score' || item.name === 'Sub-query Score') && mqIndex < matchedQueries.length) {
+        let mq = matchedQueries[mqIndex]
+        if (mq.startsWith('knn_')) item.name = `KNN (${mq.replace('knn_', '').replace('_vector', '')})`
+        else if (mq.startsWith('bm25_')) item.name = `BM25`
+        else item.name = mq
+        mqIndex++
+      }
+    })
+  }
+
+  // 兜底：如果还有未识别的，统一叫 BM25 (Text)
+  items.forEach((item) => {
+    if (item.name === 'Score' || item.name === 'Sub-query Score') {
+      item.name = 'BM25 (Text)'
+    }
+  })
+
+  // 合并同名项
+  const aggregated: Record<string, number> = {}
+  items.forEach(i => {
+    if (i.score > 0.0001) {
+      aggregated[i.name] = (aggregated[i.name] || 0) + i.score
+    }
+  })
+
+  const finalItems = Object.keys(aggregated).map(k => ({ name: k, score: aggregated[k] }))
+  finalItems.sort((a, b) => b.score - a.score)
+
+  const bm25Items: { name: string; score: number }[] = []
+  const knnItems: { name: string; score: number }[] = []
+
+  finalItems.forEach(item => {
+    if (item.name.toUpperCase().includes('KNN') || item.name.toUpperCase().includes('VECTOR')) {
+      knnItems.push(item)
+    } else {
+      bm25Items.push(item)
+    }
+  })
+
+  const bm25Sum = bm25Items.reduce((acc, item) => acc + item.score, 0)
+  const knnSum = knnItems.reduce((acc, item) => acc + item.score, 0)
+
+  return { bm25Items, knnItems, isNormalized, bm25Sum, knnSum }
+}
 </script>
 
 <template>
@@ -123,13 +267,93 @@ function handleCardHover(e: MouseEvent) {
           <div class="time-badge">{{ shot.time }}</div>
 
           <!-- Score badge: only show normalized 0-1 scores -->
-          <div
-            v-if="shot._score != null && (shot._score as number) >= 0 && (shot._score as number) <= 1"
-            class="score-badge"
-            :title="`相关度 ${Math.round((shot._score as number) * 100)}%`"
+          <el-tooltip
+            v-if="shot._score != null && (shot._search_mode === 'fuzzy_rrf' || (shot._score as number) >= 0)"
+            placement="bottom-end"
+            effect="dark"
+            popper-class="score-tooltip"
           >
-            {{ Math.round((shot._score as number) * 100) }}%
-          </div>
+            <template #content>
+              <template v-if="shot._search_mode === 'fuzzy_rrf'">
+                <div class="score-breakdown">
+                  <div class="score-title">RRF 混合检索</div>
+                  <p class="rrf-plain">
+                    分数为排名融合值，与 BM25 / 旧版混合归一化百分比不可比；未请求分项 explain。
+                  </p>
+                  <div class="score-row total">
+                    <span class="score-name">RRF score</span>
+                    <span class="score-val">{{ Number(shot._score).toFixed(4) }}</span>
+                  </div>
+                </div>
+              </template>
+              <template v-else>
+                <div
+                  v-for="parsed in [parseExplanation(shot._explanation, (shot._matched_queries as string[]) || [])]"
+                  :key="shot.id"
+                  class="score-breakdown"
+                >
+                <div class="score-title">得分明细 ({{ shot._search_mode?.includes('fuzzy') ? '混合检索' : '精确检索' }})</div>
+                <div v-if="shot._explanation">
+
+                  <div v-if="parsed.bm25Items.length > 0" class="score-group bm25-group">
+                    <div class="group-title">BM25 匹配</div>
+                    <div v-for="(item, idx) in parsed.bm25Items" :key="'b'+idx" class="score-row">
+                      <span class="score-name" :title="item.name">{{ item.name }}</span>
+                      <span class="score-val">{{ item.score.toFixed(4) }}</span>
+                    </div>
+                  </div>
+
+                  <div v-if="parsed.knnItems.length > 0" class="score-group knn-group">
+                    <div class="group-title">向量 匹配</div>
+                    <div v-for="(item, idx) in parsed.knnItems" :key="'k'+idx" class="score-row">
+                      <span class="score-name" :title="item.name">{{ item.name }}</span>
+                      <span class="score-val">{{ item.score.toFixed(4) }}</span>
+                    </div>
+                  </div>
+
+                  <el-divider class="score-divider" />
+
+                  <div v-if="shot._search_mode?.includes('fuzzy')" class="score-formula">
+                    <div class="formula-text">
+                      <span>Norm({{ parsed.bm25Sum.toFixed(4) }}) × {{ strategyWeights?.bm25_weight ?? 0.3 }}</span>
+                      <span class="formula-plus">+</span>
+                      <span>Norm({{ parsed.knnSum.toFixed(4) }}) × {{ strategyWeights?.vector_weight ?? 0.7 }}</span>
+                    </div>
+                  </div>
+
+                  <div class="score-row total">
+                    <span class="score-name">Total {{ parsed.isNormalized ? '(Normalized)' : '' }}</span>
+                    <span class="score-val">{{ (shot._score as number).toFixed(4) }}</span>
+                  </div>
+                </div>
+                <div v-else>
+                  <div class="score-row total">
+                    <span class="score-name">Total Score</span>
+                    <span class="score-val">{{ (shot._score as number).toFixed(4) }}</span>
+                  </div>
+                </div>
+                <div v-if="shot._matched_queries && (shot._matched_queries as string[]).length" class="matched-queries">
+                  <div class="mq-title">命中路径:</div>
+                  <div class="mq-tags">
+                    <span v-for="q in (shot._matched_queries as string[])" :key="q" class="mq-tag">{{ q }}</span>
+                  </div>
+                </div>
+              </div>
+              </template>
+            </template>
+            <div
+              class="score-badge"
+              style="pointer-events: auto; cursor: help;"
+            >
+              {{
+                shot._search_mode === 'fuzzy_rrf'
+                  ? Number(shot._score).toFixed(2)
+                  : shot._search_mode?.includes('fuzzy')
+                    ? Math.round((shot._score as number) * 100) + '%'
+                    : (shot._score as number).toFixed(2)
+              }}
+            </div>
+          </el-tooltip>
 
           <el-tag
             v-if="(shot.os_index_status ?? 'PENDING') !== 'OK'"
@@ -195,6 +419,7 @@ function handleCardHover(e: MouseEvent) {
                 :effect="group.effect"
                 border-radius="999px"
                 :clickable="true"
+                :highlight-terms="getHighlightTerms(shot)"
               />
             </template>
           </div>
@@ -275,15 +500,23 @@ function handleCardHover(e: MouseEvent) {
   position: absolute;
   top: 8px;
   right: 8px;
-  background: rgba(0, 0, 0, 0.55);
+  background: rgba(0, 0, 0, 0.4);
   color: #a7f3d0;
-  padding: 2px 7px;
-  border-radius: 999px;
+  padding: 2px 8px;
+  border-radius: 12px;
   font-size: 11px;
   font-weight: 600;
   font-family: Inter, monospace;
   letter-spacing: 0.5px;
-  pointer-events: none;
+  pointer-events: auto;
+  cursor: help;
+  backdrop-filter: blur(2px);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  transition: all 0.2s ease;
+}
+.score-badge:hover {
+  background: rgba(0, 0, 0, 0.7);
+  transform: scale(1.05);
 }
 .index-badge {
   position: absolute;
@@ -350,4 +583,137 @@ function handleCardHover(e: MouseEvent) {
 .quality-item { display: flex; align-items: center; gap: 8px; }
 .q-label { font-size: 12px; color: #606266; width: 24px; }
 .q-score { font-size: 12px; color: #303133; font-weight: bold; width: 14px; text-align: right; }
+
+.score-breakdown {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 180px;
+  font-family: Inter, monospace;
+}
+.score-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #e5e7eb;
+  margin-bottom: 4px;
+  font-family: monospace;
+}
+.score-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 11px;
+  color: #d1d5db;
+}
+.score-row.total {
+  font-weight: bold;
+  color: #10b981;
+  font-size: 12px;
+}
+.score-name {
+  max-width: 120px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.score-val {
+  font-variant-numeric: tabular-nums;
+}
+.score-divider {
+  margin: 4px 0;
+  border-color: #4b5563;
+}
+.matched-queries {
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.mq-title {
+  font-size: 11px;
+  color: #9ca3af;
+}
+.mq-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.mq-tag {
+  background: rgba(255, 255, 255, 0.1);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  color: #d1d5db;
+}
+.score-group {
+  margin-bottom: 6px;
+  padding-left: 8px;
+  border-left: 2px solid;
+}
+.bm25-group {
+  border-left-color: #60a5fa;
+}
+.bm25-group .group-title {
+  color: #93c5fd;
+}
+.knn-group {
+  border-left-color: #34d399;
+}
+.knn-group .group-title {
+  color: #6ee7b7;
+}
+.group-title {
+  font-size: 11px;
+  margin-bottom: 4px;
+  font-weight: 600;
+}
+.score-formula {
+  font-size: 12px;
+  color: #9ca3af;
+  margin: 8px 0;
+  padding: 6px;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 6px;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.formula-text {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  font-family: serif;
+  color: #d1d5db;
+}
+.formula-plus {
+  color: #9ca3af;
+}
+.formula-subtext {
+  font-size: 9px;
+  color: #6b7280;
+}
+.rrf-plain {
+  margin: 0 0 8px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: #d1d5db;
+}
+</style>
+<style>
+/* Global styles for the score tooltip to ensure dark theme */
+.el-popper.is-dark.score-tooltip {
+  background: rgba(0, 0, 0, 0.65) !important;
+  backdrop-filter: blur(12px) !important;
+  -webkit-backdrop-filter: blur(12px) !important;
+  border: 1px solid rgba(255, 255, 255, 0.15) !important;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4) !important;
+  padding: 14px !important;
+  border-radius: 16px !important;
+}
+.el-popper.is-dark.score-tooltip .el-popper__arrow::before {
+  background: rgba(0, 0, 0, 0.65) !important;
+  border: 1px solid rgba(255, 255, 255, 0.15) !important;
+}
 </style>

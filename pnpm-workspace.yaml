@@ -1,3 +1,4 @@
-allowBuilds:
-  electron: true
-  electron-winstaller: true
+# Workspace 根（与 Docker「只 copy 部分文件」阶段一致时可被复制进来）。
+# 若省略 packages，pnpm 11+ 也会把仓库根当作唯一包；这里写显式 '.' 避免歧义。
+packages:
+  - '.'

@@ -3,12 +3,26 @@
  * - 切路由再回来可还原搜索栏与结果，不必再等后端
  * - LRU + TTL，条目数与配额溢出时有降级
  */
+import { reactive } from 'vue'
 import type { VideoAnalysisSearchToken } from '@/api/video_analysis'
 import type { SearchToken } from '@/components/video_analysis/TagSearchBar.vue'
 import type { ShotCard } from '@/types/videoAnalysis'
 
 const PAGE_KEY = 'videoAnalysis:page:v2'
 const SEARCH_KEY = 'videoAnalysis:searchLRU:v2'
+
+/** 全局的智能提取状态，跨路由保持 */
+export const rewriteTaskState = reactive({
+  isRewriting: false,
+  dialogVisible: false,
+  form: {
+    script: '',
+    topic: '',
+    title: '',
+    car_model: ''
+  },
+  pendingTokens: null as SearchToken[] | null
+})
 
 /** 单 tab 内最多保留几条搜索结果（每条为一组 query 的快照） */
 const MAX_SEARCH_ENTRIES = 12
@@ -52,6 +66,8 @@ export function buildSearchCacheKey(parts: {
   fuzzy: boolean
   tokens: VideoAnalysisSearchToken[]
   size: number
+  /** 权重 / RRF 开关变化须使缓存失效 */
+  strategySig?: string
 }): string {
   const h = (parts.historyId || '').trim() || '*'
   const payload = parts.tokens.map((t) => ({
@@ -59,7 +75,8 @@ export function buildSearchCacheKey(parts: {
     join: t.join ?? 'AND',
     not: !!t.not,
   }))
-  return `${parts.workspace}|${h}|${parts.fuzzy ? 1 : 0}|${parts.size}|${JSON.stringify(payload)}`
+  const sig = (parts.strategySig ?? '').trim()
+  return `${parts.workspace}|${h}|${parts.fuzzy ? 1 : 0}|${parts.size}|${sig}|${JSON.stringify(payload)}`
 }
 
 function loadSearchFile(): SearchCacheFile {

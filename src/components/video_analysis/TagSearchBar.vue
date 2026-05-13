@@ -1,29 +1,45 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
+import { getSearchStrategiesApi, saveSearchStrategyApi, deleteSearchStrategyApi, type SearchStrategy } from '@/api/video_analysis'
+import SearchStrategySelect from './SearchStrategySelect.vue'
+import SearchStrategyDialog from './SearchStrategyDialog.vue'
+import TokenEditPopover from './TokenEditPopover.vue'
 
 export type TokenJoin = 'AND' | 'OR'
+
+export type TokenType = 'keyword' | 'text'
 
 export type SearchToken = {
   id: string
   text: string
   join?: TokenJoin // join with previous token (ignored for first)
   not?: boolean
+  type?: TokenType
 }
 
 const props = withDefaults(
   defineProps<{
     modelValue: SearchToken[]
-    fuzzy?: boolean
+    strategyWeights: {
+      bm25_weight: number
+      vector_weight: number
+      text_weights?: Record<string, number>
+      vector_weights?: Record<string, number>
+      use_rrf?: boolean
+    }
+    workspace?: string
     loading?: boolean
+    fuzzy?: boolean
     placeholder?: string
     maxPreviewChars?: number
     radius?: string
   }>(),
   {
     modelValue: () => [],
-    fuzzy: false,
+    workspace: 'v2',
     loading: false,
+    fuzzy: true,
     placeholder: '输入标签回车添加；空格可分词',
     maxPreviewChars: 6,
     radius: '999px',
@@ -32,9 +48,199 @@ const props = withDefaults(
 
 const emit = defineEmits<{
   (e: 'update:modelValue', v: SearchToken[]): void
+  (e: 'update:strategyWeights', v: {
+    bm25_weight: number
+    vector_weight: number
+    text_weights?: Record<string, number>
+    vector_weights?: Record<string, number>
+    use_rrf?: boolean
+  }): void
   (e: 'update:fuzzy', v: boolean): void
   (e: 'search'): void
 }>()
+
+// --- 搜索策略相关逻辑 ---
+const strategies = ref<SearchStrategy[]>([])
+const selectedStrategy = ref<string>('')
+const editDialogVisible = ref(false)
+const createDialogVisible = ref(false)
+
+const localBm25 = ref(props.strategyWeights.bm25_weight)
+const localVector = ref(props.strategyWeights.vector_weight)
+const localUseRrf = ref(!!props.strategyWeights.use_rrf)
+const localTextWeights = ref<Record<string, number>>(props.strategyWeights.text_weights || {})
+const localVectorWeights = ref<Record<string, number>>(props.strategyWeights.vector_weights || {})
+
+const newStrategyName = ref('')
+const newStrategyIsDefault = ref(false)
+
+const indexFields = ref<{text_fields: string[], vector_fields: string[]}>({
+  text_fields: [],
+  vector_fields: []
+})
+
+async function fetchIndexFields() {
+  try {
+    const ws = props.workspace || 'v2' 
+    const res = await fetch(`/api/video-analysis/index-fields?workspace=${ws}`).then(r => r.json())
+    if (res.success) {
+      indexFields.value = {
+        text_fields: res.text_fields || [],
+        vector_fields: res.vector_fields || []
+      }
+      
+      // Initialize default weights if not present
+      res.text_fields.forEach((f: string) => {
+        if (localTextWeights.value[f] === undefined) localTextWeights.value[f] = 1.0
+      })
+      // 向量路默认 0：未配置的字段不参与 KNN（避免误以为「全开」）；与 hybrid 最多 4 路策略一致
+      res.vector_fields.forEach((f: string) => {
+        if (localVectorWeights.value[f] === undefined) localVectorWeights.value[f] = 0
+      })
+    }
+  } catch (e) {
+    console.error('Failed to fetch index fields', e)
+  }
+}
+
+async function loadStrategies() {
+  try {
+    const res = await getSearchStrategiesApi()
+    if (res.success) {
+      strategies.value = res.strategies
+      if (!selectedStrategy.value) {
+        const def = strategies.value.find((s) => s.is_default)
+        if (def) {
+          applyStrategy(def)
+        }
+      }
+    }
+  } catch (e) {
+    console.error('Failed to load search strategies', e)
+  }
+}
+
+function applyStrategy(s: SearchStrategy) {
+  selectedStrategy.value = s.name
+  localBm25.value = s.bm25_weight
+  localVector.value = s.vector_weight
+  localUseRrf.value = !!s.use_rrf
+  localTextWeights.value = s.text_weights || {}
+  localVectorWeights.value = s.vector_weights || {}
+  emitUpdate()
+}
+
+watch(selectedStrategy, (newVal) => {
+  if (newVal) {
+    const s = strategies.value.find((x) => x.name === newVal)
+    if (s) {
+      localBm25.value = s.bm25_weight
+      localVector.value = s.vector_weight
+      localUseRrf.value = !!s.use_rrf
+      localTextWeights.value = s.text_weights || {}
+      localVectorWeights.value = s.vector_weights || {}
+      emitUpdate()
+    }
+  }
+})
+
+watch(
+  () => props.strategyWeights,
+  (sw) => {
+    localBm25.value = sw.bm25_weight
+    localVector.value = sw.vector_weight
+    localUseRrf.value = !!sw.use_rrf
+    localTextWeights.value = { ...(sw.text_weights || {}) }
+    localVectorWeights.value = { ...(sw.vector_weights || {}) }
+  },
+  { deep: true },
+)
+
+function onSliderChange() {
+  // 如果修改了权重，但当前选中了某个预设，我们自动取消选中（或者你可以选择覆盖它，这里选择保持原逻辑：修改即自定义）
+  // 但因为组件要求必须有个名字，我们可以暂时不清除 selectedStrategy，或者你可以设计一个 "自定义" 选项
+  // 这里为了简单，我们直接 emit 更新，并触发搜索
+  emitUpdate()
+}
+
+function onUpdateUseRrf(v: boolean) {
+  localUseRrf.value = v
+  onSliderChange()
+}
+
+function emitUpdate() {
+  emit('update:strategyWeights', {
+    bm25_weight: localBm25.value,
+    vector_weight: localVector.value,
+    text_weights: localTextWeights.value,
+    vector_weights: localVectorWeights.value,
+    use_rrf: localUseRrf.value,
+  })
+  emit('search')
+}
+
+async function handleSaveStrategy(data: { name: string; isDefault: boolean }) {
+  try {
+    const res = await saveSearchStrategyApi({
+      name: data.name,
+      bm25_weight: localBm25.value,
+      vector_weight: localVector.value,
+      text_weights: localTextWeights.value,
+      vector_weights: localVectorWeights.value,
+      is_default: data.isDefault,
+      use_rrf: localUseRrf.value,
+    })
+    if (res.success) {
+      ElMessage.success('保存成功')
+      createDialogVisible.value = false
+      await loadStrategies()
+      selectedStrategy.value = data.name
+    } else {
+      ElMessage.error(res.error || '保存失败')
+    }
+  } catch (e) {
+    ElMessage.error('保存失败')
+  }
+}
+
+async function handleDeleteStrategy(name: string) {
+  const s = strategies.value.find(x => x.name === name)
+  if (!s?.id) return
+  try {
+    const res = await deleteSearchStrategyApi(s.id)
+    if (res.success) {
+      ElMessage.success('删除成功')
+      if (selectedStrategy.value === name) {
+        selectedStrategy.value = ''
+      }
+      await loadStrategies()
+    }
+  } catch (e) {
+    ElMessage.error('删除失败')
+  }
+}
+
+watch(() => props.workspace, () => {
+  fetchIndexFields()
+})
+
+watch(createDialogVisible, (open) => {
+  if (!open) return
+  const fields = indexFields.value.vector_fields
+  if (!fields.length) return
+  const next = { ...localVectorWeights.value }
+  for (const f of fields) {
+    next[f] = 0
+  }
+  localVectorWeights.value = next
+})
+
+import { onMounted } from 'vue'
+onMounted(() => {
+  loadStrategies()
+  fetchIndexFields()
+})
+// ------------------------
 
 const inputText = ref('')
 const editing = ref<SearchToken | null>(null)
@@ -66,6 +272,7 @@ function addFromInput() {
       text: p,
       join: next.length === 0 ? 'AND' : 'AND',
       not: false,
+      type: p.length >= 10 ? 'text' : 'keyword',
     })
   }
   emit('update:modelValue', next)
@@ -77,23 +284,39 @@ function removeToken(id: string) {
   emit('update:modelValue', next)
 }
 
+// 记录打开编辑器时的原始状态，用于取消时回滚
+let originalTokenState: SearchToken | null = null
+
 function openEditor(e: MouseEvent, t: SearchToken) {
   popoverAnchor.value = e.currentTarget as HTMLElement
-  editing.value = { ...t }
+  // 保存原始状态的深拷贝用于回滚
+  originalTokenState = JSON.parse(JSON.stringify(t))
+  // 直接引用原对象，实现即时响应
+  editing.value = t
   editorOpen.value = true
 }
 
 function saveEditor() {
   if (!editing.value) return
-  const t = editing.value
-  const text = t.text.trim()
+  const text = editing.value.text.trim()
   if (!text) {
     ElMessage.warning('内容不能为空')
     return
   }
-  const next = tokens.value.map((x) => (x.id === t.id ? { ...t, text } : x))
-  emit('update:modelValue', next)
+  // 触发 emit 让外部知道更新（触发搜索等）
+  emit('update:modelValue', [...tokens.value])
   editorOpen.value = false
+  originalTokenState = null
+}
+
+function cancelEditor() {
+  if (editing.value && originalTokenState) {
+    // 恢复原始状态
+    Object.assign(editing.value, originalTokenState)
+  }
+  editing.value = null
+  editorOpen.value = false
+  originalTokenState = null
 }
 
 function previewText(t: SearchToken) {
@@ -104,10 +327,54 @@ function previewText(t: SearchToken) {
 
 function tagType(t: SearchToken): 'primary' | 'success' | 'danger' | 'info' {
   if (t.not) return 'danger'
-  // >=10 chars => treat as natural language (different color)
-  if ((t.text ?? '').trim().length >= 10) return 'info'
+  if (t.type === 'text') return 'info'
   if ((t.join ?? 'AND') === 'OR') return 'success'
   return 'primary'
+}
+
+function tagEffect(t: SearchToken): 'plain' | 'light' {
+  return t.type === 'text' ? 'plain' : 'light'
+}
+
+function getTagStyle(t: SearchToken) {
+  const radius = props.radius
+
+  // 统一颜色基准
+  let baseColor = '#409eff' // primary
+  let lightBorder = '#d9ecff'
+  let lightBg = '#318ff1'
+
+  if (t.not) {
+    baseColor = '#f56c6c'
+    lightBorder = '#fde2e2'
+    lightBg = '#fef0f0'
+  } else if ((t.join ?? 'AND') === 'OR') {
+    baseColor = '#67c23a'
+    lightBorder = '#e1f3d8'
+    lightBg = '#f0f9eb'
+  }
+
+  // ✅ keyword：实心风格
+  if (t.type !== 'text') {
+    return {
+      borderRadius: radius,
+      backgroundColor: baseColor,
+      borderColor: baseColor, // 和 text 语义一致（同一套色）
+      color: '#fff',
+      borderStyle: 'solid',
+      borderWidth: '1px'
+    }
+  }
+
+  // ✅ text：轻量风格
+  return {
+    borderRadius: radius,
+    backgroundColor: '#fff', // 或 transparent
+    borderColor: baseColor,
+    color: baseColor,
+    borderStyle: 'solid',
+    borderWidth: '1px'
+  }
 }
 
 function handleEnterKey() {
@@ -119,23 +386,19 @@ function handleEnterKey() {
     emit('search')
   }
 }
-
-function toggleFuzzy() {
-  emit('update:fuzzy', !props.fuzzy)
-}
 </script>
 
 <template>
-  <div class="searchbar">
+  <div class="tag-search-composer">
     <div class="token-box">
       <el-tag
         v-for="(t, idx) in tokens"
         :key="t.id"
         :type="tagType(t)"
-        effect="plain"
+        :effect="tagEffect(t)"
         :round="true"
         class="token"
-        :style="{ borderRadius: radius }"
+        :style="getTagStyle(t)"
         @click="(e) => openEditor(e, t)"
       >
         <span v-if="idx !== 0" class="join">{{ t.join ?? 'AND' }}</span>
@@ -152,69 +415,115 @@ function toggleFuzzy() {
         class="inp"
         @keydown.enter.prevent="handleEnterKey"
       />
-
-      <el-icon v-if="loading" class="search-loading" title="远程搜索中…">
-        <i-ep-loading />
-      </el-icon>
-
-      <el-tag
-        :type="fuzzy ? 'warning' : 'success'"
-        effect="dark"
-        size="small"
-        round
-        class="toggle"
-        @click="toggleFuzzy"
-      >
-        <el-icon class="ic">
-          <i-ep-magic-stick v-if="fuzzy" />
-          <i-ep-aim v-else />
-        </el-icon>
-        {{ fuzzy ? '模糊检索' : '精准匹配' }}
-      </el-tag>
     </div>
 
-    <el-popover
-      v-model:visible="editorOpen"
-      placement="bottom-start"
-      :width="360"
-      trigger="manual"
-      :virtual-ref="popoverAnchor"
-      virtual-triggering
-    >
-
-      <div v-if="editing" class="editor">
-        <div class="row">
-          <span class="lab">逻辑</span>
-          <el-checkbox v-model="editing.not" label="NOT" />
-        </div>
-
-        <div class="row">
-          <span class="lab">连接</span>
-          <el-segmented
-            v-model="editing.join"
-            :options="['AND', 'OR']"
-            size="small"
-            style="width: 160px"
-          />
-        </div>
-
-        <div class="row">
-          <span class="lab">内容</span>
-          <el-input v-model="editing.text" type="textarea" :autosize="{ minRows: 2, maxRows: 6 }" />
-        </div>
-
-        <div class="btns">
-          <el-button size="small" @click="editorOpen = false">取消</el-button>
-          <el-button size="small" type="primary" @click="saveEditor">保存</el-button>
-        </div>
+    <div class="composer-footer">
+      <div class="left-area">
+        <el-icon v-if="loading" class="search-loading" title="远程搜索中…">
+          <i-ep-loading />
+        </el-icon>
       </div>
-    </el-popover>
+
+      <!-- 搜索策略配置工具栏，和 PromptComposer 类似的一体化设计 -->
+      <div class="toolbar">
+        <el-button
+          v-if="fuzzy !== undefined"
+          size="small"
+          class="ghost-btn fuzzy-toggle-btn"
+          :class="{ 'is-fuzzy': fuzzy }"
+          @click="emit('update:fuzzy', !fuzzy)"
+          :title="fuzzy ? '当前：模糊检索 (包含向量)' : '当前：精准检索 (仅关键词)'"
+        >
+          <el-icon class="fuzzy-icon">
+            <i-ep-connection v-if="fuzzy" />
+            <i-ep-aim v-else />
+          </el-icon>
+          <span>{{ fuzzy ? '模糊' : '精准' }}</span>
+        </el-button>
+        
+        <SearchStrategySelect
+          v-model="selectedStrategy"
+          :strategies="strategies"
+          @create="createDialogVisible = true"
+          @delete="handleDeleteStrategy"
+          @refresh="loadStrategies"
+        />
+
+        <el-button
+          class="beautify-btn"
+          circle
+          size="small"
+          color="#6366f1"
+          :disabled="!selectedStrategy"
+          @click="editDialogVisible = true"
+          title="配置权重"
+        >
+          <el-icon><i-ep-setting /></el-icon>
+        </el-button>
+      </div>
+    </div>
+
+    <SearchStrategyDialog
+      v-model="editDialogVisible"
+      mode="edit"
+      :bm25-weight="localBm25"
+      :vector-weight="localVector"
+      :text-weights="localTextWeights"
+      :vector-weights="localVectorWeights"
+      :use-rrf="localUseRrf"
+      :index-fields="indexFields"
+      @update:bm25-weight="localBm25 = $event"
+      @update:vector-weight="localVector = $event"
+      @update:text-weights="localTextWeights = $event"
+      @update:vector-weights="localVectorWeights = $event"
+      @update:use-rrf="onUpdateUseRrf"
+      @change="onSliderChange"
+    />
+
+    <SearchStrategyDialog
+      v-model="createDialogVisible"
+      mode="create"
+      :initial-name="newStrategyName"
+      :initial-is-default="newStrategyIsDefault"
+      :bm25-weight="localBm25"
+      :vector-weight="localVector"
+      :text-weights="localTextWeights"
+      :vector-weights="localVectorWeights"
+      :use-rrf="localUseRrf"
+      :index-fields="indexFields"
+      @update:bm25-weight="localBm25 = $event"
+      @update:vector-weight="localVector = $event"
+      @update:text-weights="localTextWeights = $event"
+      @update:vector-weights="localVectorWeights = $event"
+      @update:use-rrf="onUpdateUseRrf"
+      @change="onSliderChange"
+      @save="handleSaveStrategy"
+    />
+
+    <TokenEditPopover
+      v-model="editorOpen"
+      :anchor="popoverAnchor"
+      :editing-token="editing"
+      @save="saveEditor"
+      @cancel="cancelEditor"
+    />
   </div>
 </template>
 
 <style scoped>
-.searchbar {
-  display: block;
+.tag-search-composer {
+  position: relative;
+  width: 100%;
+  border: 1px solid #dcdfe6;
+  border-radius: 12px;
+  background-color: #fff;
+  transition: border-color 0.2s;
+  display: flex;
+  flex-direction: column;
+}
+
+.tag-search-composer:focus-within {
+  border-color: #409eff;
 }
 
 .token-box {
@@ -223,10 +532,33 @@ function toggleFuzzy() {
   align-items: center;
   gap: 8px;
   padding: 8px 10px;
-  border: 1px solid #e5e7eb;
-  border-radius: 12px;
-  background: #fff;
   min-height: 40px;
+  max-height: 120px;
+  overflow-y: auto;
+}
+
+.token-box::-webkit-scrollbar {
+  width: 6px;
+}
+.token-box::-webkit-scrollbar-track {
+  background: transparent;
+}
+.token-box::-webkit-scrollbar-thumb {
+  background: #dcdfe6;
+  border-radius: 3px;
+}
+
+.composer-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  padding: 0 10px 10px 10px;
+}
+
+.left-area {
+  display: flex;
+  align-items: center;
+  min-height: 32px;
 }
 
 .token {
@@ -304,29 +636,87 @@ function toggleFuzzy() {
   to   { transform: rotate(360deg); }
 }
 
-.editor {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.row {
+.toolbar {
   display: flex;
   align-items: center;
-  gap: 10px;
-}
-
-.lab {
-  width: 48px;
-  color: #6b7280;
-  font-size: 12px;
-}
-
-.btns {
-  display: flex;
-  justify-content: flex-end;
   gap: 8px;
-  margin-top: 4px;
+  padding: 6px 8px;
+  border-radius: 999px;
+  background: #f3f4f6;
 }
+
+.beautify-btn {
+  box-shadow: 0 2px 8px rgba(99, 102, 241, 0.4) !important;
+  color: white !important;
+  border: none !important;
+  transition: all 0.2s ease;
+}
+
+.beautify-btn:hover:not(:disabled) {
+  transform: scale(1.05);
+  box-shadow: 0 4px 12px rgba(99, 102, 241, 0.5) !important;
+}
+
+.beautify-btn:disabled {
+  opacity: 0.5;
+  box-shadow: none !important;
+}
+
+:deep(.toolbar .ghost-btn) {
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  color: #6b7280;
+}
+
+:deep(.toolbar .ghost-btn:hover) {
+  background: rgba(99, 102, 241, 0.08) !important;
+  color: #6366f1;
+}
+
+:deep(.toolbar .ghost-btn:disabled) {
+  opacity: 0.4;
+}
+
+/* 幽灵按钮模糊状态 */
+:deep(.toolbar .fuzzy-toggle-btn) {
+  transition: all 0.2s ease;
+  padding: 5px 10px;
+  border-radius: 999px !important;
+}
+:deep(.toolbar .fuzzy-toggle-btn .el-icon) {
+  margin-right: 4px;
+  font-size: 14px;
+  transition: color 0.2s ease;
+}
+:deep(.toolbar .fuzzy-toggle-btn.is-fuzzy) {
+  color: #6366f1; /* 文字变为紫色 */
+  background: rgba(99, 102, 241, 0.1) !important; /* 极浅的紫色背景 */
+}
+:deep(.toolbar .fuzzy-toggle-btn.is-fuzzy .el-icon) {
+  color: #eab308; /* 黄色高亮 */
+}
+
+:deep(.toolbar .el-select__wrapper) {
+  border: none !important;
+  box-shadow: none !important;
+  background: transparent;
+  border-radius: 999px;
+}
+
+:deep(.toolbar .el-button),
+:deep(.toolbar .el-button-group) {
+  box-shadow: none !important;
+}
+
+:deep(.toolbar .el-button) {
+  border: none !important;
+}
+
+:deep(.left-btns .el-button) {
+  border-radius: 999px;
+}
+
+
 </style>
 

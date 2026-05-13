@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { ElMessage } from 'element-plus'
+import { copyToClipboard } from '@/utils/browser'
 
 type TagType = 'primary' | 'success' | 'warning' | 'danger' | 'info'
 type TagEffect = 'dark' | 'light' | 'plain'
@@ -24,6 +25,8 @@ const props = withDefaults(
     // style tokens (CSS variables)
     borderRadius?: string
     gap?: string
+    // terms to highlight
+    highlightTerms?: string[]
   }>(),
   {
     tags: () => [],
@@ -37,6 +40,7 @@ const props = withDefaults(
     clickable: true,
     borderRadius: '10px',
     gap: '8px',
+    highlightTerms: () => [],
   },
 )
 
@@ -50,12 +54,22 @@ const moreCount = computed(() => {
   return Math.max(0, normalized.value.length - props.max)
 })
 
+function isHighlighted(tag: string): boolean {
+  if (!props.highlightTerms || props.highlightTerms.length === 0) return false
+  // 只要 tag 包含高亮词，或者高亮词包含 tag，就认为命中
+  const lowerTag = tag.toLowerCase()
+  return props.highlightTerms.some(term => {
+    const lowerTerm = term.toLowerCase()
+    return lowerTag.includes(lowerTerm) || lowerTerm.includes(lowerTag)
+  })
+}
+
 async function copy(text: string) {
   if (!props.clickable) return
-  try {
-    await navigator.clipboard.writeText(text)
+  const success = await copyToClipboard(text)
+  if (success) {
     ElMessage.success('已复制')
-  } catch {
+  } else {
     ElMessage.warning('复制失败')
   }
 }
@@ -81,7 +95,7 @@ async function copy(text: string) {
           :effect="effect"
           :round="round"
           class="pill"
-          :class="{ clickable }"
+          :class="{ clickable, 'is-highlighted': isHighlighted(t) }"
           @click.stop="copy(t)"
         >
           {{ t }}
@@ -129,6 +143,14 @@ async function copy(text: string) {
 
 .pill.clickable {
   cursor: pointer;
+}
+
+.pill.is-highlighted {
+  box-shadow: 0 0 0 2px #f59e0b;
+  font-weight: 600;
+  transform: scale(1.05);
+  transition: all 0.2s ease;
+  z-index: 1;
 }
 
 .empty {
