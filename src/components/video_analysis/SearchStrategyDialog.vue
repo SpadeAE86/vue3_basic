@@ -133,11 +133,14 @@ function handleSave() {
 </script>
 
 <template>
-  <el-dialog 
-    v-model="visible" 
-    :title="mode === 'create' ? '保存搜索策略' : '编辑搜索权重'" 
-    width="560px" 
+  <el-dialog
+    v-model="visible"
+    :title="mode === 'create' ? '保存搜索策略' : '编辑搜索权重'"
+    width="560px"
+    align-center
     append-to-body
+    destroy-on-close
+    class="search-strategy-dialog"
   >
     <div class="sliders-container">
       <el-form v-if="mode === 'create'" label-width="80px">
@@ -288,6 +291,31 @@ function handleSave() {
 </template>
 
 <style scoped>
+/* append-to-body 时可能拿不到页面内的 --el-bg-color，用对话框专用色 + 实色兜底避免透底 */
+.search-strategy-dialog :deep(.el-dialog) {
+  background-color: var(--el-dialog-bg-color, #ffffff);
+  border-radius: var(--el-dialog-border-radius, 4px);
+}
+
+.search-strategy-dialog :deep(.el-dialog__header) {
+  background-color: var(--el-dialog-bg-color, #ffffff);
+  padding-bottom: 12px;
+  margin-right: 0;
+}
+
+.search-strategy-dialog :deep(.el-dialog__body) {
+  background-color: var(--el-dialog-bg-color, #ffffff);
+  padding: 16px 20px;
+  box-sizing: border-box;
+}
+
+.search-strategy-dialog :deep(.el-dialog__footer) {
+  padding: 12px 20px;
+  border-top: 1px solid var(--el-border-color-lighter);
+  background-color: var(--el-dialog-bg-color, #ffffff);
+  box-sizing: border-box;
+}
+
 .sliders-container {
   max-height: 60vh;
   overflow-y: auto;

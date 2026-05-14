@@ -10,6 +10,8 @@ import type { ShotCard } from '@/types/videoAnalysis'
 
 const PAGE_KEY = 'videoAnalysis:page:v2'
 const SEARCH_KEY = 'videoAnalysis:searchLRU:v2'
+/** 从视频匹配分镜「跳转视频分析」写入，进入分析页后 consume */
+const PREFILL_FROM_MATCH_KEY = 'videoAnalysis:prefillFromMatch:v1'
 
 /** 全局的智能提取状态，跨路由保持 */
 export const rewriteTaskState = reactive({
@@ -33,10 +35,29 @@ export type VideoAnalysisPageSnapshot = {
   currentWorkspace: string
   selectedHistory: string
   splitScenes: boolean
-  fuzzySearch: boolean
+  /** 兼容旧快照 */
+  fuzzySearch?: boolean
+  searchFuzzy?: boolean
   searchTokens: SearchToken[]
   /** 最近一次成功 /search 对应的缓存键；用于挂载时对齐 */
   lastSearchCacheKey: string | null
+}
+
+/** 视频匹配分镜「跳转视频分析」时写入 sessionStorage，进入分析页后 consume */
+export type VideoAnalysisPrefillFromMatch = {
+  workspace: string
+  selectedHistory: string
+  searchTokens: SearchToken[]
+  searchStrategyWeights: {
+    bm25_weight: number
+    vector_weight: number
+    use_rrf: boolean
+    text_weights?: Record<string, number>
+    vector_weights?: Record<string, number>
+  }
+  searchFuzzy: boolean
+  /** 填入后是否自动请求 /search */
+  autoSearch: boolean
 }
 
 type SearchCacheEntry = {
@@ -115,6 +136,25 @@ export function savePageSnapshot(s: VideoAnalysisPageSnapshot) {
 
 export function loadPageSnapshot(): VideoAnalysisPageSnapshot | null {
   return safeParse<VideoAnalysisPageSnapshot>(sessionStorage.getItem(PAGE_KEY))
+}
+
+export function stashVideoAnalysisPrefillFromMatch(payload: VideoAnalysisPrefillFromMatch) {
+  try {
+    sessionStorage.setItem(PREFILL_FROM_MATCH_KEY, JSON.stringify(payload))
+  } catch {
+    /* ignore */
+  }
+}
+
+export function consumeVideoAnalysisPrefillFromMatch(): VideoAnalysisPrefillFromMatch | null {
+  try {
+    const raw = sessionStorage.getItem(PREFILL_FROM_MATCH_KEY)
+    if (!raw) return null
+    sessionStorage.removeItem(PREFILL_FROM_MATCH_KEY)
+    return JSON.parse(raw) as VideoAnalysisPrefillFromMatch
+  } catch {
+    return null
+  }
 }
 
 export const videoAnalysisSearchCache = {

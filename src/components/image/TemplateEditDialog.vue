@@ -29,6 +29,9 @@ function onSave() {
     @update:model-value="emit('update:modelValue', $event)"
     :title="isNew ? '新建模板' : '编辑模板'"
     width="700px"
+    append-to-body
+    align-center
+    class="template-edit-dialog"
   >
     <div v-loading="loading">
       <el-form label-width="80px">
@@ -57,3 +60,19 @@ function onSave() {
     </template>
   </el-dialog>
 </template>
+
+<style scoped>
+.template-edit-dialog :deep(.el-dialog) {
+  background-color: var(--el-dialog-bg-color, #ffffff);
+}
+.template-edit-dialog :deep(.el-dialog__header) {
+  background-color: var(--el-dialog-bg-color, #ffffff);
+  margin-right: 0;
+}
+.template-edit-dialog :deep(.el-dialog__body) {
+  background-color: var(--el-dialog-bg-color, #ffffff);
+}
+.template-edit-dialog :deep(.el-dialog__footer) {
+  background-color: var(--el-dialog-bg-color, #ffffff);
+}
+</style>

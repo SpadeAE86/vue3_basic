@@ -1,13 +1,13 @@
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted, watch, onBeforeUnmount } from 'vue'
+import { ref, reactive, computed, onMounted, watch, onBeforeUnmount, nextTick } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
-  analyzeVideoApi,
   getVideoAnalysisHistoryApi,
   getVideoAnalysisHistoryItemApi,
   getVideoAnalysisCardsApi,
   searchVideoAnalysisCardsApi,
   getVideoAnalysisWorkspacesApi,
+  submitVideoAnalysisApi,
   type VideoAnalysisSearchToken,
 } from '@/api/video_analysis'
 import ShotDetailDrawer from '@/components/video_analysis/ShotDetailDrawer.vue'
@@ -20,6 +20,7 @@ import {
   savePageSnapshot,
   videoAnalysisSearchCache,
   rewriteTaskState,
+  consumeVideoAnalysisPrefillFromMatch,
   type VideoAnalysisPageSnapshot,
 } from '@/utils/videoAnalysisSessionCache'
 
@@ -483,48 +484,48 @@ const confirmUpload = async () => {
 
   isAnalyzing.value = true
   try {
-    const concurrencyLimit = 3
+    const uploadConcurrency = 4
     const files = [...selectedFiles.value]
     const carModelVal = batchCarModel.value.trim()
-    let currentIndex = 0
-    
-    const processNext = async (): Promise<void> => {
-      if (currentIndex >= files.length) return
-      const file = files[currentIndex++]
-      try {
-        const res = await analyzeVideoApi(file, {
-          splitScenes: splitScenes.value,
-          workspace: currentWorkspace.value,
-          carModel: carModelVal || undefined
-        })
-        if (res?.success && res?.item) {
-          const item = res.item as VideoAnalysisHistoryItem
-          // 更新历史并选中新结果
-          historyItems.value = [item, ...historyItems.value.filter((x) => x.id !== item.id)]
-          selectedHistory.value = item.id
-          analysisResults.value = toUiCards(item.cards)
-          ElMessage.success(`视频 ${file.name} 分析完成`)
-        } else {
-          ElMessage.error(`视频 ${file.name} 分析失败: ${res?.error || '未知错误'}`)
+    const queue = [...files]
+    let ok = 0
+    let fail = 0
+
+    const worker = async () => {
+      while (queue.length) {
+        const file = queue.shift()!
+        try {
+          const res = await submitVideoAnalysisApi(file, {
+            splitScenes: splitScenes.value,
+            workspace: currentWorkspace.value,
+            carModel: carModelVal || undefined,
+          })
+          if (res.success && res.task_id) ok += 1
+          else fail += 1
+        } catch {
+          fail += 1
         }
-      } catch (e: any) {
-        ElMessage.error(`视频 ${file.name} 分析出错: ${e?.message || '未知错误'}`)
-      } finally {
-        await processNext()
       }
     }
 
-    const initialWorkers = Math.min(concurrencyLimit, files.length)
-    const workers = []
-    for (let i = 0; i < initialWorkers; i++) {
-      workers.push(processNext())
+    const nWorkers = Math.min(uploadConcurrency, files.length)
+    await Promise.all(Array.from({ length: nWorkers }, () => worker()))
+
+    await refreshHistory()
+
+    if (files.length === 1) {
+      if (ok) {
+        ElMessage.success('任务已提交，分析完成后可在历史中选择记录或前往任务看板查看')
+      } else {
+        ElMessage.error('提交失败，请检查网络或后端日志')
+      }
+    } else {
+      ElMessage.success(
+        `已提交 ${ok} 个视频分析任务（失败 ${fail} 个）。请到任务看板查看排队与执行状态`,
+      )
     }
-    await Promise.all(workers)
-    
-    if (files.length > 1) {
-      ElMessage.success('所有选中的视频批量分析任务已完成')
-    }
-    selectedFiles.value = [] // 成功后清空已选文件
+    window.dispatchEvent(new CustomEvent('va-tasks-submitted'))
+    selectedFiles.value = []
   } finally {
     isAnalyzing.value = false
   }
@@ -640,18 +641,47 @@ watch(
 onMounted(async () => {
   await fetchWorkspaces()
 
-  const snap = loadPageSnapshot()
-  if (snap) {
+  const prefill = consumeVideoAnalysisPrefillFromMatch()
+  if (prefill) {
     restoringSnapshot.value = true
     try {
-      if (snap.currentWorkspace) currentWorkspace.value = snap.currentWorkspace
-      selectedHistory.value = snap.selectedHistory ?? ''
-      splitScenes.value = snap.splitScenes ?? true
-      searchTokens.value = Array.isArray(snap.searchTokens) ? [...snap.searchTokens] : []
-      lastSuccessfulSearchKey.value = snap.lastSearchCacheKey ?? null
-      if (snap.searchFuzzy !== undefined) searchFuzzy.value = snap.searchFuzzy
+      if (prefill.workspace) currentWorkspace.value = prefill.workspace
+      selectedHistory.value = prefill.selectedHistory || '__all__'
+      splitScenes.value = true
+      searchTokens.value = Array.isArray(prefill.searchTokens) ? [...prefill.searchTokens] : []
+      searchFuzzy.value = prefill.searchFuzzy !== false
+      const w = prefill.searchStrategyWeights
+      if (w) {
+        searchStrategyWeights.value = {
+          ...searchStrategyWeights.value,
+          bm25_weight: w.bm25_weight,
+          vector_weight: w.vector_weight,
+          use_rrf: !!w.use_rrf,
+          ...(w.text_weights ? { text_weights: w.text_weights } : {}),
+          ...(w.vector_weights ? { vector_weights: w.vector_weights } : {}),
+        } as typeof searchStrategyWeights.value
+      }
+      lastSuccessfulSearchKey.value = null
+      remoteSearchCards.value = []
+      analysisResults.value = []
     } finally {
       restoringSnapshot.value = false
+    }
+    ElMessage.success('已从视频匹配填入检索条件与模板权重')
+  } else {
+    const snap = loadPageSnapshot()
+    if (snap) {
+      restoringSnapshot.value = true
+      try {
+        if (snap.currentWorkspace) currentWorkspace.value = snap.currentWorkspace
+        selectedHistory.value = snap.selectedHistory ?? ''
+        splitScenes.value = snap.splitScenes ?? true
+        searchTokens.value = Array.isArray(snap.searchTokens) ? [...snap.searchTokens] : []
+        lastSuccessfulSearchKey.value = snap.lastSearchCacheKey ?? null
+        if (snap.searchFuzzy !== undefined) searchFuzzy.value = snap.searchFuzzy
+      } finally {
+        restoringSnapshot.value = false
+      }
     }
   }
 
@@ -661,29 +691,34 @@ onMounted(async () => {
     await handleHistoryChange(selectedHistory.value)
   }
 
-  const tok = (searchTokens.value ?? []).filter((t) => t.text?.trim())
-  if (tok.length) {
-    const hid =
-      selectedHistory.value && selectedHistory.value !== '__all__' ? selectedHistory.value : undefined
-    const backendTok = toBackendTokens(tok)
-    const key = buildSearchCacheKey({
-      workspace: currentWorkspace.value,
-      historyId: hid,
-      fuzzy: searchFuzzy.value,
-      tokens: backendTok,
-      size: 80,
-      strategySig: JSON.stringify({
-        r: !!searchStrategyWeights.value.use_rrf,
-        b: searchStrategyWeights.value.bm25_weight,
-        v: searchStrategyWeights.value.vector_weight,
-        tw: searchStrategyWeights.value.text_weights ?? {},
-        vw: searchStrategyWeights.value.vector_weights ?? {},
-      }),
-    })
-    const hit = videoAnalysisSearchCache.get(key)
-    if (hit?.cards?.length) {
-      applySearchHit(hit.cards as ShotCard[], (hit.search_mode as 'precise' | 'fuzzy' | 'fuzzy_rrf') ?? null)
-      lastSuccessfulSearchKey.value = key
+  if (prefill?.autoSearch && (searchTokens.value ?? []).some((t) => t.text?.trim())) {
+    await nextTick()
+    kickRemoteSearch()
+  } else {
+    const tok = (searchTokens.value ?? []).filter((t) => t.text?.trim())
+    if (tok.length) {
+      const hid =
+        selectedHistory.value && selectedHistory.value !== '__all__' ? selectedHistory.value : undefined
+      const backendTok = toBackendTokens(tok)
+      const key = buildSearchCacheKey({
+        workspace: currentWorkspace.value,
+        historyId: hid,
+        fuzzy: searchFuzzy.value,
+        tokens: backendTok,
+        size: 80,
+        strategySig: JSON.stringify({
+          r: !!searchStrategyWeights.value.use_rrf,
+          b: searchStrategyWeights.value.bm25_weight,
+          v: searchStrategyWeights.value.vector_weight,
+          tw: searchStrategyWeights.value.text_weights ?? {},
+          vw: searchStrategyWeights.value.vector_weights ?? {},
+        }),
+      })
+      const hit = videoAnalysisSearchCache.get(key)
+      if (hit?.cards?.length) {
+        applySearchHit(hit.cards as ShotCard[], (hit.search_mode as 'precise' | 'fuzzy' | 'fuzzy_rrf') ?? null)
+        lastSuccessfulSearchKey.value = key
+      }
     }
   }
 

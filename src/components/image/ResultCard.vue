@@ -11,17 +11,25 @@ const props = defineProps<{
 }>()
 
 const previewOpen = ref(false)
+/** 文生图/图生图：仅用 el-image 内嵌的 ElImageViewer（可缩放拖动）；勿再叠 MediaPreviewDialog */
+const elImageRef = ref<{ showPreview?: () => void } | null>(null)
 
 function openPreview() {
   if (!props.item.url || props.item.loading || props.item.error) return
-  previewOpen.value = true
+  if (props.item.type.includes('v')) {
+    previewOpen.value = true
+    return
+  }
+  elImageRef.value?.showPreview?.()
 }
 
 function onMediaAreaClick(e: MouseEvent) {
   if (!props.item.url || props.item.loading || props.item.error) return
   const t = e.target as HTMLElement
   if (t.closest('.action-icons')) return
-  openPreview()
+  if (props.item.type.includes('v')) {
+    openPreview()
+  }
 }
 
 const emit = defineEmits<{
@@ -69,7 +77,7 @@ function pauseVideo(e: Event) {
 <template>
   <div class="result-card" @mouseenter="playVideo" @mouseleave="pauseVideo">
     <MediaPreviewDialog
-      v-if="item.url"
+      v-if="item.url && item.type.includes('v')"
       v-model="previewOpen"
       :url="item.url"
       :media-type="item.type"
@@ -119,6 +127,7 @@ function pauseVideo(e: Event) {
         <video v-if="item.type.includes('v')" :src="item.url" class="generated-image" loop muted playsinline></video>
         <el-image
           v-else
+          ref="elImageRef"
           :src="item.url"
           fit="contain"
           class="generated-image-el"

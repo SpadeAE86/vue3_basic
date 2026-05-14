@@ -62,8 +62,8 @@ const emit = defineEmits<{
 // --- 搜索策略相关逻辑 ---
 const strategies = ref<SearchStrategy[]>([])
 const selectedStrategy = ref<string>('')
-const editDialogVisible = ref(false)
-const createDialogVisible = ref(false)
+const strategyDialogVisible = ref(false)
+const strategyDialogMode = ref<'edit' | 'create'>('edit')
 
 const localBm25 = ref(props.strategyWeights.bm25_weight)
 const localVector = ref(props.strategyWeights.vector_weight)
@@ -192,7 +192,7 @@ async function handleSaveStrategy(data: { name: string; isDefault: boolean }) {
     })
     if (res.success) {
       ElMessage.success('保存成功')
-      createDialogVisible.value = false
+      strategyDialogVisible.value = false
       await loadStrategies()
       selectedStrategy.value = data.name
     } else {
@@ -224,8 +224,18 @@ watch(() => props.workspace, () => {
   fetchIndexFields()
 })
 
-watch(createDialogVisible, (open) => {
-  if (!open) return
+function openCreateStrategyDialog() {
+  strategyDialogMode.value = 'create'
+  strategyDialogVisible.value = true
+}
+
+function openEditStrategyDialog() {
+  strategyDialogMode.value = 'edit'
+  strategyDialogVisible.value = true
+}
+
+watch(strategyDialogVisible, (open) => {
+  if (!open || strategyDialogMode.value !== 'create') return
   const fields = indexFields.value.vector_fields
   if (!fields.length) return
   const next = { ...localVectorWeights.value }
@@ -444,7 +454,7 @@ function handleEnterKey() {
         <SearchStrategySelect
           v-model="selectedStrategy"
           :strategies="strategies"
-          @create="createDialogVisible = true"
+          @create="openCreateStrategyDialog"
           @delete="handleDeleteStrategy"
           @refresh="loadStrategies"
         />
@@ -455,7 +465,7 @@ function handleEnterKey() {
           size="small"
           color="#6366f1"
           :disabled="!selectedStrategy"
-          @click="editDialogVisible = true"
+          @click="openEditStrategyDialog"
           title="配置权重"
         >
           <el-icon><i-ep-setting /></el-icon>
@@ -464,25 +474,8 @@ function handleEnterKey() {
     </div>
 
     <SearchStrategyDialog
-      v-model="editDialogVisible"
-      mode="edit"
-      :bm25-weight="localBm25"
-      :vector-weight="localVector"
-      :text-weights="localTextWeights"
-      :vector-weights="localVectorWeights"
-      :use-rrf="localUseRrf"
-      :index-fields="indexFields"
-      @update:bm25-weight="localBm25 = $event"
-      @update:vector-weight="localVector = $event"
-      @update:text-weights="localTextWeights = $event"
-      @update:vector-weights="localVectorWeights = $event"
-      @update:use-rrf="onUpdateUseRrf"
-      @change="onSliderChange"
-    />
-
-    <SearchStrategyDialog
-      v-model="createDialogVisible"
-      mode="create"
+      v-model="strategyDialogVisible"
+      :mode="strategyDialogMode"
       :initial-name="newStrategyName"
       :initial-is-default="newStrategyIsDefault"
       :bm25-weight="localBm25"

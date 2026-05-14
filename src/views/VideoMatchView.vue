@@ -21,14 +21,9 @@ import {
   type SearchStrategy,
 } from '@/api/video_analysis'
 import type { WorkspaceOption } from '@/types/videoAnalysis'
-import { mockVideoMatchJobResponse } from '@/fixtures/mockVideoMatchShots'
 import SearchStrategySelect from '@/components/video_analysis/SearchStrategySelect.vue'
 import TokenChipsReadonly from '@/components/video_match/TokenChipsReadonly.vue'
 import { tagsJsonToSearchTokens } from '@/utils/matchTagsFromSegment'
-
-const defaultClientMock =
-  import.meta.env.VITE_VIDEO_MATCH_MOCK === '1' ||
-  import.meta.env.VITE_VIDEO_MATCH_MOCK === 'true'
 
 const form = ref({
   script: '',
@@ -42,14 +37,9 @@ const workspaceOptions = ref<WorkspaceOption[]>([
   { key: 'v1', label: '经典分析 v1', description: '', is_default: true },
 ])
 
-const clientMock = ref(defaultClientMock)
-const serverMock = ref(false)
 const parsing = ref(false)
 const matching = ref(false)
 const composing = ref(false)
-/** 与后端 ``mix_compose.mock`` 一致：true 只写占位 output_url，不调真实混剪（通常很快结束） */
-const mixComposeUseMock = ref(true)
-const mixRunUsedMock = ref(false)
 const currentJobId = ref<string | null>(null)
 const shots = ref<VideoMatchShotDto[]>([])
 const parseStatus = ref<string | null>(null)
@@ -134,10 +124,6 @@ function rowIsActivelyPlaying(row: VideoMatchShotDto) {
 }
 
 async function onSynthesizeAudio(row: VideoMatchShotDto) {
-  if (clientMock.value) {
-    ElMessage.info('请关闭「前端 Mock」后生成朗读')
-    return
-  }
   if (!currentJobId.value) {
     ElMessage.warning('缺少任务 ID')
     return
@@ -197,7 +183,7 @@ async function openMatchDetail(row: VideoMatchShotDto) {
   matchDetailPayload.value = null
   matchDetailLocalOnly.value = false
 
-  if (row.id == null || clientMock.value || !currentJobId.value) {
+  if (row.id == null || !currentJobId.value) {
     matchDetailLocalOnly.value = true
     matchDetailPayload.value = {}
     return
@@ -223,13 +209,12 @@ const canMatch = computed(
   () =>
     hasShots.value &&
     !!currentJobId.value &&
-    !clientMock.value &&
     parseStatus.value === 'done' &&
     !!selectedStrategy.value.trim(),
 )
 
 const canMixCompose = computed(() => {
-  if (!currentJobId.value || clientMock.value) return false
+  if (!currentJobId.value) return false
   if (parseStatus.value !== 'done') return false
   if (!shots.value.length) return false
   if ((jobSearchStatus.value || '').toLowerCase() !== 'done') return false
@@ -243,7 +228,6 @@ const canMixCompose = computed(() => {
 })
 
 const mixComposeDisabledHint = computed(() => {
-  if (clientMock.value) return '请关闭「前端 Mock」后再试'
   if (!currentJobId.value) return '请先创建或载入任务'
   if (parseStatus.value !== 'done') return '请先完成口播解析'
   if (!shots.value.length) return '暂无分镜'
@@ -290,7 +274,6 @@ function shotStatusTagType(st: string): 'success' | 'danger' | 'warning' | 'info
 }
 
 async function loadHistoryJobs() {
-  if (clientMock.value) return
   try {
     const res = await listVideoMatchJobsApi({
       parse_status: 'done',
@@ -314,7 +297,7 @@ function historyJobLabel(j: VideoMatchJobSummary) {
 
 async function onHistoryJobChange(id: string | null | undefined) {
   const sid = id == null ? '' : String(id)
-  if (!sid || clientMock.value) return
+  if (!sid) return
   try {
     const res = await getVideoMatchJobApi(sid)
     if (!res.success) {
@@ -364,14 +347,6 @@ async function loadStrategies() {
   }
 }
 
-function cloneMock() {
-  return structuredClone(mockVideoMatchJobResponse) as typeof mockVideoMatchJobResponse
-}
-
-function delay(ms: number) {
-  return new Promise((r) => setTimeout(r, ms))
-}
-
 async function onParse() {
   if (!form.value.script.trim()) {
     ElMessage.warning('口播脚本不能为空')
@@ -384,24 +359,13 @@ async function onParse() {
   jobSearchStatus.value = null
   jobSearchError.value = null
   try {
-    if (clientMock.value) {
-      await delay(450)
-      const m = cloneMock()
-      currentJobId.value = m.job_id ?? null
-      shots.value = m.shots ?? []
-      parseStatus.value = m.parse_status ?? 'done'
-      jobSearchStatus.value = m.search_status ?? 'pending'
-      ElMessage.success('前端 Mock：已填充分镜列表')
-      return
-    }
-
     const res = await createVideoMatchJobApi({
       script: form.value.script.trim(),
       topic: form.value.topic.trim() || undefined,
       title: form.value.title.trim() || undefined,
       car_model: form.value.car_model.trim() || undefined,
       workspace: form.value.workspace.trim() || 'v1',
-      mock: serverMock.value,
+      mock: false,
     })
 
     if (!res.success) {
@@ -419,8 +383,7 @@ async function onParse() {
     jobSearchStatus.value = res.search_status ?? null
     searchTotalMs.value = res.search_total_ms ?? null
     jobSearchError.value = res.search_error ?? null
-    const tip = res.mock ? '后端 Mock：解析完成' : '转写完成'
-    ElMessage.success(tip)
+    ElMessage.success(res.mock ? '转写完成（服务端返回 mock）' : '转写完成')
     await loadHistoryJobs()
     historyJobId.value = currentJobId.value
   } catch (e) {
@@ -444,32 +407,6 @@ async function onMatch() {
   jobSearchError.value = null
   let pollTimer: ReturnType<typeof setInterval> | undefined
   try {
-    if (clientMock.value) {
-      await delay(600)
-      const topHits = [
-        { _id: 'mock_h_1', _score: 1.2, history_id: 'x', video_path: 'https://mock.obs/example1.mp4' },
-        { _id: 'mock_h_2', _score: 1.0, history_id: 'y', video_path: 'https://mock.obs/example2.mp4' },
-      ]
-      let acc = 0
-      shots.value = shots.value.map((row, i) => {
-        const ms = 80 + i * 12
-        acc += ms
-        return {
-          ...row,
-          match_top_hits_json: topHits,
-          match_elapsed_ms: ms,
-          top1_obs_url: topHits[0]!.video_path ?? null,
-          top5_video_urls: topHits.map((h) => h.video_path).filter(Boolean) as string[],
-          match_hit_count: topHits.length,
-          search_status: 'done',
-        }
-      })
-      searchTotalMs.value = Math.round(acc)
-      jobSearchStatus.value = 'done'
-      ElMessage.success('前端 Mock：匹配完成')
-      return
-    }
-
     const jid = currentJobId.value!
     pollTimer = setInterval(async () => {
       try {
@@ -550,12 +487,9 @@ async function onMixCompose() {
 
   clearComposePoll()
   composing.value = true
-  mixRunUsedMock.value = mixComposeUseMock.value
   lastMixCompose.value = null
   try {
-    const start = await startMixComposeApi(currentJobId.value, {
-      mock: mixComposeUseMock.value,
-    })
+    const start = await startMixComposeApi(currentJobId.value)
     if (!start.compose_id || !start.biz_id) {
       ElMessage.error(start.detail || '启动混剪失败')
       composing.value = false
@@ -584,9 +518,7 @@ async function onMixCompose() {
         if (st.status === 'done') {
           clearComposePoll()
           composing.value = false
-          if (mixRunUsedMock.value) {
-            ElMessage.success('已完成（Mock：仅写入占位 output_url；关闭「混剪 Mock」可走真实混剪）')
-          } else if (st.result_obs_url) {
+          if (st.result_obs_url) {
             ElMessage.success('混剪完成')
           } else {
             ElMessage.success('混剪任务已完成')
@@ -607,7 +539,7 @@ async function onMixCompose() {
 }
 
 async function refreshJob() {
-  if (!currentJobId.value || clientMock.value) return
+  if (!currentJobId.value) return
   const res = await getVideoMatchJobApi(currentJobId.value)
   if (res.success && res.shots) {
     shots.value = res.shots
@@ -678,7 +610,6 @@ onUnmounted(() => {
             placeholder="载入已转写任务"
             class="history-job-select"
             size="small"
-            :disabled="clientMock"
             @change="onHistoryJobChange"
           >
             <el-option
@@ -705,14 +636,6 @@ onUnmounted(() => {
               @delete="onStrategyDelete"
               @create="onStrategyCreate"
             />
-            <el-tooltip
-              content="开启=仅占位 output_url、不调混剪服务；关闭=发起真实混剪 HTTP（需配置 mix_compose.api_base 等）"
-              placement="top"
-            >
-              <span class="inline-btn-wrap mix-mock-switch">
-                <el-switch v-model="mixComposeUseMock" size="small" active-text="混剪 Mock" />
-              </span>
-            </el-tooltip>
             <el-tooltip
               :disabled="canMixCompose"
               placement="top"
@@ -788,14 +711,6 @@ onUnmounted(() => {
               <div v-if="lastMixCompose.error_message" class="mix-err">{{ lastMixCompose.error_message }}</div>
             </div>
           </el-alert>
-          <div class="mock-controls">
-            <el-switch v-model="clientMock" active-text="前端 Mock" />
-            <el-switch
-              v-model="serverMock"
-              :disabled="clientMock"
-              active-text="后端 Mock"
-            />
-          </div>
         </div>
         <div class="right-controls">
           <el-tooltip
@@ -807,7 +722,7 @@ onUnmounted(() => {
           </el-tooltip>
           <el-tag v-if="parseStatus" size="small" type="success" effect="plain">{{ parseStatus }}</el-tag>
           <el-tag v-if="jobSearchStatus" size="small" type="warning" effect="plain">{{ jobSearchStatus }}</el-tag>
-          <el-button v-if="currentJobId && !clientMock" size="small" @click="refreshJob">刷新</el-button>
+          <el-button v-if="currentJobId" size="small" @click="refreshJob">刷新</el-button>
         </div>
       </div>
 
@@ -899,7 +814,7 @@ onUnmounted(() => {
                 <el-button
                   v-if="!(row.obs_audio_url || '').trim()"
                   size="small"
-                  :disabled="clientMock || row.id == null"
+                  :disabled="row.id == null"
                   :loading="row.id != null && !!synthBusyByShotId[row.id]"
                   @click="onSynthesizeAudio(row)"
                 >
@@ -998,7 +913,7 @@ onUnmounted(() => {
           :closable="false"
           show-icon
           class="match-detail-alert"
-          title="当前为本地 / Mock 或未落库分镜：仅展示标签。解析落库并执行「素材匹配」后，可查看 OpenSearch 请求与响应摘要。"
+          title="当前为未落库分镜或暂无 HTTP 记录：仅展示标签。解析落库并执行「素材匹配」后，可查看 OpenSearch 请求与响应摘要。"
         />
 
         <template v-else-if="matchDetailPayload && matchDetailPayload.error">
@@ -1069,7 +984,7 @@ onUnmounted(() => {
 
     <el-empty
       v-if="!hasShots && !parsing"
-      description="填写脚本后点击「解析 / 转写」生成分镜列表（可开 Mock 验证界面）"
+      description="填写脚本后点击「解析 / 转写」生成分镜列表，或从上方选择已转写任务"
       class="empty-state"
     />
 
@@ -1140,10 +1055,6 @@ onUnmounted(() => {
   gap: 10px;
 }
 
-.mix-mock-switch {
-  margin-right: 4px;
-}
-
 .mix-result-path {
   margin-top: 6px;
 }
@@ -1190,12 +1101,6 @@ onUnmounted(() => {
 .mix-compose-status-body .mix-err {
   color: #f56c6c;
   margin-top: 6px;
-}
-
-.mock-controls {
-  display: flex;
-  align-items: center;
-  gap: 16px;
 }
 
 .right-controls {

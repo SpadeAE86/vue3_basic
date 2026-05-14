@@ -1,24 +1,86 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { checkBackendStatusApi } from '@/api/generate'
+import { getVideoAnalysisTaskBadgesApi } from '@/api/video_analysis'
+
+const VA_BADGE_BASELINE_KEY = 'va_sidebar_task_badge_baseline'
+
+const defaultMenuOpeneds = ['menu-smart-mix']
 
 const isCollapsed = ref(false)
 const route = useRoute()
 const isBackendConnected = ref(false)
+/** 后端从「未连接」变为「已连接」时递增，强制重挂当前路由以拉取数据（无需用户切换子页） */
+const routerViewKey = ref(0)
 let statusCheckTimer: number
+let vaBadgeTimer: number
+let isFirstHealthCheck = true
+
+/** 相对基线的待处理+运行中任务数（进入视频分析/看板页会刷新基线以消除角标） */
+const vaBadgeCount = ref(0)
+
+const isVaHubRoute = (p: string) => p === '/video-analysis' || p === '/task-board/video-analysis'
+
+async function refreshVaBadge() {
+  try {
+    const r = await getVideoAnalysisTaskBadgesApi()
+    if (!r.success) return
+    const c = r.counts || {}
+    const total = (c.PENDING || 0) + (c.RUNNING || 0)
+    let baseline = 0
+    try {
+      baseline = parseInt(localStorage.getItem(VA_BADGE_BASELINE_KEY) || '0', 10) || 0
+    } catch {
+      baseline = 0
+    }
+    vaBadgeCount.value = Math.max(0, total - baseline)
+  } catch {
+    /* ignore */
+  }
+}
+
+function dismissVaBadgeBaselineToCurrent() {
+  void getVideoAnalysisTaskBadgesApi().then((r) => {
+    if (!r.success) return
+    const c = r.counts || {}
+    const total = (c.PENDING || 0) + (c.RUNNING || 0)
+    try {
+      localStorage.setItem(VA_BADGE_BASELINE_KEY, String(total))
+    } catch {
+      /* ignore */
+    }
+    vaBadgeCount.value = 0
+  })
+}
+
+watch(
+  () => route.path,
+  (p) => {
+    if (isVaHubRoute(p)) dismissVaBadgeBaselineToCurrent()
+  },
+)
 
 const checkStatus = async () => {
   isBackendConnected.value = await checkBackendStatusApi()
 }
 
+function onVaTasksSubmitted() {
+  void refreshVaBadge()
+}
+
 onMounted(() => {
   checkStatus()
-  statusCheckTimer = window.setInterval(checkStatus, 10000) // 每10秒检查一次
+  statusCheckTimer = window.setInterval(checkStatus, 10000)
+  void refreshVaBadge()
+  vaBadgeTimer = window.setInterval(refreshVaBadge, 15000)
+  window.addEventListener('va-tasks-submitted', onVaTasksSubmitted)
 })
 
 onUnmounted(() => {
   clearInterval(statusCheckTimer)
+  clearInterval(vaBadgeTimer)
+  window.removeEventListener('va-tasks-submitted', onVaTasksSubmitted)
 })
 </script>
 
@@ -33,6 +95,7 @@ onUnmounted(() => {
 
       <el-menu
         :default-active="route.path"
+        :default-openeds="defaultMenuOpeneds"
         :collapse="isCollapsed"
         router
         class="aside-menu"
@@ -62,15 +125,30 @@ onUnmounted(() => {
           <template #title>提示词对比</template>
         </el-menu-item>
 
-        <el-menu-item index="/video-analysis">
-          <el-icon><i-ep-video-play /></el-icon>
-          <template #title>视频分析</template>
-        </el-menu-item>
-
-        <el-menu-item index="/video-match">
-          <el-icon><i-ep-magic-stick /></el-icon>
-          <template #title>视频匹配</template>
-        </el-menu-item>
+        <el-sub-menu index="menu-smart-mix">
+          <template #title>
+            <el-icon><i-ep-film /></el-icon>
+            <span>智能混剪</span>
+          </template>
+          <el-menu-item index="/video-analysis">
+            <el-icon><i-ep-video-play /></el-icon>
+            <template #title>
+              <span class="menu-title-row">
+                <span>视频分析</span>
+                <el-badge
+                  v-if="vaBadgeCount > 0 && !isCollapsed"
+                  :value="vaBadgeCount"
+                  :max="99"
+                  class="sidebar-menu-badge"
+                />
+              </span>
+            </template>
+          </el-menu-item>
+          <el-menu-item index="/video-match">
+            <el-icon><i-ep-magic-stick /></el-icon>
+            <template #title>视频匹配</template>
+          </el-menu-item>
+        </el-sub-menu>
 
         <el-sub-menu index="menu-task-board">
           <template #title>
@@ -83,7 +161,21 @@ onUnmounted(() => {
           </el-menu-item>
           <el-menu-item index="/task-board/video-analysis">
             <el-icon><i-ep-video-camera /></el-icon>
-            <template #title>视频分析</template>
+            <template #title>
+              <span class="menu-title-row">
+                <span>视频分析</span>
+                <el-badge
+                  v-if="vaBadgeCount > 0 && !isCollapsed"
+                  :value="vaBadgeCount"
+                  :max="99"
+                  class="sidebar-menu-badge"
+                />
+              </span>
+            </template>
+          </el-menu-item>
+          <el-menu-item index="/task-board/video-match">
+            <el-icon><i-ep-magic-stick /></el-icon>
+            <template #title>视频匹配</template>
           </el-menu-item>
         </el-sub-menu>
 
@@ -130,7 +222,7 @@ onUnmounted(() => {
       </el-header>
 
       <el-main class="app-main">
-        <RouterView />
+        <RouterView :key="routerViewKey" />
       </el-main>
     </el-container>
   </el-container>
@@ -275,5 +367,29 @@ onUnmounted(() => {
 .status-text {
   font-size: 13px;
   color: #606266;
+}
+
+.menu-title-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+
+.sidebar-menu-badge :deep(.el-badge__content) {
+  border: none;
+  background-color: rgba(129, 140, 248, 0.28);
+  color: #c7d2fe;
+  font-size: 11px;
+  font-weight: 500;
+  height: 18px;
+  line-height: 18px;
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  box-shadow: none;
+  vertical-align: middle;
+  position: relative;
+  top: 0;
 }
 </style>

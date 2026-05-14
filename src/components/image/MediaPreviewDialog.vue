@@ -167,7 +167,8 @@ function close() {
 </style>
 
 <style>
-.el-dialog {
+/* 必须带 .media-preview-dialog：裸 .el-dialog 会全局污染所有弹窗（打开媒体预览后其它对话框背景被透明化）。 */
+.el-dialog.media-preview-dialog {
   padding: 0;
   margin: 10vh auto !important;
   max-height: calc(100dvh - 5vh);

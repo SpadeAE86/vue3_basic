@@ -21,8 +21,42 @@ export async function fetchVideoAnalysisTaskDetail(id: string) {
   return resp.json()
 }
 
+export async function fetchVideoMatchJobsForBoard(params?: {
+  parse_status?: string
+  workspace?: string
+  limit?: number
+}) {
+  const sp = new URLSearchParams()
+  if (params?.parse_status) sp.set('parse_status', params.parse_status)
+  if (params?.workspace) sp.set('workspace', params.workspace)
+  if (params?.limit != null) sp.set('limit', String(params.limit))
+  const q = sp.toString()
+  const resp = await fetch(`${API_BASE}/video-match/jobs${q ? `?${q}` : ''}`)
+  return resp.json()
+}
+
+export async function fetchVideoMatchJobTaskDetail(jobId: string) {
+  const resp = await fetch(`${API_BASE}/video-match/jobs/${encodeURIComponent(jobId)}/detail`)
+  return resp.json()
+}
+
 export async function retryImageHistoryTask(id: string) {
   const resp = await fetch(`${API_BASE}/image/history/${encodeURIComponent(id)}/retry`, {
+    method: 'POST',
+  })
+  const data = await resp.json().catch(() => ({}))
+  if (!resp.ok) {
+    const msg =
+      typeof (data as { detail?: string }).detail === 'string'
+        ? (data as { detail: string }).detail
+        : `HTTP ${resp.status}`
+    return { success: false as const, error: msg, ...data }
+  }
+  return data
+}
+
+export async function retryVideoMatchJobTask(jobId: string) {
+  const resp = await fetch(`${API_BASE}/video-match/jobs/${encodeURIComponent(jobId)}/retry`, {
     method: 'POST',
   })
   const data = await resp.json().catch(() => ({}))

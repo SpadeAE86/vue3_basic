@@ -35,6 +35,7 @@ export interface VideoMatchJobSummary {
   topic?: string | null
   car_model?: string | null
   created_at?: string | null
+  updated_at?: string | null
   request_id?: string | null
 }
 
@@ -135,6 +136,25 @@ export async function getVideoMatchShotDetailApi(
     return { success: false, error: `HTTP ${resp.status}` }
   }
   return resp.json() as Promise<VideoMatchShotDetailResponse>
+}
+
+export async function rematchVideoMatchShotApi(
+  jobId: string,
+  shotRowId: number,
+): Promise<VideoMatchShotDetailResponse> {
+  const resp = await fetch(
+    `${API_BASE}/video-match/jobs/${encodeURIComponent(jobId)}/shots/${shotRowId}/rematch`,
+    { method: 'POST' },
+  )
+  const data = (await resp.json().catch(() => ({}))) as VideoMatchShotDetailResponse & {
+    detail?: string
+  }
+  if (!resp.ok) {
+    const msg =
+      typeof data.detail === 'string' ? data.detail : typeof data.error === 'string' ? data.error : `HTTP ${resp.status}`
+    return { success: false, error: msg }
+  }
+  return data as VideoMatchShotDetailResponse
 }
 
 export async function synthesizeShotAudioApi(

@@ -56,6 +56,87 @@ export async function getVideoAnalysisHistoryApi(workspace?: string) {
   return resp.json()
 }
 
+/** 仅提交异步任务（POST + 收到 task_id 即返回，不轮询） */
+const VIDEO_ANALYSIS_SUBMIT_TIMEOUT_MS = 600_000
+
+export async function submitVideoAnalysisApi(
+  file: File,
+  opts?: {
+    frameInterval?: number
+    threshold?: number
+    customPrompt?: string
+    splitScenes?: boolean
+    workspace?: string
+    carModel?: string
+  },
+): Promise<{
+  success: boolean
+  task_id?: string
+  status?: string
+  error?: string
+}> {
+  const form = new FormData()
+  form.append('file', file)
+  form.append('async_mode', 'true')
+  if (opts?.frameInterval != null) form.append('frame_interval', String(opts.frameInterval))
+  if (opts?.threshold != null) form.append('threshold', String(opts.threshold))
+  if (opts?.customPrompt) form.append('custom_prompt', opts.customPrompt)
+  if (opts?.splitScenes != null) form.append('split_scenes', String(opts.splitScenes))
+  if (opts?.workspace) form.append('workspace', opts.workspace)
+  if (opts?.carModel) form.append('car_model', opts.carModel)
+
+  const controller = new AbortController()
+  const t = window.setTimeout(() => controller.abort(), VIDEO_ANALYSIS_SUBMIT_TIMEOUT_MS)
+  try {
+    const resp = await fetch(`${API_BASE}/video-analysis`, {
+      method: 'POST',
+      body: form,
+      signal: controller.signal,
+    })
+    const raw = await resp.text()
+    if (!raw.trim()) {
+      return { success: false, error: `上传无响应 (HTTP ${resp.status})` }
+    }
+    let data: Record<string, unknown>
+    try {
+      data = JSON.parse(raw) as Record<string, unknown>
+    } catch {
+      return { success: false, error: `非 JSON 响应 HTTP ${resp.status}` }
+    }
+    if (!resp.ok) {
+      const err =
+        (data.detail as string) ||
+        (data.message as string) ||
+        (data.error as string) ||
+        `HTTP ${resp.status}`
+      return { success: false, error: String(err) }
+    }
+    if (data.success && data.task_id) {
+      return {
+        success: true,
+        task_id: String(data.task_id),
+        status: String(data.status ?? 'PENDING'),
+      }
+    }
+    return { success: false, error: '服务器未返回 task_id' }
+  } catch (e) {
+    return { success: false, error: e instanceof Error ? e.message : '提交失败' }
+  } finally {
+    window.clearTimeout(t)
+  }
+}
+
+export async function getVideoAnalysisTaskBadgesApi(workspace?: string) {
+  const params = new URLSearchParams()
+  if (workspace) params.set('workspace', workspace)
+  const resp = await fetch(`${API_BASE}/video-analysis/task-badges?${params.toString()}`)
+  return resp.json() as Promise<{
+    success: boolean
+    counts?: { PENDING?: number; RUNNING?: number }
+    active_total?: number
+  }>
+}
+
 export async function getVideoAnalysisHistoryItemApi(
   historyId: string,
   workspace = 'v1',

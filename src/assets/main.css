@@ -30,3 +30,26 @@ a,
   border-radius: 12px;
   box-shadow: 0 12px 48px rgba(0, 0, 0, 0.5);
 }
+
+/* 搜索策略 / 模板编辑等 teleport 到 body 的弹窗：避免叠加大图预览或其它操作后背景_Variable 异常变透 */
+.search-strategy-dialog.el-dialog,
+.template-edit-dialog.el-dialog {
+  background-color: #ffffff !important;
+  opacity: 1 !important;
+}
+
+/* 任务看板 HTTP 详情 / 分镜表：与策略弹窗一致的白底兜底 */
+.detail-dialog.el-dialog,
+.storyboard-dialog.el-dialog {
+  background-color: #ffffff !important;
+  opacity: 1 !important;
+}
+
+.detail-dialog .el-dialog__header,
+.detail-dialog .el-dialog__body,
+.detail-dialog .el-dialog__footer,
+.storyboard-dialog .el-dialog__header,
+.storyboard-dialog .el-dialog__body,
+.storyboard-dialog .el-dialog__footer {
+  background-color: #ffffff !important;
+}
