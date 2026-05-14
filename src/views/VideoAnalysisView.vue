@@ -129,11 +129,23 @@ function onFrameSelect(id: string, idx: number) {
   activeFrameIndex[k] = n
 }
 
-const handleFileChange = (uploadFile: any) => {
-  // 只保留当前选择的这一个文件，修复多次选择累积的 bug
-  if (uploadFile && uploadFile.raw) {
-    selectedFiles.value = [uploadFile.raw]
+const MAX_BATCH_VIDEOS = 20
+
+const handleFileChange = (_uploadFile: unknown, uploadFiles: unknown[]) => {
+  const incoming = (uploadFiles || [])
+    .map((u: unknown) => (u as { raw?: File }).raw)
+    .filter((f): f is File => Boolean(f))
+  const byKey = new Map<string, File>()
+  for (const f of selectedFiles.value) byKey.set(`${f.name}_${f.size}`, f)
+  for (const f of incoming) {
+    if (byKey.size >= MAX_BATCH_VIDEOS) break
+    byKey.set(`${f.name}_${f.size}`, f)
   }
+  selectedFiles.value = Array.from(byKey.values()).slice(0, MAX_BATCH_VIDEOS)
+}
+
+function handleUploadExceed() {
+  ElMessage.warning(`单次最多选择 ${MAX_BATCH_VIDEOS} 个视频（仍可分批提交）`)
 }
 
 function formatTime(seconds: number) {
@@ -786,8 +798,10 @@ onBeforeUnmount(() => {
             action="#"
             :auto-upload="false"
             :show-file-list="false"
-            :limit="1"
+            multiple
+            :limit="MAX_BATCH_VIDEOS"
             @change="handleFileChange"
+            :on-exceed="handleUploadExceed"
             accept="video/*"
           >
             <el-button type="default">

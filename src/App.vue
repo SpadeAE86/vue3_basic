@@ -67,6 +67,11 @@ onUnmounted(() => {
           <template #title>视频分析</template>
         </el-menu-item>
 
+        <el-menu-item index="/video-match">
+          <el-icon><i-ep-magic-stick /></el-icon>
+          <template #title>视频匹配</template>
+        </el-menu-item>
+
         <el-sub-menu index="menu-task-board">
           <template #title>
             <el-icon><i-ep-grid /></el-icon>

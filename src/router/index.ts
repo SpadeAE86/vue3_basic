@@ -56,6 +56,12 @@ const router = createRouter({
       component: () => import('../views/VideoAnalysisView.vue'),
       meta: { title: '视频分析' },
     },
+    {
+      path: '/video-match',
+      name: 'video-match',
+      component: () => import('../views/VideoMatchView.vue'),
+      meta: { title: '视频匹配' },
+    },
   ],
 })
 
