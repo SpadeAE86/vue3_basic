@@ -537,11 +537,6 @@ const storyboardJobParseFailed = computed(
   () => String(storyboardParentRow.value?.parse_status ?? '').toLowerCase() === 'failed',
 )
 
-const detailMatchPreviewUrl = computed(() => {
-  const p = detailMatchHitRows.value.find((r) => r.video_path)?.video_path ?? ''
-  return p
-})
-
 function normalizeMatchHitRows(hits: unknown) {
   if (!Array.isArray(hits)) return []
   return hits.slice(0, 10).map((h, i) => {
@@ -659,10 +654,6 @@ function goVideoAnalysisFromShot(row: VideoMatchShotDto) {
     autoSearch: true,
   })
   router.push('/video-analysis')
-}
-
-function mediaPreviewIsVideo(url: string): boolean {
-  return /\.(mp4|webm|mov|m4v)(\?|$)/i.test(url)
 }
 
 const imageRetryingId = ref('')
@@ -1218,7 +1209,18 @@ watch(shotTranscribeVisible, (open) => {
           <pre class="code-block muted">{{ formatJson(detailPayload.requestHeaders) }}</pre>
 
           <div class="field-label">Request Body</div>
-          <pre class="code-block">{{ formatJson(detailPayload.requestBody) }}</pre>
+          <p v-if="detailIsShotMatch" class="hint trace-body-hint">
+            以下内容仅作审计对照：检索请求里的<strong>长向量</strong>入库前会替换为
+            <code>_omitted: numeric_vector</code>
+            占位；若整体仍超长则会再出现
+            <code>_truncated</code>
+            。<strong>重试匹配</strong>由服务端根据当前分镜的
+            <code>tags_json</code>
+            重新调用检索逻辑，<strong>不会</strong>也不应依赖本条 Request Body 回放。
+          </p>
+          <pre class="code-block" :class="{ 'code-block--shot-trace': detailIsShotMatch }">{{
+            formatJson(detailPayload.requestBody)
+          }}</pre>
 
           <div class="field-label">Response Headers</div>
           <pre class="code-block muted">{{ formatJson(detailPayload.responseHeaders) }}</pre>
@@ -1251,6 +1253,7 @@ watch(shotTranscribeVisible, (open) => {
                     v-if="hr.video_path"
                     class="match-url-link"
                     :href="hr.video_path"
+                    :title="hr.video_path"
                     target="_blank"
                     rel="noopener noreferrer"
                     >{{ hr.video_path }}</a
@@ -1259,18 +1262,21 @@ watch(shotTranscribeVisible, (open) => {
                 </template>
               </el-table-column>
             </el-table>
-            <template v-if="detailMatchPreviewUrl">
-              <div class="field-label">预览 · 第一名</div>
-              <p class="hint">仅保留一条媒体预览，关闭弹窗即释放。</p>
-              <video
-                v-if="mediaPreviewIsVideo(detailMatchPreviewUrl)"
-                class="match-preview-video"
-                controls
-                preload="metadata"
-                :src="detailMatchPreviewUrl"
-              />
-              <el-image v-else :src="detailMatchPreviewUrl" fit="contain" class="match-preview-img" />
-            </template>
+            <p v-if="detailIsShotMatch && detailMatchHitRows.some((r) => !r.video_path)" class="hint">
+              表格中
+              <code>video_url</code>
+              为「—」表示服务端未解析到成片地址：该
+              <code>history_id</code>
+              在
+              <code>video_analysis_history</code>
+              无记录、或
+              <code>video_url</code>
+              为空且 v2 分镜里也暂无
+              <code>obs_video_url</code>
+              ，与界面截断无关。可直接点
+              <code>history_id</code>
+              同一行的其它列或到视频分析里核对该条历史。
+            </p>
           </template>
 
           <p v-if="detailPayload.note" class="hint">{{ detailPayload.note }}</p>
@@ -1542,6 +1548,14 @@ watch(shotTranscribeVisible, (open) => {
   color: #8c8c8c;
 }
 
+.code-block--shot-trace {
+  max-height: min(48vh, 520px);
+}
+
+.trace-body-hint {
+  margin: 0 0 8px;
+}
+
 .hint {
   margin-top: 12px;
   font-size: 12px;
@@ -1562,20 +1576,6 @@ watch(shotTranscribeVisible, (open) => {
 
 .match-url-link:hover {
   text-decoration: underline;
-}
-
-.match-preview-video {
-  width: 100%;
-  max-height: 280px;
-  border-radius: 4px;
-  background: #000;
-}
-
-.match-preview-img {
-  width: 100%;
-  max-height: 280px;
-  border-radius: 4px;
-  border: 1px solid #f0f0f0;
 }
 
 .storyboard-parse-alert {
