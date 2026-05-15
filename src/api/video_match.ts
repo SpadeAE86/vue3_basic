@@ -34,6 +34,7 @@ export interface VideoMatchJobSummary {
   title?: string | null
   topic?: string | null
   car_model?: string | null
+  frame_size?: string | null
   created_at?: string | null
   updated_at?: string | null
   request_id?: string | null
@@ -50,6 +51,12 @@ export interface VideoMatchJobResponse {
   mock?: boolean
   job_id?: string
   request_id?: string | null
+  /** 创建任务时的口播与元数据（历史载入时回填表单） */
+  script?: string
+  topic?: string | null
+  title?: string | null
+  car_model?: string | null
+  frame_size?: string | null
   parse_status?: string
   parse_error?: string | null
   workspace?: string
@@ -83,6 +90,7 @@ export async function createVideoMatchJobApi(body: {
   topic?: string
   title?: string
   car_model?: string
+  frame_size?: string
   workspace?: string
   mock?: boolean
 }): Promise<VideoMatchJobResponse> {
@@ -171,16 +179,20 @@ export async function synthesizeShotAudioApi(
 /** 启动混剪合成（异步流水线：转码 → 拼请求体 → 下发/ mock → 轮询） */
 export async function startMixComposeApi(
   jobId: string,
-  opts?: { mock?: boolean },
+  opts?: { mock?: boolean; prefer_srt?: boolean },
 ): Promise<{
   compose_id?: string
   biz_id?: string | number
   status?: string
+  prefer_srt?: boolean
   detail?: string
 }> {
   const body: Record<string, unknown> = {}
   if (opts && typeof opts.mock === 'boolean') {
     body.mock = opts.mock
+  }
+  if (opts && typeof opts.prefer_srt === 'boolean') {
+    body.prefer_srt = opts.prefer_srt
   }
   const resp = await fetch(
     `${API_BASE}/video-match/jobs/${encodeURIComponent(jobId)}/mix-compose`,
@@ -213,6 +225,8 @@ export interface MixComposeJobDto {
   status: string
   error_message?: string | null
   result_obs_url?: string | null
+  prefer_srt?: boolean
+  result_srt_text?: string | null
   request_json?: Record<string, unknown> | null
   created_at?: string | null
   updated_at?: string | null

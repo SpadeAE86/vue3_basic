@@ -22,6 +22,7 @@ export function tagsJsonToSearchTokens(seg: Record<string, unknown>): SearchToke
   }
 
   addToken(seg.car_model, true, 'keyword')
+  addToken(seg.frame_size, true, 'keyword')
   addToken(seg.product_status_scene, true, 'keyword')
   addToken(seg.footage_type, true, 'keyword')
   addToken(seg.movement, true, 'keyword')

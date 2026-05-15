@@ -1,35 +1,45 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch, reactive } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { Headset, Microphone, VideoPlay, RefreshRight } from '@element-plus/icons-vue'
+import { Headset, Microphone, Position, RefreshRight, Setting, VideoPlay } from '@element-plus/icons-vue'
 import {
   createVideoMatchJobApi,
   getVideoMatchJobApi,
   getVideoMatchShotDetailApi,
   getMixComposeApi,
   listVideoMatchJobsApi,
+  rematchVideoMatchShotApi,
   searchVideoMatchJobApi,
   startMixComposeApi,
   synthesizeShotAudioApi,
+  type VideoMatchJobResponse,
   type VideoMatchJobSummary,
   type VideoMatchShotDto,
 } from '@/api/video_match'
 import {
   getVideoAnalysisWorkspacesApi,
   getSearchStrategiesApi,
+  saveSearchStrategyApi,
   deleteSearchStrategyApi,
   type SearchStrategy,
 } from '@/api/video_analysis'
 import type { WorkspaceOption } from '@/types/videoAnalysis'
 import SearchStrategySelect from '@/components/video_analysis/SearchStrategySelect.vue'
+import SearchStrategyDialog from '@/components/video_analysis/SearchStrategyDialog.vue'
 import TokenChipsReadonly from '@/components/video_match/TokenChipsReadonly.vue'
 import { tagsJsonToSearchTokens } from '@/utils/matchTagsFromSegment'
+import { stashVideoAnalysisPrefillFromMatch } from '@/utils/videoAnalysisSessionCache'
+import { ZHIJI_CAR_MODEL_OPTIONS, VIDEO_FRAME_SIZE_OPTIONS, normalizeZhijiCarSelectValue } from '@/constants/zhijiCarModels'
+
+const router = useRouter()
 
 const form = ref({
   script: '',
   topic: '',
   title: '',
   car_model: '',
+  frame_size: '',
   workspace: 'v1',
 })
 
@@ -47,6 +57,9 @@ const parseError = ref<string | null>(null)
 const searchTotalMs = ref<number | null>(null)
 const jobSearchStatus = ref<string | null>(null)
 const jobSearchError = ref<string | null>(null)
+/** 与任务看板一致：跳转视频分析时带入工作区与策略权重 */
+const matchJobWorkspace = ref('v1')
+const jobStrategySnapshot = ref<Record<string, unknown> | null>(null)
 
 /** 口播预览：共享一个 audio 元素，按行切换 src */
 const sharedAudioRef = ref<HTMLAudioElement | null>(null)
@@ -57,11 +70,15 @@ const synthBusyByShotId = reactive<Record<number, boolean>>({})
 
 let composePollTimer: ReturnType<typeof setInterval> | null = null
 
+const mixPreferSrt = ref(false)
+
 const lastMixCompose = ref<{
   compose_id: string
   biz_id: string | number
   status: string
+  prefer_srt?: boolean
   result_obs_url?: string | null
+  result_srt_text?: string | null
   error_message?: string | null
 } | null>(null)
 
@@ -158,15 +175,41 @@ const historyJobId = ref<string | null>(null)
 const strategies = ref<SearchStrategy[]>([])
 const selectedStrategy = ref('')
 
+/** 视频匹配页内新建 / 编辑搜索策略（与「视频分析」TagSearchBar 同源弹窗） */
+const vmStrategyDialogVisible = ref(false)
+const vmStrategyDialogMode = ref<'edit' | 'create'>('create')
+const vmStrategyInitialName = ref('')
+const vmStrategyInitialIsDefault = ref(false)
+const vmStrategyBm25 = ref(0.3)
+const vmStrategyVector = ref(0.7)
+const vmStrategyUseRrf = ref(false)
+const vmStrategyTextWeights = ref<Record<string, number>>({})
+const vmStrategyVectorWeights = ref<Record<string, number>>({})
+const vmIndexFields = ref<{ text_fields: string[]; vector_fields: string[] }>({
+  text_fields: [],
+  vector_fields: [],
+})
+
 /** 分镜详情：HTTP trace（任务看板同款）+ 标签只读 */
 const matchDetailVisible = ref(false)
 const matchDetailLoading = ref(false)
 const matchDetailPayload = ref<Record<string, unknown> | null>(null)
 const matchDetailRow = ref<VideoMatchShotDto | null>(null)
 const matchDetailLocalOnly = ref(false)
+const matchDetailHitRows = ref<
+  { rank: number; score: number; history_id: string; video_path: string; doc_id: string }[]
+>([])
+
+const shotTranscribeVisible = ref(false)
+const shotTranscribeRow = ref<VideoMatchShotDto | null>(null)
+const vmShotRematchingId = ref<number | null>(null)
 
 const matchDetailTokens = computed(() =>
   tagsJsonToSearchTokens((matchDetailRow.value?.tags_json ?? {}) as Record<string, unknown>),
+)
+
+const shotTranscribeTokens = computed(() =>
+  tagsJsonToSearchTokens((shotTranscribeRow.value?.tags_json ?? {}) as Record<string, unknown>),
 )
 
 function formatMatchDetailJson(v: unknown) {
@@ -177,11 +220,146 @@ function formatMatchDetailJson(v: unknown) {
   }
 }
 
+function normalizeMatchHitRows(hits: unknown) {
+  if (!Array.isArray(hits)) return []
+  return hits.slice(0, 5).map((h, i) => {
+    const o = h as Record<string, unknown>
+    const sc = o._score
+    const score = typeof sc === 'number' ? sc : parseFloat(String(sc ?? '0')) || 0
+    const rawPath = [o.video_path, o.video_url, o.url, o.obs_video_url].map((x) =>
+      typeof x === 'string' ? x.trim() : '',
+    ).find(Boolean)
+    return {
+      rank: i + 1,
+      score,
+      history_id: String(o.history_id ?? ''),
+      video_path: rawPath || '',
+      doc_id: String(o._id ?? ''),
+    }
+  })
+}
+
+function top1UrlDisplay(url: string): string {
+  const u = (url || '').trim()
+  if (!u) return '—'
+  try {
+    const parsed = new URL(u)
+    const parts = parsed.pathname.split('/').filter(Boolean)
+    const last = parts.length ? parts[parts.length - 1] : ''
+    if (last) return decodeURIComponent(last)
+  } catch {
+    /* ignore */
+  }
+  return u.length > 52 ? `${u.slice(0, 52)}…` : u
+}
+
+/** 主表展示用 / 状态推断：优先 API 的 top5_video_urls，否则回落 top1 */
+function shotRankedVideoUrls(row: VideoMatchShotDto): string[] {
+  const raw = (row.top5_video_urls || []).map((x) => String(x || '').trim()).filter(Boolean)
+  if (raw.length) return raw.slice(0, 5)
+  const t1 = (row.top1_obs_url || '').trim()
+  return t1 ? [t1] : []
+}
+
+/** 主表 URL 列仅展示 Top1：与 shotRankedVideoUrls 首条一致 */
+function shotTop1VideoUrl(row: VideoMatchShotDto): string {
+  const urls = shotRankedVideoUrls(row)
+  return urls.length ? urls[0]! : ''
+}
+
+function syncMatchJobContext(res: VideoMatchJobResponse) {
+  const ws = String(res.workspace ?? '').trim()
+  if (ws) matchJobWorkspace.value = ws
+  else {
+    const f = form.value.workspace.trim()
+    if (f) matchJobWorkspace.value = f
+  }
+  jobStrategySnapshot.value =
+    res.search_strategy_snapshot && typeof res.search_strategy_snapshot === 'object'
+      ? (res.search_strategy_snapshot as Record<string, unknown>)
+      : null
+}
+
+function openShotTranscribe(row: VideoMatchShotDto) {
+  shotTranscribeRow.value = row
+  shotTranscribeVisible.value = true
+}
+
+function shotMatchFailedVm(row: VideoMatchShotDto): boolean {
+  return (row.search_status || '').toLowerCase() === 'failed'
+}
+
+async function rematchVmShot(row: VideoMatchShotDto) {
+  const jid = currentJobId.value
+  if (!jid || row.id == null) return
+  vmShotRematchingId.value = row.id
+  try {
+    const res = await rematchVideoMatchShotApi(jid, row.id)
+    const shot = res.shot
+    if (shot) {
+      const i = shots.value.findIndex((s) => s.id === row.id)
+      if (i >= 0) shots.value[i] = { ...shots.value[i], ...shot }
+    } else if (res.success) {
+      const r2 = await getVideoMatchJobApi(jid)
+      if (r2.success && r2.shots) shots.value = r2.shots
+      if (r2.success) syncMatchJobContext(r2)
+    }
+    if (res.success) {
+      ElMessage.success('已重新检索本分镜')
+    } else {
+      ElMessage.error(res.error || '本分镜匹配失败')
+    }
+  } catch (e) {
+    ElMessage.error(e instanceof Error ? e.message : '请求失败')
+  } finally {
+    vmShotRematchingId.value = null
+  }
+}
+
+function canJumpVideoAnalysisFromVmShot(row: VideoMatchShotDto): boolean {
+  return (
+    (row.search_status || '').toLowerCase() === 'done' &&
+    !!row.tags_json &&
+    Object.keys(row.tags_json as object).length > 0
+  )
+}
+
+function goVideoAnalysisFromVmShot(row: VideoMatchShotDto) {
+  if (!canJumpVideoAnalysisFromVmShot(row)) return
+  const tokens = tagsJsonToSearchTokens((row.tags_json ?? {}) as Record<string, unknown>)
+  const snap = jobStrategySnapshot.value
+  const bm25 = typeof snap?.bm25_weight === 'number' ? snap.bm25_weight : 0.3
+  const vec = typeof snap?.vector_weight === 'number' ? snap.vector_weight : 0.7
+  const rrf = !!snap?.use_rrf
+  const tw = snap?.text_weights
+  const vw = snap?.vector_weights
+  stashVideoAnalysisPrefillFromMatch({
+    workspace: matchJobWorkspace.value || form.value.workspace.trim() || 'v1',
+    selectedHistory: '__all__',
+    searchTokens: tokens,
+    searchStrategyWeights: {
+      bm25_weight: bm25,
+      vector_weight: vec,
+      use_rrf: rrf,
+      ...(tw && typeof tw === 'object' && !Array.isArray(tw)
+        ? { text_weights: tw as Record<string, number> }
+        : {}),
+      ...(vw && typeof vw === 'object' && !Array.isArray(vw)
+        ? { vector_weights: vw as Record<string, number> }
+        : {}),
+    },
+    searchFuzzy: true,
+    autoSearch: true,
+  })
+  router.push('/video-analysis')
+}
+
 async function openMatchDetail(row: VideoMatchShotDto) {
   matchDetailRow.value = row
   matchDetailVisible.value = true
   matchDetailPayload.value = null
   matchDetailLocalOnly.value = false
+  matchDetailHitRows.value = normalizeMatchHitRows(row.match_top_hits_json)
 
   if (row.id == null || !currentJobId.value) {
     matchDetailLocalOnly.value = true
@@ -194,6 +372,9 @@ async function openMatchDetail(row: VideoMatchShotDto) {
     const res = await getVideoMatchShotDetailApi(currentJobId.value, row.id)
     if (res.success && res.detail) {
       matchDetailPayload.value = res.detail
+      if (res.shot?.match_top_hits_json) {
+        matchDetailHitRows.value = normalizeMatchHitRows(res.shot.match_top_hits_json)
+      }
     } else {
       matchDetailPayload.value = { error: res.error || '加载失败' }
     }
@@ -203,6 +384,10 @@ async function openMatchDetail(row: VideoMatchShotDto) {
     matchDetailLoading.value = false
   }
 }
+
+watch(shotTranscribeVisible, (open) => {
+  if (!open) shotTranscribeRow.value = null
+})
 
 const hasShots = computed(() => shots.value.length > 0)
 const canMatch = computed(
@@ -231,7 +416,9 @@ const mixComposeDisabledHint = computed(() => {
   if (!currentJobId.value) return '请先创建或载入任务'
   if (parseStatus.value !== 'done') return '请先完成口播解析'
   if (!shots.value.length) return '暂无分镜'
-  if ((jobSearchStatus.value || '').toLowerCase() !== 'done') return '请先点击「匹配」并完成素材检索'
+  const jss = (jobSearchStatus.value || '').toLowerCase()
+  if (jss === 'failed') return '存在分镜素材匹配失败，请处理后再合成'
+  if (jss !== 'done') return '请先点击「匹配」并完成素材检索'
   const bad = shots.value.some(
     (s) =>
       s.id == null ||
@@ -246,7 +433,10 @@ const mixComposeDisabledHint = computed(() => {
 function shotSearchStatusNorm(row: VideoMatchShotDto): string {
   const s = (row.search_status || '').toLowerCase()
   if (s === 'failed') return 'failed'
-  if (s === 'done') return 'success'
+  if (s === 'done') {
+    if (!shotRankedVideoUrls(row).length) return 'failed'
+    return 'success'
+  }
   if (s === 'running') return 'running'
   if (s === 'pending') {
     const j = (jobSearchStatus.value || '').toLowerCase()
@@ -259,7 +449,7 @@ function shotSearchStatusNorm(row: VideoMatchShotDto): string {
 function shotStatusLabel(st: string) {
   if (st === 'success') return '成功'
   if (st === 'failed') return '失败'
-  if (st === 'running') return '进行中'
+  if (st === 'running') return '匹配中'
   if (st === 'pending') return '待匹配'
   if (st === 'unknown') return '未知'
   return st
@@ -273,12 +463,59 @@ function shotStatusTagType(st: string): 'success' | 'danger' | 'warning' | 'info
   return 'info'
 }
 
+/** 去掉 DB/表格导出等误入的表头行（如 “1000 rows below”） */
+function normalizeVideoMatchScriptInbound(raw: unknown): string {
+  let s = typeof raw === 'string' ? raw : ''
+  if (s.charCodeAt(0) === 0xfeff) s = s.slice(1)
+  const lineRe = /^\s*\d{1,7}\s+rows?\s+below\.?\s*$/i
+  const parts = s.split(/\r?\n/)
+  while (parts.length && lineRe.test(parts[0] ?? '')) {
+    parts.shift()
+  }
+  return parts.join('\n').replace(/^\s+/, '')
+}
+
+/** 将任务接口返回的入参写回表单（载入历史、对齐检索策略名） */
+function applyVideoMatchJobInputsToForm(res: VideoMatchJobResponse) {
+  const ws = (res.workspace ?? '').trim()
+  if (ws) form.value.workspace = ws
+  if (typeof res.script === 'string') form.value.script = normalizeVideoMatchScriptInbound(res.script)
+  form.value.topic = res.topic != null ? String(res.topic) : ''
+  form.value.title = res.title != null ? String(res.title) : ''
+  form.value.car_model = normalizeZhijiCarSelectValue(res.car_model != null ? String(res.car_model) : '')
+  {
+    const fs = (res.frame_size ?? '').trim()
+    const ok = VIDEO_FRAME_SIZE_OPTIONS.some((o) => o.value === fs)
+    form.value.frame_size = ok ? fs : ''
+  }
+
+  const snap = res.search_strategy_snapshot
+  if (snap && typeof snap === 'object' && snap !== null && 'name' in snap) {
+    const n = String((snap as { name?: unknown }).name ?? '').trim()
+    if (n) selectedStrategy.value = n
+  }
+}
+
+function shortJobIdForDisplay(id: string) {
+  const t = (id || '').trim()
+  if (t.length <= 14) return t
+  return `${t.slice(0, 8)}…${t.slice(-4)}`
+}
+
+function pipelineStatusZh(raw: string | null | undefined): { label: string; tag: 'success' | 'danger' | 'warning' | 'info' } {
+  const s = (raw || '').toLowerCase()
+  if (s === 'done') return { label: '已完成', tag: 'success' }
+  if (s === 'failed') return { label: '失败', tag: 'danger' }
+  if (s === 'running' || s === 'processing') return { label: '进行中', tag: 'warning' }
+  if (s === 'pending') return { label: '待处理', tag: 'info' }
+  return { label: raw || '—', tag: 'info' }
+}
+
 async function loadHistoryJobs() {
   try {
     const res = await listVideoMatchJobsApi({
       parse_status: 'done',
-      workspace: form.value.workspace.trim() || undefined,
-      limit: 50,
+      limit: 80,
     })
     if (res?.success && Array.isArray(res.jobs)) {
       historyJobs.value = res.jobs
@@ -292,7 +529,9 @@ function historyJobLabel(j: VideoMatchJobSummary) {
   const tail = j.id.length > 10 ? j.id.slice(0, 8) + '…' : j.id
   const t = (j.title || j.topic || '未命名').trim()
   const ts = j.created_at ? j.created_at.replace('T', ' ').slice(0, 19) : ''
-  return ts ? `${ts} · ${t} · ${tail}` : `${t} · ${tail}`
+  const ws = (j.workspace ?? '').trim()
+  const wsTag = ws ? `[${ws}] ` : ''
+  return ts ? `${wsTag}${ts} · ${t} · ${tail}` : `${wsTag}${t} · ${tail}`
 }
 
 async function onHistoryJobChange(id: string | null | undefined) {
@@ -311,6 +550,8 @@ async function onHistoryJobChange(id: string | null | undefined) {
     jobSearchStatus.value = res.search_status ?? null
     searchTotalMs.value = res.search_total_ms ?? null
     jobSearchError.value = res.search_error ?? null
+    applyVideoMatchJobInputsToForm(res)
+    syncMatchJobContext(res)
     ElMessage.success('已载入历史任务')
   } catch (e) {
     ElMessage.error(e instanceof Error ? e.message : '加载失败')
@@ -347,8 +588,115 @@ async function loadStrategies() {
   }
 }
 
+async function fetchVmIndexFields() {
+  try {
+    const ws = form.value.workspace.trim() || 'v1'
+    const r = await fetch(`/api/video-analysis/index-fields?workspace=${encodeURIComponent(ws)}`)
+    const res = (await r.json()) as {
+      success?: boolean
+      text_fields?: string[]
+      vector_fields?: string[]
+    }
+    if (res.success) {
+      vmIndexFields.value = {
+        text_fields: res.text_fields || [],
+        vector_fields: res.vector_fields || [],
+      }
+      const tw = { ...vmStrategyTextWeights.value }
+      const vw = { ...vmStrategyVectorWeights.value }
+      for (const f of vmIndexFields.value.text_fields) {
+        if (tw[f] === undefined) tw[f] = 1
+      }
+      for (const f of vmIndexFields.value.vector_fields) {
+        if (vw[f] === undefined) vw[f] = 0
+      }
+      vmStrategyTextWeights.value = tw
+      vmStrategyVectorWeights.value = vw
+    }
+  } catch {
+    vmIndexFields.value = { text_fields: [], vector_fields: [] }
+  }
+}
+
+function applyVmStrategyWeightsFromSelection() {
+  const name = selectedStrategy.value.trim()
+  const s = name ? strategies.value.find((x) => x.name === name) : undefined
+  if (s) {
+    vmStrategyBm25.value = s.bm25_weight
+    vmStrategyVector.value = s.vector_weight
+    vmStrategyUseRrf.value = !!s.use_rrf
+    vmStrategyTextWeights.value = { ...(s.text_weights || {}) }
+    vmStrategyVectorWeights.value = { ...(s.vector_weights || {}) }
+  } else {
+    vmStrategyBm25.value = 0.3
+    vmStrategyVector.value = 0.7
+    vmStrategyUseRrf.value = false
+    vmStrategyTextWeights.value = {}
+    vmStrategyVectorWeights.value = {}
+  }
+}
+
+function openVmStrategyCreateDialog() {
+  vmStrategyDialogMode.value = 'create'
+  vmStrategyInitialName.value = ''
+  vmStrategyInitialIsDefault.value = false
+  applyVmStrategyWeightsFromSelection()
+  void fetchVmIndexFields().then(() => {
+    vmStrategyDialogVisible.value = true
+  })
+}
+
+function openVmStrategyEditDialog() {
+  const name = selectedStrategy.value.trim()
+  if (!name) {
+    ElMessage.warning('请先在列表中选择一个搜索策略')
+    return
+  }
+  const s = strategies.value.find((x) => x.name === name)
+  if (!s) {
+    ElMessage.warning('未找到该策略，请点下拉框刷新重试')
+    return
+  }
+  vmStrategyDialogMode.value = 'edit'
+  vmStrategyInitialName.value = name
+  vmStrategyInitialIsDefault.value = !!s.is_default
+  vmStrategyBm25.value = s.bm25_weight
+  vmStrategyVector.value = s.vector_weight
+  vmStrategyUseRrf.value = !!s.use_rrf
+  vmStrategyTextWeights.value = { ...(s.text_weights || {}) }
+  vmStrategyVectorWeights.value = { ...(s.vector_weights || {}) }
+  void fetchVmIndexFields().then(() => {
+    vmStrategyDialogVisible.value = true
+  })
+}
+
+async function handleVmStrategySave(data: { name: string; isDefault: boolean }) {
+  try {
+    const res = await saveSearchStrategyApi({
+      name: data.name,
+      bm25_weight: vmStrategyBm25.value,
+      vector_weight: vmStrategyVector.value,
+      text_weights: vmStrategyTextWeights.value,
+      vector_weights: vmStrategyVectorWeights.value,
+      is_default: data.isDefault,
+      use_rrf: vmStrategyUseRrf.value,
+    })
+    if (res?.success) {
+      ElMessage.success('策略已保存')
+      vmStrategyDialogVisible.value = false
+      await loadStrategies()
+      selectedStrategy.value = data.name
+    } else {
+      ElMessage.error((res as { error?: string })?.error || '保存失败')
+    }
+  } catch {
+    ElMessage.error('保存失败')
+  }
+}
+
 async function onParse() {
-  if (!form.value.script.trim()) {
+  const scriptClean = normalizeVideoMatchScriptInbound(form.value.script.trim())
+  if (!scriptClean) {
     ElMessage.warning('口播脚本不能为空')
     return
   }
@@ -360,10 +708,11 @@ async function onParse() {
   jobSearchError.value = null
   try {
     const res = await createVideoMatchJobApi({
-      script: form.value.script.trim(),
+      script: scriptClean,
       topic: form.value.topic.trim() || undefined,
       title: form.value.title.trim() || undefined,
       car_model: form.value.car_model.trim() || undefined,
+      frame_size: form.value.frame_size.trim() || undefined,
       workspace: form.value.workspace.trim() || 'v1',
       mock: false,
     })
@@ -383,6 +732,8 @@ async function onParse() {
     jobSearchStatus.value = res.search_status ?? null
     searchTotalMs.value = res.search_total_ms ?? null
     jobSearchError.value = res.search_error ?? null
+    syncMatchJobContext(res)
+    form.value.script = scriptClean
     ElMessage.success(res.mock ? '转写完成（服务端返回 mock）' : '转写完成')
     await loadHistoryJobs()
     historyJobId.value = currentJobId.value
@@ -413,10 +764,16 @@ async function onMatch() {
         const snap = await getVideoMatchJobApi(jid)
         if (snap.success && snap.shots?.length) {
           shots.value = snap.shots
+          syncMatchJobContext(snap)
           if (snap.search_status) jobSearchStatus.value = snap.search_status
           if (snap.search_total_ms != null) searchTotalMs.value = snap.search_total_ms
-          const allDone = snap.shots.every((s) => (s.search_status || '') === 'done')
-          if (allDone && pollTimer != null) {
+          if (snap.search_error != null) jobSearchError.value = snap.search_error
+          const jobSt = (snap.search_status || '').toLowerCase()
+          const allTerminal = snap.shots.every((s) => {
+            const x = (s.search_status || '').toLowerCase()
+            return x === 'done' || x === 'failed'
+          })
+          if (allTerminal && jobSt !== 'running' && pollTimer != null) {
             clearInterval(pollTimer)
             pollTimer = undefined
           }
@@ -434,6 +791,10 @@ async function onMatch() {
 
     if (!res.success) {
       jobSearchError.value = res.error || res.search_error || '匹配失败'
+      if (res.shots?.length) shots.value = res.shots
+      if (res.search_status != null) jobSearchStatus.value = res.search_status
+      if (res.search_total_ms != null) searchTotalMs.value = res.search_total_ms
+      syncMatchJobContext(res)
       ElMessage.error(jobSearchError.value)
       return
     }
@@ -442,9 +803,8 @@ async function onMatch() {
     searchTotalMs.value = res.search_total_ms ?? null
     jobSearchStatus.value = res.search_status ?? 'done'
     jobSearchError.value = res.search_error ?? null
-    ElMessage.success(
-      `匹配完成${res.search_total_ms != null ? `，总耗时 ${Number(res.search_total_ms).toFixed(0)} ms` : ''}`,
-    )
+    syncMatchJobContext(res)
+    ElMessage.success('匹配完成')
   } catch (e) {
     const msg = e instanceof Error ? e.message : '请求异常'
     jobSearchError.value = msg
@@ -476,6 +836,23 @@ async function copyMixOutputPath(text: string) {
   }
 }
 
+function downloadMixSrtFile(text: string, composeId: string) {
+  const t = (text || '').trim()
+  if (!t) {
+    ElMessage.warning('暂无 SRT 内容')
+    return
+  }
+  const safeId = (composeId || 'mix').replace(/[^a-zA-Z0-9_-]+/g, '_').slice(0, 36)
+  const blob = new Blob([t.endsWith('\n') ? t : `${t}\n`], { type: 'text/plain;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `${safeId || 'mix'}.srt`
+  a.click()
+  URL.revokeObjectURL(url)
+  ElMessage.success('已开始下载 .srt')
+}
+
 async function onMixCompose() {
   if (!canMixCompose.value) {
     if (mixComposeDisabledHint.value) {
@@ -489,7 +866,7 @@ async function onMixCompose() {
   composing.value = true
   lastMixCompose.value = null
   try {
-    const start = await startMixComposeApi(currentJobId.value)
+    const start = await startMixComposeApi(currentJobId.value, { prefer_srt: mixPreferSrt.value })
     if (!start.compose_id || !start.biz_id) {
       ElMessage.error(start.detail || '启动混剪失败')
       composing.value = false
@@ -499,7 +876,9 @@ async function onMixCompose() {
       compose_id: start.compose_id,
       biz_id: start.biz_id,
       status: start.status || 'pending',
+      prefer_srt: !!start.prefer_srt || mixPreferSrt.value,
       result_obs_url: null,
+      result_srt_text: null,
       error_message: null,
     }
     ElMessage.success('混剪已提交，后台正在转码与合成…')
@@ -512,13 +891,18 @@ async function onMixCompose() {
           compose_id: st.compose_id,
           biz_id: st.biz_id,
           status: st.status,
+          prefer_srt: st.prefer_srt ?? lastMixCompose.value?.prefer_srt,
           result_obs_url: st.result_obs_url ?? null,
+          result_srt_text: st.result_srt_text ?? null,
           error_message: st.error_message ?? null,
         }
         if (st.status === 'done') {
           clearComposePoll()
           composing.value = false
-          if (st.result_obs_url) {
+          const srtOk = !!(st.result_srt_text || '').trim()
+          if (st.prefer_srt && srtOk) {
+            ElMessage.success('混剪完成，已生成外挂字幕')
+          } else if (st.result_obs_url) {
             ElMessage.success('混剪完成')
           } else {
             ElMessage.success('混剪任务已完成')
@@ -548,6 +932,7 @@ async function refreshJob() {
     jobSearchStatus.value = res.search_status ?? null
     searchTotalMs.value = res.search_total_ms ?? null
     jobSearchError.value = res.search_error ?? null
+    syncMatchJobContext(res)
   }
 }
 
@@ -570,16 +955,23 @@ function dismissMixComposeAlert() {
   lastMixCompose.value = null
 }
 
-function onStrategyCreate() {
-  ElMessage.info('请前往「视频分析」页使用「搜索策略」新建并保存，再回到此处刷新列表')
-}
-
 watch(
   () => form.value.workspace,
   () => {
-    void loadHistoryJobs()
+    void fetchVmIndexFields()
   },
 )
+
+watch(vmStrategyDialogVisible, (open) => {
+  if (!open || vmStrategyDialogMode.value !== 'create') return
+  const fields = vmIndexFields.value.vector_fields
+  if (!fields.length) return
+  const next = { ...vmStrategyVectorWeights.value }
+  for (const f of fields) {
+    next[f] = 0
+  }
+  vmStrategyVectorWeights.value = next
+})
 
 function rowClassName() {
   return 'video-match-table-row'
@@ -589,6 +981,7 @@ onMounted(async () => {
   await fetchWorkspaces()
   await loadStrategies()
   await loadHistoryJobs()
+  await fetchVmIndexFields()
 })
 
 onUnmounted(() => {
@@ -619,14 +1012,19 @@ onUnmounted(() => {
               :value="j.id"
             />
           </el-select>
-          <el-select v-model="form.workspace" size="small" class="workspace-select" title="Workspace">
-            <el-option
-              v-for="ws in workspaceOptions"
-              :key="ws.key"
-              :label="ws.label"
-              :value="ws.key"
-            />
-          </el-select>
+          <el-tooltip
+            placement="top"
+            content="与视频分析索引一致。载入历史任务时会按该任务自动切换；也可手动切换后再编辑策略权重。"
+          >
+            <el-select v-model="form.workspace" size="small" class="workspace-select">
+              <el-option
+                v-for="ws in workspaceOptions"
+                :key="ws.key"
+                :label="ws.label"
+                :value="ws.key"
+              />
+            </el-select>
+          </el-tooltip>
           <div class="strategy-row">
             <SearchStrategySelect
               v-model="selectedStrategy"
@@ -634,14 +1032,28 @@ onUnmounted(() => {
               placeholder="选择搜索策略"
               @refresh="loadStrategies"
               @delete="onStrategyDelete"
-              @create="onStrategyCreate"
+              @create="openVmStrategyCreateDialog"
             />
+            <el-button
+              circle
+              size="small"
+              color="#6366f1"
+              :disabled="!selectedStrategy"
+              title="编辑当前策略权重"
+              @click="openVmStrategyEditDialog"
+            >
+              <el-icon><Setting /></el-icon>
+            </el-button>
             <el-tooltip
               :disabled="canMixCompose"
               placement="top"
               :content="mixComposeDisabledHint || '提交混剪（后台转码 + 拼轨 + 下发）'"
             >
-              <span class="inline-btn-wrap">
+              <span class="inline-btn-wrap mix-compose-actions">
+                <span class="mix-srt-toggle" @click.stop>
+                  <el-switch v-model="mixPreferSrt" size="small" :disabled="composing" />
+                  <span class="mix-srt-label">外挂 SRT</span>
+                </span>
                 <el-button
                   type="primary"
                   plain
@@ -708,21 +1120,45 @@ onUnmounted(() => {
                   </div>
                 </template>
               </div>
+              <div v-if="lastMixCompose.prefer_srt" class="mix-srt-block">
+                <template v-if="(lastMixCompose.result_srt_text || '').trim()">
+                  <div class="muted small">外挂字幕（与口播时间轴对齐）</div>
+                  <el-button
+                    size="small"
+                    link
+                    type="primary"
+                    @click="copyMixOutputPath(lastMixCompose.result_srt_text!)"
+                  >
+                    复制 SRT
+                  </el-button>
+                  <el-button
+                    size="small"
+                    link
+                    type="primary"
+                    @click="downloadMixSrtFile(lastMixCompose.result_srt_text!, lastMixCompose.compose_id)"
+                  >
+                    下载 .srt
+                  </el-button>
+                </template>
+                <div v-else-if="lastMixCompose.status === 'done'" class="muted small">
+                  未返回 SRT 文本（可查看服务端日志）
+                </div>
+              </div>
               <div v-if="lastMixCompose.error_message" class="mix-err">{{ lastMixCompose.error_message }}</div>
             </div>
           </el-alert>
         </div>
-        <div class="right-controls">
-          <el-tooltip
-            v-if="currentJobId"
-            placement="bottom"
-            :content="'任务 ID（video_match_job 主键，用于持久化与刷新）：' + currentJobId"
-          >
-            <el-tag type="info" size="small" effect="plain" class="job-id-tag">{{ currentJobId }}</el-tag>
+        <div v-if="currentJobId" class="right-controls job-status-bar">
+          <el-tooltip placement="bottom" :content="'完整任务编号（排障时提供给技术支持）：' + currentJobId">
+            <span class="job-ref subtle">任务 {{ shortJobIdForDisplay(currentJobId) }}</span>
           </el-tooltip>
-          <el-tag v-if="parseStatus" size="small" type="success" effect="plain">{{ parseStatus }}</el-tag>
-          <el-tag v-if="jobSearchStatus" size="small" type="warning" effect="plain">{{ jobSearchStatus }}</el-tag>
-          <el-button v-if="currentJobId" size="small" @click="refreshJob">刷新</el-button>
+          <el-tag v-if="parseStatus" size="small" effect="plain" :type="pipelineStatusZh(parseStatus).tag">
+            口播转写 · {{ pipelineStatusZh(parseStatus).label }}
+          </el-tag>
+          <el-tag v-if="jobSearchStatus" size="small" effect="plain" :type="pipelineStatusZh(jobSearchStatus).tag">
+            素材匹配 · {{ pipelineStatusZh(jobSearchStatus).label }}
+          </el-tag>
+          <el-button size="small" @click="refreshJob">刷新任务</el-button>
         </div>
       </div>
 
@@ -743,9 +1179,36 @@ onUnmounted(() => {
             <el-input v-model="form.title" placeholder="选填" />
           </el-form-item>
           <el-form-item label="车型">
-            <el-input v-model="form.car_model" placeholder="选填" />
+            <el-select
+              v-model="form.car_model"
+              placeholder="请选择车型（影响转写参考词表）"
+              clearable
+              style="width: 100%"
+            >
+              <el-option
+                v-for="opt in ZHIJI_CAR_MODEL_OPTIONS"
+                :key="opt.value"
+                :label="opt.label"
+                :value="opt.value"
+              />
+            </el-select>
           </el-form-item>
         </div>
+        <el-form-item label="画面比例">
+          <el-select
+            v-model="form.frame_size"
+            placeholder="选填：横/竖屏约束，将写入每镜检索标签（与索引 frame_size 一致）"
+            clearable
+            class="frame-size-select"
+          >
+            <el-option
+              v-for="opt in VIDEO_FRAME_SIZE_OPTIONS"
+              :key="`fs_${opt.value || 'any'}`"
+              :label="opt.label"
+              :value="opt.value"
+            />
+          </el-select>
+        </el-form-item>
         <el-form-item>
           <el-button type="primary" :loading="parsing" @click="onParse">
             {{ parsing ? '转写中...' : '解析 / 转写' }}
@@ -759,10 +1222,6 @@ onUnmounted(() => {
       <el-alert v-if="jobSearchError" type="warning" :closable="false" show-icon class="parse-alert">
         {{ jobSearchError }}
       </el-alert>
-      <div v-if="searchTotalMs != null" class="timing-bar">
-        最近一次匹配总耗时：<strong>{{ searchTotalMs.toFixed(0) }}</strong>
-        ms；「本镜 ms」为该分镜整条检索链路耗时（OpenSearch、补时长、mget、解析视频 URL 等，含并发排队）。首条分镜常更慢，多半是冷启动（如云上首次建 search pipeline、连接预热）。
-      </div>
     </el-card>
 
     <div v-if="hasShots" class="results-area">
@@ -775,22 +1234,17 @@ onUnmounted(() => {
         :row-class-name="rowClassName"
       >
         <el-table-column prop="shot_order" label="#" width="56" />
-        <el-table-column min-width="200" show-overflow-tooltip>
-          <template #header>
-            <span>口播文案</span>
-          </template>
+        <el-table-column prop="segment_text" label="口播文案" min-width="200" show-overflow-tooltip />
+        <el-table-column label="匹配状态" width="96" align="center">
           <template #default="{ row }">
-            <div class="shot-text-cell">
-              <el-tag
-                :type="shotStatusTagType(shotSearchStatusNorm(row))"
-                effect="light"
-                size="small"
-                class="status-pill status-tag-admin"
-              >
-                {{ shotStatusLabel(shotSearchStatusNorm(row)) }}
-              </el-tag>
-              <span class="shot-text" :title="row.segment_text">{{ row.segment_text }}</span>
-            </div>
+            <el-tag
+              :type="shotStatusTagType(shotSearchStatusNorm(row))"
+              effect="light"
+              size="small"
+              class="status-pill status-tag-admin"
+            >
+              {{ shotStatusLabel(shotSearchStatusNorm(row)) }}
+            </el-tag>
           </template>
         </el-table-column>
         <el-table-column prop="duration_sec" label="时长(s)" width="88" />
@@ -867,28 +1321,59 @@ onUnmounted(() => {
             <span v-else class="muted">—</span>
           </template>
         </el-table-column>
-        <el-table-column label="匹配结果" min-width="160" show-overflow-tooltip>
+        <el-table-column label="Top1 视频" min-width="160">
           <template #default="{ row }">
-            <el-tooltip
-              v-if="row.match_top_hits_json?.length"
-              :content="
-                '命中数 ' +
-                (row.match_hit_count ?? row.match_top_hits_json.length) +
-                '，展示 URL 为首个可解析地址（非严格等于 _score 第一）' +
-                (row.top1_obs_url ? ' · 首条：' + row.top1_obs_url : '') +
-                (row.top5_video_urls?.length
-                  ? ' · 去重 Top：' + row.top5_video_urls.slice(0, 5).join(' · ')
-                  : '')
-              "
-            >
-              <span class="result-url">{{ row.top1_obs_url || '—' }}</span>
-            </el-tooltip>
-            <span v-else class="muted">{{ row.top1_obs_url || '—' }}</span>
+            <div v-if="shotTop1VideoUrl(row)" class="match-topn-cell">
+              <a
+                class="match-url-link"
+                :href="shotTop1VideoUrl(row)"
+                target="_blank"
+                rel="noopener noreferrer"
+                :title="shotTop1VideoUrl(row)"
+                >{{ top1UrlDisplay(shotTop1VideoUrl(row)) }}</a
+              >
+              <div v-if="row.match_hit_count != null" class="muted-small match-hit-meta">
+                命中 {{ row.match_hit_count }} 条
+              </div>
+            </div>
+            <span v-else class="muted">—</span>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="100" fixed="right">
+        <el-table-column label="转写操作" width="108" fixed="right" align="center">
           <template #default="{ row }">
-            <el-button type="primary" link size="small" @click="openMatchDetail(row)">详情</el-button>
+            <el-button type="primary" link :disabled="row.id == null" @click="openShotTranscribe(row)">
+              查看转写
+            </el-button>
+          </template>
+        </el-table-column>
+        <el-table-column label="匹配操作" width="248" fixed="right" align="center">
+          <template #default="{ row }">
+            <div class="shot-op-cell">
+              <el-button type="primary" link :disabled="row.id == null" @click="openMatchDetail(row)">
+                查看匹配
+              </el-button>
+              <el-button
+                v-if="shotMatchFailedVm(row)"
+                type="primary"
+                link
+                :disabled="row.id == null"
+                :loading="vmShotRematchingId === row.id"
+                @click="rematchVmShot(row)"
+              >
+                重试
+              </el-button>
+              <el-tooltip content="用本分镜标签与当时匹配策略打开视频分析，并自动全库搜索" placement="top">
+                <el-button
+                  class="va-jump-icon-btn"
+                  :icon="Position"
+                  circle
+                  size="small"
+                  :disabled="!canJumpVideoAnalysisFromVmShot(row)"
+                  aria-label="跳转视频分析"
+                  @click="goVideoAnalysisFromVmShot(row)"
+                />
+              </el-tooltip>
+            </div>
           </template>
         </el-table-column>
       </el-table>
@@ -896,8 +1381,8 @@ onUnmounted(() => {
 
     <el-dialog
       v-model="matchDetailVisible"
-      title="分镜详情（结构化标签 + 匹配 HTTP）"
-      width="920px"
+      title="分镜 · 匹配 HTTP 详情与 Top 命中"
+      width="min(1080px, 96vw)"
       top="5vh"
       class="match-detail-dialog admin-dialog"
       align-center
@@ -969,7 +1454,16 @@ onUnmounted(() => {
           <pre class="code-block muted">{{ formatMatchDetailJson(matchDetailPayload.requestHeaders) }}</pre>
 
           <div class="field-label">Request Body</div>
-          <pre class="code-block">{{ formatMatchDetailJson(matchDetailPayload.requestBody) }}</pre>
+          <p class="hint trace-body-hint">
+            以下内容仅作审计对照：检索请求里的<strong>长向量</strong>入库前会替换为
+            <code>_omitted: numeric_vector</code>
+            占位；若整体仍超长则会再出现
+            <code>_truncated</code>
+            。<strong>重试匹配</strong>由服务端根据当前分镜的
+            <code>tags_json</code>
+            重新调用检索逻辑，<strong>不会</strong>也不应依赖本条 Request Body 回放。
+          </p>
+          <pre class="code-block code-block--shot-trace">{{ formatMatchDetailJson(matchDetailPayload.requestBody) }}</pre>
 
           <div class="field-label">Response Headers</div>
           <pre class="code-block muted">{{ formatMatchDetailJson(matchDetailPayload.responseHeaders) }}</pre>
@@ -977,10 +1471,98 @@ onUnmounted(() => {
           <div class="field-label">Response Body</div>
           <pre class="code-block">{{ formatMatchDetailJson(matchDetailPayload.responseBody) }}</pre>
 
+          <div class="field-label">Top5 命中（OpenSearch _score）</div>
+          <p v-if="!matchDetailHitRows.length" class="hint">
+            暂无命中记录（尚未匹配或 trace 未落库时可仍可从上方 Response 查看摘要）
+          </p>
+          <el-table
+            v-else
+            :data="matchDetailHitRows"
+            border
+            stripe
+            size="small"
+            class="hit-rank-table"
+            max-height="280"
+          >
+            <el-table-column prop="rank" label="#" width="44" align="center" />
+            <el-table-column prop="score" label="_score" width="96" align="right">
+              <template #default="{ row: hr }">
+                {{ Number.isFinite(hr.score) ? hr.score.toFixed(4) : hr.score }}
+              </template>
+            </el-table-column>
+            <el-table-column prop="history_id" label="history_id" min-width="110" show-overflow-tooltip />
+            <el-table-column label="video_url" min-width="200" show-overflow-tooltip>
+              <template #default="{ row: hr }">
+                <a
+                  v-if="hr.video_path"
+                  class="match-url-link"
+                  :href="hr.video_path"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  >{{ hr.video_path }}</a
+                >
+                <span v-else class="muted-small">—</span>
+              </template>
+            </el-table-column>
+          </el-table>
+          <p v-if="matchDetailHitRows.some((r) => !r.video_path)" class="hint">
+            表格中
+            <code>video_url</code>
+            为「—」表示服务端未解析到成片地址：该
+            <code>history_id</code>
+            在
+            <code>video_analysis_history</code>
+            无记录、或
+            <code>video_url</code>
+            为空且 v2 分镜里也暂无
+            <code>obs_video_url</code>
+            ，与界面截断无关。可直接点
+            <code>history_id</code>
+            同一行的其它列或到视频分析里核对该条历史。
+          </p>
+
           <p v-if="matchDetailPayload.note" class="hint">{{ matchDetailPayload.note }}</p>
         </template>
       </div>
     </el-dialog>
+
+    <el-dialog
+      v-model="shotTranscribeVisible"
+      title="分镜 · 转写与标签"
+      width="560px"
+      top="8vh"
+      class="admin-dialog"
+      align-center
+      destroy-on-close
+    >
+      <template v-if="shotTranscribeRow">
+        <div class="field-label">口播</div>
+        <div class="text-panel">{{ shotTranscribeRow.segment_text || '—' }}</div>
+        <div class="field-label">画面描述</div>
+        <div class="text-panel">{{ shotTranscribeRow.description || '—' }}</div>
+        <div class="field-label">结构化标签</div>
+        <TokenChipsReadonly :tokens="shotTranscribeTokens" />
+      </template>
+    </el-dialog>
+
+    <SearchStrategyDialog
+      v-model="vmStrategyDialogVisible"
+      :mode="vmStrategyDialogMode"
+      :initial-name="vmStrategyInitialName"
+      :initial-is-default="vmStrategyInitialIsDefault"
+      :bm25-weight="vmStrategyBm25"
+      :vector-weight="vmStrategyVector"
+      :text-weights="vmStrategyTextWeights"
+      :vector-weights="vmStrategyVectorWeights"
+      :use-rrf="vmStrategyUseRrf"
+      :index-fields="vmIndexFields"
+      @update:bm25-weight="vmStrategyBm25 = $event"
+      @update:vector-weight="vmStrategyVector = $event"
+      @update:text-weights="vmStrategyTextWeights = $event"
+      @update:vector-weights="vmStrategyVectorWeights = $event"
+      @update:use-rrf="vmStrategyUseRrf = $event"
+      @save="handleVmStrategySave"
+    />
 
     <el-empty
       v-if="!hasShots && !parsing"
@@ -1073,6 +1655,28 @@ onUnmounted(() => {
   display: inline-flex;
 }
 
+.mix-compose-actions {
+  align-items: center;
+  gap: 8px;
+}
+
+.mix-srt-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-right: 4px;
+}
+
+.mix-srt-label {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  white-space: nowrap;
+}
+
+.mix-srt-block {
+  margin-top: 8px;
+}
+
 .mix-compose-status {
   margin-top: 10px;
   max-width: 760px;
@@ -1107,12 +1711,15 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
-.job-id-tag {
-  max-width: 220px;
-  overflow: hidden;
-  text-overflow: ellipsis;
+.job-status-bar .job-ref {
+  font-size: 13px;
+  color: #606266;
+  cursor: default;
+  margin-right: 4px;
 }
 
 .parse-form {
@@ -1136,12 +1743,6 @@ onUnmounted(() => {
   margin-top: 8px;
 }
 
-.timing-bar {
-  margin-top: 10px;
-  font-size: 13px;
-  color: #606266;
-}
-
 .results-area {
   flex: 1;
   min-height: 0;
@@ -1157,9 +1758,59 @@ onUnmounted(() => {
   font-size: 12px;
 }
 
-.result-url {
+.muted-small {
   font-size: 12px;
-  color: #409eff;
+  color: rgba(0, 0, 0, 0.45);
+}
+
+.text-panel {
+  padding: 12px 14px;
+  background: #fafafa;
+  border: 1px solid #f0f0f0;
+  border-radius: 2px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: rgba(0, 0, 0, 0.85);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.match-url-link {
+  color: var(--el-color-primary);
+  word-break: break-all;
+}
+
+.match-url-link:hover {
+  text-decoration: underline;
+}
+
+.match-topn-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: flex-start;
+}
+
+.match-hit-meta {
+  margin-top: 2px;
+}
+
+.shot-op-cell {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 4px 6px;
+}
+
+.va-jump-icon-btn {
+  flex-shrink: 0;
+}
+
+.hit-rank-table {
+  margin-bottom: 12px;
 }
 
 .match-detail-body {
@@ -1208,6 +1859,14 @@ onUnmounted(() => {
   color: #8c8c8c;
 }
 
+.code-block--shot-trace {
+  max-height: min(48vh, 520px);
+}
+
+.trace-body-hint {
+  margin: 0 0 8px;
+}
+
 .hint {
   margin-top: 12px;
   font-size: 12px;
@@ -1241,20 +1900,6 @@ onUnmounted(() => {
   flex-wrap: nowrap;
   gap: 8px;
   min-width: 0;
-}
-
-.shot-text-cell {
-  display: flex;
-  flex-direction: row;
-  align-items: flex-start;
-  gap: 8px;
-  min-width: 0;
-}
-
-.shot-text {
-  flex: 1;
-  min-width: 0;
-  line-height: 1.5;
 }
 
 .status-pill {

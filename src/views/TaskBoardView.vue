@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElImageViewer, ElMessage } from 'element-plus'
-import { Position } from '@element-plus/icons-vue'
+import { Position, VideoCamera } from '@element-plus/icons-vue'
 import {
   fetchImageHistoryForBoard,
   fetchVideoAnalysisHistoryForBoard,
@@ -11,6 +11,7 @@ import {
   fetchVideoMatchJobsForBoard,
   fetchVideoMatchJobTaskDetail,
   retryImageHistoryTask,
+  retryVideoAnalysisHistoryTask,
   retryVideoMatchJobTask,
 } from '@/api/taskBoard'
 import {
@@ -22,7 +23,7 @@ import {
 import { IMAGEGEN_RETRY_STARTED_EVENT } from '@/composables/image/useGenerateHistory'
 import TokenChipsReadonly from '@/components/video_match/TokenChipsReadonly.vue'
 import { tagsJsonToSearchTokens } from '@/utils/matchTagsFromSegment'
-import { stashVideoAnalysisPrefillFromMatch } from '@/utils/videoAnalysisSessionCache'
+import { stashVideoAnalysisPrefillFromMatch, stashVideoAnalysisNavFromBoard } from '@/utils/videoAnalysisSessionCache'
 
 type BoardSection = 'image' | 'video' | 'video_match'
 
@@ -82,7 +83,11 @@ function syncRunningDurationTimer() {
     (boardSection.value === 'video' &&
       videoRows.value.some((r) => rowStatusNorm(r, 'video') === 'running')) ||
     (boardSection.value === 'video_match' &&
-      vmJobRows.value.some((r) => rowStatusNorm(r, 'video_match') === 'running'))
+      vmJobRows.value.some((r) => {
+        const st = rowStatusNorm(r, 'video_match')
+        if (st === 'running' || st === 'pending_match') return true
+        return vmParseColStatus(r) === 'running' || vmSearchColStatus(r) === 'running'
+      }))
   if (need) {
     if (!durationLiveTimer) {
       durationLiveTimer = setInterval(() => {
@@ -143,10 +148,10 @@ function rowDurationStartForImage(r: Record<string, unknown>): Date | null {
 
 function _formatDurationMs(ms: number): string {
   if (ms < 0) return '—'
-  if (ms < 1000) return `${ms} ms`
-  if (ms < 60_000) return `${(ms / 1000).toFixed(2)} s`
+  if (ms < 1000) return `${Math.round(ms)} ms`
+  if (ms < 60_000) return `${Math.floor(ms / 1000)} s`
   const m = Math.floor(ms / 60_000)
-  const s = ((ms % 60_000) / 1000).toFixed(0)
+  const s = Math.floor((ms % 60_000) / 1000)
   return `${m} 分 ${s} 秒`
 }
 
@@ -170,9 +175,29 @@ function rowDurationLabel(r: Record<string, unknown>, section: BoardSection): st
     return _formatDurationMs(ua.getTime() - start.getTime())
   }
 
+  if (section === 'video_match') {
+    const st = rowStatusNorm(r, section)
+    const ca = rowCreatedAt(r)
+    if (!ca) return '—'
+    const parseLive = vmParseColStatus(r) === 'running'
+    const searchLive = vmSearchColStatus(r) === 'running'
+    if (
+      st === 'running' ||
+      st === 'pending_match' ||
+      parseLive ||
+      searchLive
+    ) {
+      void durationTick.value
+      return _formatDurationMs(Date.now() - ca.getTime())
+    }
+    const ua = rowUpdatedAt(r)
+    if (!ua) return '—'
+    return _formatDurationMs(ua.getTime() - ca.getTime())
+  }
+
   const ca = rowCreatedAt(r)
   if (!ca) return '—'
-  if (rowStatusNorm(r, section) === 'running') {
+  if (section === 'video' && rowStatusNorm(r, section) === 'running') {
     void durationTick.value
     return _formatDurationMs(Date.now() - ca.getTime())
   }
@@ -543,14 +568,31 @@ function normalizeMatchHitRows(hits: unknown) {
     const o = h as Record<string, unknown>
     const sc = o._score
     const score = typeof sc === 'number' ? sc : parseFloat(String(sc ?? '0')) || 0
+    const rawPath = [o.video_path, o.video_url, o.url, o.obs_video_url].map((x) =>
+      typeof x === 'string' ? x.trim() : '',
+    ).find(Boolean)
     return {
       rank: i + 1,
       score,
       history_id: String(o.history_id ?? ''),
-      video_path: String(o.video_path ?? ''),
+      video_path: rawPath || '',
       doc_id: String(o._id ?? ''),
     }
   })
+}
+
+function top1UrlDisplayBoard(url: string): string {
+  const u = (url || '').trim()
+  if (!u) return '—'
+  try {
+    const parsed = new URL(u)
+    const parts = parsed.pathname.split('/').filter(Boolean)
+    const last = parts.length ? parts[parts.length - 1] : ''
+    if (last) return decodeURIComponent(last)
+  } catch {
+    /* ignore */
+  }
+  return u.length > 52 ? `${u.slice(0, 52)}…` : u
 }
 
 function openShotTranscribe(row: VideoMatchShotDto) {
@@ -654,6 +696,42 @@ function goVideoAnalysisFromShot(row: VideoMatchShotDto) {
     autoSearch: true,
   })
   router.push('/video-analysis')
+}
+
+/** 任务看板：进入视频分析页并选中该条历史与工作区 */
+function goVideoAnalysisFromBoardRow(row: Record<string, unknown>) {
+  const id = String(row.id ?? '').trim()
+  const ws = String(row.workspace ?? 'v1').trim() || 'v1'
+  if (!id) {
+    ElMessage.warning('缺少分析 ID')
+    return
+  }
+  stashVideoAnalysisNavFromBoard({ workspace: ws, historyId: id })
+  router.push({ name: 'video-analysis' })
+}
+
+const vaRetryingId = ref('')
+
+async function retryVideoRow(row: Record<string, unknown>) {
+  const id = String(row.id ?? '').trim()
+  if (!id) {
+    ElMessage.warning('缺少分析 ID')
+    return
+  }
+  vaRetryingId.value = id
+  try {
+    const res = (await retryVideoAnalysisHistoryTask(id)) as { success?: boolean; error?: string }
+    if (res?.success) {
+      ElMessage.success('已重新排队视频分析')
+      await loadVideo(true)
+    } else {
+      ElMessage.error(typeof res?.error === 'string' ? res.error : '重试失败')
+    }
+  } catch (e: unknown) {
+    ElMessage.error((e as Error)?.message || '重试请求失败')
+  } finally {
+    vaRetryingId.value = ''
+  }
 }
 
 const imageRetryingId = ref('')
@@ -939,9 +1017,30 @@ watch(shotTranscribeVisible, (open) => {
             {{ shortStr(row.video_url, 40) }}
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="108" fixed="right" align="center">
+        <el-table-column label="操作" width="220" fixed="right" align="center">
           <template #default="{ row }">
-            <el-button type="primary" link @click="openDetail(row)">查看详情</el-button>
+            <div class="va-board-op">
+              <el-button type="primary" link @click="openDetail(row)">查看详情</el-button>
+              <el-button
+                v-if="rowStatusNorm(row, 'video') === 'failed'"
+                type="primary"
+                link
+                :loading="vaRetryingId === String(row.id ?? '').trim()"
+                @click="retryVideoRow(row)"
+              >
+                重试
+              </el-button>
+              <el-tooltip content="在视频分析中打开此记录（已选工作区与历史）" placement="top">
+                <el-button
+                  class="va-jump-icon-btn"
+                  :icon="VideoCamera"
+                  circle
+                  size="small"
+                  aria-label="打开视频分析"
+                  @click="goVideoAnalysisFromBoardRow(row)"
+                />
+              </el-tooltip>
+            </div>
           </template>
         </el-table-column>
       </el-table>
@@ -1089,6 +1188,19 @@ watch(shotTranscribeVisible, (open) => {
                   ? Number(row.match_elapsed_ms).toFixed(0)
                   : '—'
               }}
+            </template>
+          </el-table-column>
+          <el-table-column label="Top1 视频" min-width="168">
+            <template #default="{ row }">
+              <a
+                v-if="(row.top1_obs_url || '').trim()"
+                class="match-url-link"
+                :href="(row.top1_obs_url || '').trim()"
+                target="_blank"
+                rel="noopener noreferrer"
+                >{{ top1UrlDisplayBoard((row.top1_obs_url || '').trim()) }}</a
+              >
+              <span v-else class="muted-small">—</span>
             </template>
           </el-table-column>
           <el-table-column label="转写操作" width="108" fixed="right" align="center">
@@ -1592,6 +1704,14 @@ watch(shotTranscribeVisible, (open) => {
   align-items: center;
   justify-content: center;
   gap: 4px 6px;
+}
+
+.va-board-op {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
 }
 
 .va-jump-icon-btn {

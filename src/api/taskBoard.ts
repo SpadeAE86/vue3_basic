@@ -40,6 +40,22 @@ export async function fetchVideoMatchJobTaskDetail(jobId: string) {
   return resp.json()
 }
 
+export async function retryVideoAnalysisHistoryTask(historyId: string) {
+  const resp = await fetch(
+    `${API_BASE}/video-analysis/history/${encodeURIComponent(historyId)}/retry`,
+    { method: 'POST' },
+  )
+  const data = await resp.json().catch(() => ({}))
+  if (!resp.ok) {
+    const msg =
+      typeof (data as { detail?: string }).detail === 'string'
+        ? (data as { detail: string }).detail
+        : `HTTP ${resp.status}`
+    return { success: false as const, error: msg, ...data }
+  }
+  return data
+}
+
 export async function retryImageHistoryTask(id: string) {
   const resp = await fetch(`${API_BASE}/image/history/${encodeURIComponent(id)}/retry`, {
     method: 'POST',

@@ -21,10 +21,15 @@ import {
   videoAnalysisSearchCache,
   rewriteTaskState,
   consumeVideoAnalysisPrefillFromMatch,
+  consumeVideoAnalysisNavFromBoard,
   type VideoAnalysisPageSnapshot,
 } from '@/utils/videoAnalysisSessionCache'
+import { ZHIJI_CAR_MODEL_OPTIONS, VIDEO_FRAME_SIZE_OPTIONS } from '@/constants/zhijiCarModels'
 
-const isAnalyzing = ref(false)
+/** 拉取历史分镜卡片时遮罩，与异步提交分析任务解耦，避免阻塞再次上传 */
+const isLoadingHistory = ref(false)
+/** 仅在选择文件→提交任务 HTTP 阶段为 true；服务端异步跑豆包时不占此状态 */
+const isSubmittingBatch = ref(false)
 const selectedFiles = ref<File[]>([])
 const selectedHistory = ref('')
 const searchTokens = ref<SearchToken[]>([])
@@ -78,7 +83,7 @@ const historyOptions = computed(() =>
   [
     { value: '__all__', label: 'All（全部卡片）' },
     ...historyItems.value.map((it) => ({
-      value: it.id,
+      value: String((it as { id?: unknown }).id ?? ''),
       label: `${it.time} ${it.name}`,
     })),
   ],
@@ -234,7 +239,7 @@ const handleHistoryChange = async (val: string) => {
   if (!val) return
 
   if (val === '__all__') {
-    isAnalyzing.value = true
+    isLoadingHistory.value = true
     try {
       const res = await getVideoAnalysisCardsApi('__all__', currentWorkspace.value)
       if (!res?.success || !Array.isArray(res.cards)) {
@@ -243,12 +248,12 @@ const handleHistoryChange = async (val: string) => {
       }
       analysisResults.value = toUiCards(res.cards || [])
     } finally {
-      isAnalyzing.value = false
+      isLoadingHistory.value = false
     }
     return
   }
 
-  isAnalyzing.value = true
+  isLoadingHistory.value = true
   try {
     const res = await getVideoAnalysisHistoryItemApi(val, currentWorkspace.value)
     if (!res?.success || !res?.item) {
@@ -258,7 +263,7 @@ const handleHistoryChange = async (val: string) => {
     const item = res.item as VideoAnalysisHistoryItem
     analysisResults.value = toUiCards(item.cards || [])
   } finally {
-    isAnalyzing.value = false
+    isLoadingHistory.value = false
   }
 }
 
@@ -472,8 +477,64 @@ async function refreshHistory() {
 const carModelDialogVisible = ref(false)
 const batchCarModel = ref('')
 
-const openCarModelDialog = () => {
+function historyBasenameKey(name: string) {
+  return (name || '').trim().toLowerCase()
+}
+
+/** 仅展示文件名：去掉本地路径前缀；若为 URL 则只取路径最后一段（不要完整 OBS 地址）。 */
+function stripToBasename(nameOrPath: string): string {
+  let s = (nameOrPath || '').trim()
+  if (!s) return ''
+  s = s.replace(/\\/g, '/')
+  if (/^https?:\/\//i.test(s)) {
+    try {
+      const u = new URL(s)
+      const parts = u.pathname.split('/').filter(Boolean)
+      const last = parts[parts.length - 1]
+      if (last) {
+        try {
+          return decodeURIComponent(last)
+        } catch {
+          return last
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  const i = s.lastIndexOf('/')
+  return i >= 0 ? s.slice(i + 1) : s
+}
+
+function buildDuplicateHistoryMessage(dupFiles: File[]): string {
+  const names = [...new Set(dupFiles.map((f) => stripToBasename(f.name)).filter(Boolean))]
+  const list = names.join('\n-')
+  return `以下视频在当前工作区历史中已存在（按文件名识别）：\n-${list}\n\n重新提交将排队新的分析任务（新的 project_id）。是否仍要替换？`
+}
+
+const openCarModelDialog = async () => {
   if (!selectedFiles.value.length) return
+
+  const existingNames = new Set(
+    historyItems.value.map((h) => historyBasenameKey(h.name || '')).filter(Boolean),
+  )
+  const dupFiles = selectedFiles.value.filter((f) => existingNames.has(historyBasenameKey(f.name)))
+  if (dupFiles.length) {
+    try {
+      await ElMessageBox.confirm(buildDuplicateHistoryMessage(dupFiles), '重复素材', {
+        type: 'warning',
+        confirmButtonText: '仍要替换',
+        cancelButtonText: '取消',
+        customClass:
+          dupFiles.length <= 10
+            ? 'va-dup-confirm-dialog va-dup-few'
+            : 'va-dup-confirm-dialog va-dup-many',
+      })
+    } catch {
+      return
+    }
+  }
+
   batchCarModel.value = ''
   carModelDialogVisible.value = true
 }
@@ -482,7 +543,7 @@ const confirmUpload = async () => {
   carModelDialogVisible.value = false
   if (!selectedFiles.value.length) return
 
-  isAnalyzing.value = true
+  isSubmittingBatch.value = true
   try {
     const uploadConcurrency = 4
     const files = [...selectedFiles.value]
@@ -527,7 +588,7 @@ const confirmUpload = async () => {
     window.dispatchEvent(new CustomEvent('va-tasks-submitted'))
     selectedFiles.value = []
   } finally {
-    isAnalyzing.value = false
+    isSubmittingBatch.value = false
   }
 }
 
@@ -549,6 +610,7 @@ const submitRewrite = async () => {
         topic: rewriteTaskState.form.topic.trim() || undefined,
         title: rewriteTaskState.form.title.trim() || undefined,
         car_model: rewriteTaskState.form.car_model.trim() || undefined,
+        frame_size: rewriteTaskState.form.frame_size.trim() || undefined,
       })
     }).then(r => r.json())
 
@@ -570,8 +632,9 @@ const submitRewrite = async () => {
         })
       }
 
-      // MUST: car_model, product_status_scene, footage_type, movement
+      // MUST: car_model, frame_size（表单约束，与视频匹配一致）, product_status_scene, footage_type, movement
       addToken(seg.car_model, true, 'keyword')
+      addToken(seg.frame_size, true, 'keyword')
       addToken(seg.product_status_scene, true, 'keyword')
       addToken(seg.footage_type, true, 'keyword')
       addToken(seg.movement, true, 'keyword')
@@ -641,54 +704,65 @@ watch(
 onMounted(async () => {
   await fetchWorkspaces()
 
-  const prefill = consumeVideoAnalysisPrefillFromMatch()
-  if (prefill) {
-    restoringSnapshot.value = true
-    try {
-      if (prefill.workspace) currentWorkspace.value = prefill.workspace
-      selectedHistory.value = prefill.selectedHistory || '__all__'
+  let prefill: ReturnType<typeof consumeVideoAnalysisPrefillFromMatch> = null
+
+  /** 整块初始化期间保持 true，避免切换 workspace 的 watcher 清空看板/快照刚写入的 selectedHistory */
+  restoringSnapshot.value = true
+  try {
+    const boardNav = consumeVideoAnalysisNavFromBoard()
+
+    if (boardNav?.historyId?.trim()) {
+      currentWorkspace.value = (boardNav.workspace || 'v1').trim() || 'v1'
+      selectedHistory.value = boardNav.historyId.trim()
       splitScenes.value = true
-      searchTokens.value = Array.isArray(prefill.searchTokens) ? [...prefill.searchTokens] : []
-      searchFuzzy.value = prefill.searchFuzzy !== false
-      const w = prefill.searchStrategyWeights
-      if (w) {
-        searchStrategyWeights.value = {
-          ...searchStrategyWeights.value,
-          bm25_weight: w.bm25_weight,
-          vector_weight: w.vector_weight,
-          use_rrf: !!w.use_rrf,
-          ...(w.text_weights ? { text_weights: w.text_weights } : {}),
-          ...(w.vector_weights ? { vector_weights: w.vector_weights } : {}),
-        } as typeof searchStrategyWeights.value
-      }
+      searchTokens.value = []
       lastSuccessfulSearchKey.value = null
       remoteSearchCards.value = []
       analysisResults.value = []
-    } finally {
-      restoringSnapshot.value = false
-    }
-    ElMessage.success('已从视频匹配填入检索条件与模板权重')
-  } else {
-    const snap = loadPageSnapshot()
-    if (snap) {
-      restoringSnapshot.value = true
-      try {
-        if (snap.currentWorkspace) currentWorkspace.value = snap.currentWorkspace
-        selectedHistory.value = snap.selectedHistory ?? ''
-        splitScenes.value = snap.splitScenes ?? true
-        searchTokens.value = Array.isArray(snap.searchTokens) ? [...snap.searchTokens] : []
-        lastSuccessfulSearchKey.value = snap.lastSearchCacheKey ?? null
-        if (snap.searchFuzzy !== undefined) searchFuzzy.value = snap.searchFuzzy
-      } finally {
-        restoringSnapshot.value = false
+      ElMessage.success('已定位到任务看板选中的分析记录')
+    } else {
+      prefill = consumeVideoAnalysisPrefillFromMatch()
+      if (prefill) {
+        if (prefill.workspace) currentWorkspace.value = prefill.workspace
+        selectedHistory.value = prefill.selectedHistory || '__all__'
+        splitScenes.value = true
+        searchTokens.value = Array.isArray(prefill.searchTokens) ? [...prefill.searchTokens] : []
+        searchFuzzy.value = prefill.searchFuzzy !== false
+        const w = prefill.searchStrategyWeights
+        if (w) {
+          searchStrategyWeights.value = {
+            ...searchStrategyWeights.value,
+            bm25_weight: w.bm25_weight,
+            vector_weight: w.vector_weight,
+            use_rrf: !!w.use_rrf,
+            ...(w.text_weights ? { text_weights: w.text_weights } : {}),
+            ...(w.vector_weights ? { vector_weights: w.vector_weights } : {}),
+          } as typeof searchStrategyWeights.value
+        }
+        lastSuccessfulSearchKey.value = null
+        remoteSearchCards.value = []
+        analysisResults.value = []
+        ElMessage.success('已从视频匹配填入检索条件与模板权重')
+      } else {
+        const snap = loadPageSnapshot()
+        if (snap) {
+          if (snap.currentWorkspace) currentWorkspace.value = snap.currentWorkspace
+          selectedHistory.value = snap.selectedHistory ?? ''
+          splitScenes.value = snap.splitScenes ?? true
+          searchTokens.value = Array.isArray(snap.searchTokens) ? [...snap.searchTokens] : []
+          lastSuccessfulSearchKey.value = snap.lastSearchCacheKey ?? null
+          if (snap.searchFuzzy !== undefined) searchFuzzy.value = snap.searchFuzzy
+        }
       }
     }
-  }
 
-  await refreshHistory()
+    await refreshHistory()
 
-  if (selectedHistory.value) {
-    await handleHistoryChange(selectedHistory.value)
+    if (selectedHistory.value) {
+      await handleHistoryChange(selectedHistory.value)
+    }
+  } finally {
+    restoringSnapshot.value = false
   }
 
   if (prefill?.autoSearch && (searchTokens.value ?? []).some((t) => t.text?.trim())) {
@@ -852,10 +926,10 @@ onBeforeUnmount(() => {
           <el-button
             type="primary"
             @click="openCarModelDialog"
-            :loading="isAnalyzing"
+            :loading="isSubmittingBatch"
             :disabled="selectedFiles.length === 0"
           >
-            {{ isAnalyzing ? '分析中...' : '开始分析' }}
+            {{ isSubmittingBatch ? '提交中...' : '开始分析' }}
           </el-button>
         </div>
       </div>
@@ -874,7 +948,7 @@ onBeforeUnmount(() => {
     </div>
 
     <!-- 空状态 -->
-    <el-empty v-else-if="!isAnalyzing" description="暂无分析数据，请选择历史记录或上传视频" class="empty-state" />
+    <el-empty v-else-if="!isLoadingHistory" description="暂无分析数据，请选择历史记录或上传视频" class="empty-state" />
 
     <ShotDetailDrawer v-model="drawerOpen" :shot="activeShot" />
 
@@ -900,7 +974,34 @@ onBeforeUnmount(() => {
           <el-input v-model="rewriteTaskState.form.title" placeholder="选填" />
         </el-form-item>
         <el-form-item label="车型">
-          <el-input v-model="rewriteTaskState.form.car_model" placeholder="选填" />
+          <el-select
+            v-model="rewriteTaskState.form.car_model"
+            placeholder="请选择车型（影响卖点词表与拆条）"
+            clearable
+            style="width: 100%"
+          >
+            <el-option
+              v-for="opt in ZHIJI_CAR_MODEL_OPTIONS"
+              :key="opt.value"
+              :label="opt.label"
+              :value="opt.value"
+            />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="画面比例">
+          <el-select
+            v-model="rewriteTaskState.form.frame_size"
+            placeholder="选填：与素材库 frame_size 一致，提取后作为检索 must"
+            clearable
+            style="width: 100%"
+          >
+            <el-option
+              v-for="opt in VIDEO_FRAME_SIZE_OPTIONS"
+              :key="`va_fs_${opt.value || 'any'}`"
+              :label="opt.label"
+              :value="opt.value"
+            />
+          </el-select>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -921,7 +1022,19 @@ onBeforeUnmount(() => {
     >
       <el-form label-width="80px" @submit.prevent>
         <el-form-item label="车型">
-          <el-input v-model="batchCarModel" placeholder="例如：智己LS6 (选填)" @keyup.enter="confirmUpload" />
+          <el-select
+            v-model="batchCarModel"
+            placeholder="请选择（写入分析与 OBS 目录，可选）"
+            clearable
+            style="width: 100%"
+          >
+            <el-option
+              v-for="opt in ZHIJI_CAR_MODEL_OPTIONS"
+              :key="opt.value"
+              :label="opt.label"
+              :value="opt.value"
+            />
+          </el-select>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -1039,5 +1152,35 @@ onBeforeUnmount(() => {
 
 .empty-state {
   margin-top: 60px;
+}
+</style>
+
+<style>
+/* ElMessageBox 挂载在 body，需非 scoped */
+.va-dup-confirm-dialog.el-message-box {
+  width: min(600px, 96vw) !important;
+  max-width: 96vw;
+}
+
+.va-dup-confirm-dialog .el-message-box__message {
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-size: 14px;
+  line-height: 1.55;
+  text-align: left;
+  padding-right: 4px;
+}
+
+/* 10 个以内：不限制高度、不出现滚动条 */
+.va-dup-confirm-dialog.va-dup-few .el-message-box__message {
+  max-height: none;
+  overflow: visible;
+}
+
+/* 数量较多时再限制高度并滚动 */
+.va-dup-confirm-dialog.va-dup-many .el-message-box__message {
+  max-height: min(560px, 72vh);
+  overflow-y: auto;
 }
 </style>

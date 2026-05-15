@@ -16,6 +16,10 @@ const routerViewKey = ref(0)
 let statusCheckTimer: number
 let vaBadgeTimer: number
 let isFirstHealthCheck = true
+/** 连续健康检查失败次数；单次超时或丢包不致立刻显示「未连接」（匹配/分析抢占用时更稳） */
+let healthFailStreak = 0
+/** 避免首屏首次连上时误触发 RouterView 重挂（会把当前页状态刷没） */
+let suppressReconnectRouterRemount = true
 
 /** 相对基线的待处理+运行中任务数（进入视频分析/看板页会刷新基线以消除角标） */
 const vaBadgeCount = ref(0)
@@ -61,8 +65,27 @@ watch(
   },
 )
 
+watch(isBackendConnected, (now, was) => {
+  if (now && was === false) {
+    if (suppressReconnectRouterRemount) {
+      suppressReconnectRouterRemount = false
+      return
+    }
+    routerViewKey.value += 1
+  }
+})
+
 const checkStatus = async () => {
-  isBackendConnected.value = await checkBackendStatusApi()
+  const ok = await checkBackendStatusApi()
+  if (ok) {
+    healthFailStreak = 0
+    isBackendConnected.value = true
+    return
+  }
+  healthFailStreak += 1
+  if (healthFailStreak >= 2) {
+    isBackendConnected.value = false
+  }
 }
 
 function onVaTasksSubmitted() {

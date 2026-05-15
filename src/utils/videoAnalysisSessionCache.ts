@@ -10,8 +10,14 @@ import type { ShotCard } from '@/types/videoAnalysis'
 
 const PAGE_KEY = 'videoAnalysis:page:v2'
 const SEARCH_KEY = 'videoAnalysis:searchLRU:v2'
-/** 从视频匹配分镜「跳转视频分析」写入，进入分析页后 consume */
+/** 从任务看板「跳转视频分析」写入，进入分析页后 consume */
+const NAV_FROM_BOARD_KEY = 'videoAnalysis:navFromBoard:v1'
 const PREFILL_FROM_MATCH_KEY = 'videoAnalysis:prefillFromMatch:v1'
+
+export type VideoAnalysisNavFromBoard = {
+  workspace: string
+  historyId: string
+}
 
 /** 全局的智能提取状态，跨路由保持 */
 export const rewriteTaskState = reactive({
@@ -21,7 +27,8 @@ export const rewriteTaskState = reactive({
     script: '',
     topic: '',
     title: '',
-    car_model: ''
+    car_model: '',
+    frame_size: '',
   },
   pendingTokens: null as SearchToken[] | null
 })
@@ -136,6 +143,27 @@ export function savePageSnapshot(s: VideoAnalysisPageSnapshot) {
 
 export function loadPageSnapshot(): VideoAnalysisPageSnapshot | null {
   return safeParse<VideoAnalysisPageSnapshot>(sessionStorage.getItem(PAGE_KEY))
+}
+
+export function stashVideoAnalysisNavFromBoard(payload: VideoAnalysisNavFromBoard) {
+  try {
+    sessionStorage.setItem(NAV_FROM_BOARD_KEY, JSON.stringify(payload))
+  } catch {
+    /* ignore */
+  }
+}
+
+export function consumeVideoAnalysisNavFromBoard(): VideoAnalysisNavFromBoard | null {
+  try {
+    const raw = sessionStorage.getItem(NAV_FROM_BOARD_KEY)
+    if (!raw) return null
+    sessionStorage.removeItem(NAV_FROM_BOARD_KEY)
+    const o = JSON.parse(raw) as VideoAnalysisNavFromBoard
+    if (!o || typeof o.workspace !== 'string' || typeof o.historyId !== 'string') return null
+    return o
+  } catch {
+    return null
+  }
 }
 
 export function stashVideoAnalysisPrefillFromMatch(payload: VideoAnalysisPrefillFromMatch) {

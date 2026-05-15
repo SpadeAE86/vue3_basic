@@ -10,20 +10,24 @@ export function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit & {
 }
 
 export async function checkBackendStatusApi() {
-  try {
-    const resp = await fetchWithTimeout(`${API_BASE}/health`, { timeoutMs: 3000 })
-    if (!resp.ok) return false
+  const probe = async (): Promise<boolean> => {
+    try {
+      const resp = await fetchWithTimeout(`${API_BASE}/health`, { timeoutMs: 8000 })
+      if (!resp.ok) return false
 
-    // 避免被前端 SPA/ELB 的 200 HTML 误判为“后端已连接”
-    const contentType = resp.headers.get('content-type') ?? ''
-    if (!contentType.includes('application/json')) return false
+      const contentType = resp.headers.get('content-type') ?? ''
+      if (!contentType.includes('application/json')) return false
 
-    const data = await resp.json().catch(() => null)
-    if (!data) return false
-    return data.ok === true || data.status === 'ok' || data.healthy === true
-  } catch (e) {
-    return false
+      const data = await resp.json().catch(() => null)
+      if (!data) return false
+      return data.ok === true || data.status === 'ok' || data.healthy === true
+    } catch {
+      return false
+    }
   }
+  if (await probe()) return true
+  await new Promise((r) => setTimeout(r, 400))
+  return probe()
 }
 
 export async function loadHistoryApi(mode: GenerateMode) {
