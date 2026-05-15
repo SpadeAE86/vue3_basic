@@ -1,18 +1,27 @@
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted, watch, onBeforeUnmount, nextTick } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { MagicStick, Setting } from '@element-plus/icons-vue'
 import {
   getVideoAnalysisHistoryApi,
   getVideoAnalysisHistoryItemApi,
   getVideoAnalysisCardsApi,
   searchVideoAnalysisCardsApi,
   getVideoAnalysisWorkspacesApi,
+  getTokenJoinDefaultFieldsApi,
   submitVideoAnalysisApi,
+  type SearchStrategy,
   type VideoAnalysisSearchToken,
 } from '@/api/video_analysis'
+
+type SearchStrategyWeightsState = Pick<
+  SearchStrategy,
+  'bm25_weight' | 'vector_weight' | 'use_rrf' | 'text_weights' | 'vector_weights'
+>
 import ShotDetailDrawer from '@/components/video_analysis/ShotDetailDrawer.vue'
 import ShotCardGrid from '@/components/video_analysis/ShotCardGrid.vue'
 import TagSearchBar, { type SearchToken } from '@/components/video_analysis/TagSearchBar.vue'
+import TokenJoinTemplateDialog from '@/components/video_analysis/TokenJoinTemplateDialog.vue'
 import type { ShotCard, VideoAnalysisHistoryItem, UiShotCard, WorkspaceOption } from '@/types/videoAnalysis'
 import {
   buildSearchCacheKey,
@@ -24,6 +33,7 @@ import {
   consumeVideoAnalysisNavFromBoard,
   type VideoAnalysisPageSnapshot,
 } from '@/utils/videoAnalysisSessionCache'
+import { tagsJsonToSearchTokens, DEFAULT_TOKEN_JOIN_AND_FIELDS } from '@/utils/matchTagsFromSegment'
 import { ZHIJI_CAR_MODEL_OPTIONS, VIDEO_FRAME_SIZE_OPTIONS } from '@/constants/zhijiCarModels'
 
 /** 拉取历史分镜卡片时遮罩，与异步提交分析任务解耦，避免阻塞再次上传 */
@@ -33,12 +43,36 @@ const isSubmittingBatch = ref(false)
 const selectedFiles = ref<File[]>([])
 const selectedHistory = ref('')
 const searchTokens = ref<SearchToken[]>([])
-const searchStrategyWeights = ref({
+const searchStrategyWeights = ref<SearchStrategyWeightsState>({
   bm25_weight: 0.3,
   vector_weight: 0.7,
   use_rrf: false,
 })
 const splitScenes = ref(true)
+
+const tokenJoinDialogVisible = ref(false)
+
+/** 当前 workspace 下默认 AND 模板字段（DB / 内置） */
+const tokenJoinAndFields = ref<string[]>([...DEFAULT_TOKEN_JOIN_AND_FIELDS])
+
+async function loadTokenJoinAndFields() {
+  try {
+    const res = await getTokenJoinDefaultFieldsApi(currentWorkspace.value)
+    if (res.success && Array.isArray(res.and_segment_fields) && res.and_segment_fields.length) {
+      tokenJoinAndFields.value = res.and_segment_fields
+    } else {
+      tokenJoinAndFields.value = [...DEFAULT_TOKEN_JOIN_AND_FIELDS]
+    }
+  } catch {
+    tokenJoinAndFields.value = [...DEFAULT_TOKEN_JOIN_AND_FIELDS]
+  }
+}
+
+watch(tokenJoinDialogVisible, async (open, wasOpen) => {
+  if (wasOpen === true && open === false) {
+    await loadTokenJoinAndFields()
+  }
+})
 
 watch(() => rewriteTaskState.pendingTokens, (tokens) => {
   if (tokens && tokens.length > 0) {
@@ -332,6 +366,7 @@ const filteredResults = computed(() => {
     let acc = true
     for (let i = 0; i < tokens.length; i++) {
       const t = tokens[i]
+      if (!t) continue
       const join = (t.join ?? 'AND').toUpperCase() as 'AND' | 'OR'
       const not = !!t.not
 
@@ -354,12 +389,13 @@ const hasBadCards = computed(() =>
 
 function toBackendTokens(tokens: SearchToken[]): VideoAnalysisSearchToken[] {
   return (tokens || [])
-    .filter((t) => t.text && t.text.trim())
+    .filter((t): t is SearchToken => !!t && !!String(t.text || '').trim())
     .map((t) => ({
-      text: t.text.trim(),
-      join: (t.join ?? 'AND') as any,
+      text: String(t.text).trim(),
+      join: (t.join ?? 'AND') as 'AND' | 'OR',
       not: !!t.not,
       type: t.type,
+      source_field: t.sourceField || undefined,
     }))
 }
 
@@ -616,73 +652,7 @@ const submitRewrite = async () => {
 
     if (res?.success && res.tags?.segment_result?.length > 0) {
       const seg = res.tags.segment_result[0]
-      const newTokens: SearchToken[] = []
-      
-      const addToken = (text: any, isMust: boolean, type: 'keyword' | 'text' = 'keyword') => {
-        const t = String(text || '').trim()
-        if (!t || t === '未知') return
-        if (newTokens.some(x => x.text === t)) return
-        
-        newTokens.push({
-          id: `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
-          text: t,
-          join: isMust ? 'AND' : 'OR',
-          not: false,
-          type
-        })
-      }
-
-      // MUST: car_model, frame_size（表单约束，与视频匹配一致）, product_status_scene, footage_type, movement
-      addToken(seg.car_model, true, 'keyword')
-      addToken(seg.frame_size, true, 'keyword')
-      addToken(seg.product_status_scene, true, 'keyword')
-      addToken(seg.footage_type, true, 'keyword')
-      addToken(seg.movement, true, 'keyword')
-
-      // OR (keyword)
-      addToken(seg.subject, false, 'keyword')
-      addToken(seg.camera_movement, false, 'keyword')
-      addToken(seg.topic, false, 'keyword')
-      addToken(seg.shot_style, false, 'keyword')
-      addToken(seg.shot_type, false, 'keyword')
-      addToken(seg.weather, false, 'keyword')
-      addToken(seg.time, false, 'keyword')
-
-      const orKeywordArrays = [
-        ...(seg.object || []),
-        ...(seg.scene_location || []),
-        ...(seg.design_selling_points || []),
-        ...(seg.function_selling_points || []),
-        ...(seg.design_adjectives || []),
-        ...(seg.function_adjectives || []),
-        ...(seg.scenario_a || []),
-        ...(seg.scenario_b || []),
-        ...(seg.marketing_tags || []),
-        ...(seg.appealing_audience || []),
-        ...(seg.extra_tags || [])
-      ]
-
-      for (const t of orKeywordArrays) {
-        addToken(t, false, 'keyword')
-      }
-
-      // OR (text)
-      addToken(seg.description, false, 'text')
-      addToken(seg.segment_text, false, 'text')
-      
-      const orTextArrays = [
-        ...(seg.marketing_phrases || []),
-        ...(seg.text || [])
-      ]
-      
-      for (const t of orTextArrays) {
-        addToken(t, false, 'text')
-      }
-
-      if (newTokens.length > 0) {
-        newTokens[0].join = 'AND'
-      }
-
+      const newTokens = tagsJsonToSearchTokens(seg as Record<string, unknown>, tokenJoinAndFields.value)
       rewriteTaskState.pendingTokens = newTokens
       ElMessage.success('提取成功')
     } else {
@@ -703,6 +673,7 @@ watch(
 
 onMounted(async () => {
   await fetchWorkspaces()
+  await loadTokenJoinAndFields()
 
   let prefill: ReturnType<typeof consumeVideoAnalysisPrefillFromMatch> = null
 
@@ -737,7 +708,7 @@ onMounted(async () => {
             use_rrf: !!w.use_rrf,
             ...(w.text_weights ? { text_weights: w.text_weights } : {}),
             ...(w.vector_weights ? { vector_weights: w.vector_weights } : {}),
-          } as typeof searchStrategyWeights.value
+          }
         }
         lastSuccessfulSearchKey.value = null
         remoteSearchCards.value = []
@@ -807,6 +778,7 @@ watch(currentWorkspace, async () => {
   searchTokens.value = []
   lastSuccessfulSearchKey.value = null
   selectedHistory.value = '' // 清空选中的历史，因为不同 workspace 历史不同
+  await loadTokenJoinAndFields()
   await refreshHistory()
   schedulePersistPageState()
 })
@@ -835,73 +807,98 @@ onBeforeUnmount(() => {
   <div class="video-analysis-container">
     <!-- 顶部控制区：精简高度 -->
     <el-card class="control-panel" shadow="never" :body-style="{ padding: '12px 20px' }">
+      <!-- 数据源：历史与索引 -->
       <div class="header-controls">
-        <div class="left-controls">
+        <div class="left-controls va-datasource">
           <h3 class="section-title">视频分析</h3>
-          <el-select
-            v-model="selectedHistory"
-            placeholder="选择历史分析记录"
-            clearable
-            class="history-select"
-            @change="handleHistoryChange"
-          >
-            <el-option
-              v-for="item in historyOptions"
-              :key="item.value"
-              :label="item.label"
-              :value="item.value"
-            />
-          </el-select>
-
-          <el-tag
-            :type="splitScenes ? 'success' : 'info'"
-            effect="dark"
-            size="small"
-            round
-            class="toggle-tag"
-            @click="splitScenes = !splitScenes"
-          >
-            <el-icon class="toggle-icon"><i-ep-scissor /></el-icon>
-            {{ splitScenes ? '拆分镜' : '不拆分镜' }}
-          </el-tag>
-
-          <el-select
-            v-model="currentWorkspace"
-            size="small"
-            class="workspace-select"
-            title="切换分析 workspace（schema / index / 卡片表）"
-          >
-            <el-option
-              v-for="ws in workspaceOptions"
-              :key="ws.key"
-              :value="ws.key"
-              :label="ws.label"
+          <div class="va-inline-group">
+            <span class="va-group-label">数据</span>
+            <el-select
+              v-model="selectedHistory"
+              placeholder="选择历史分析记录"
+              clearable
+              class="history-select"
+              @change="handleHistoryChange"
             >
-              <span>{{ ws.label }}</span>
-              <span v-if="ws.is_default" class="workspace-default-badge">默认</span>
-            </el-option>
-          </el-select>
+              <el-option
+                v-for="item in historyOptions"
+                :key="item.value"
+                :label="item.label"
+                :value="item.value"
+              />
+            </el-select>
 
-          <el-button v-if="hasBadCards" size="small" type="warning" plain @click="reindexAllBad">
-            重入库异常卡片
-          </el-button>
-        </div>
+            <el-tag
+              :type="splitScenes ? 'success' : 'info'"
+              effect="dark"
+              size="small"
+              round
+              class="toggle-tag"
+              @click="splitScenes = !splitScenes"
+            >
+              <el-icon class="toggle-icon"><i-ep-scissor /></el-icon>
+              {{ splitScenes ? '拆分镜' : '不拆分镜' }}
+            </el-tag>
 
-        <div class="right-controls">
-          <el-tooltip :content="rewriteTaskState.isRewriting ? '正在提取...' : '智能提取搜索条件'" placement="bottom">
-            <el-button circle @click="rewriteTaskState.dialogVisible = true" :loading="rewriteTaskState.isRewriting" :disabled="rewriteTaskState.isRewriting">
-              <el-icon v-if="!rewriteTaskState.isRewriting"><i-ep-magic-stick /></el-icon>
+            <el-select
+              v-model="currentWorkspace"
+              size="small"
+              class="workspace-select"
+              title="切换分析 workspace（schema / index / 卡片表）"
+            >
+              <el-option
+                v-for="ws in workspaceOptions"
+                :key="ws.key"
+                :value="ws.key"
+                :label="ws.label"
+              >
+                <span>{{ ws.label }}</span>
+                <span v-if="ws.is_default" class="workspace-default-badge">默认</span>
+              </el-option>
+            </el-select>
+
+            <el-button v-if="hasBadCards" size="small" type="warning" plain @click="reindexAllBad">
+              重入库异常卡片
             </el-button>
-          </el-tooltip>
-          <TagSearchBar
-            v-model="searchTokens"
-            v-model:strategyWeights="searchStrategyWeights"
-            v-model:fuzzy="searchFuzzy"
-            :workspace="currentWorkspace"
-            :loading="remoteSearching"
-            @search="kickRemoteSearch"
-            class="tag-search"
-          />
+          </div>
+        </div>
+      </div>
+
+      <!-- 检索：标签与策略 -->
+      <div class="va-search-panel">
+        <TagSearchBar
+          v-model="searchTokens"
+          v-model:strategyWeights="searchStrategyWeights"
+          v-model:fuzzy="searchFuzzy"
+          :workspace="currentWorkspace"
+          :loading="remoteSearching"
+          dense
+          @search="kickRemoteSearch"
+          class="tag-search"
+        >
+          <template #footer-leading-actions>
+            <el-tooltip :content="rewriteTaskState.isRewriting ? '正在提取...' : '从脚本智能提取标签'" placement="bottom">
+              <el-button
+                circle
+                size="small"
+                @click="rewriteTaskState.dialogVisible = true"
+                :loading="rewriteTaskState.isRewriting"
+                :disabled="rewriteTaskState.isRewriting"
+              >
+                <el-icon v-if="!rewriteTaskState.isRewriting"><MagicStick /></el-icon>
+              </el-button>
+            </el-tooltip>
+            <el-tooltip content="AND 命中模板（转写 MUST / v2 检索 term filter）" placement="bottom">
+              <el-button circle size="small" @click="tokenJoinDialogVisible = true">
+                <el-icon><Setting /></el-icon>
+              </el-button>
+            </el-tooltip>
+          </template>
+        </TagSearchBar>
+      </div>
+
+      <div class="va-upload-panel">
+        <div class="va-upload-actions">
           <el-upload
             class="compact-uploader"
             action="#"
@@ -919,7 +916,11 @@ onBeforeUnmount(() => {
             </el-button>
           </el-upload>
 
-          <span v-if="selectedFiles.length > 0" class="compact-file-info" :title="selectedFiles.map(f => f.name).join(', ')">
+          <span
+            v-if="selectedFiles.length > 0"
+            class="compact-file-info"
+            :title="selectedFiles.map((f) => f.name).join(', ')"
+          >
             已选 {{ selectedFiles.length }} 个文件
           </span>
 
@@ -991,7 +992,7 @@ onBeforeUnmount(() => {
         <el-form-item label="画面比例">
           <el-select
             v-model="rewriteTaskState.form.frame_size"
-            placeholder="选填：与素材库 frame_size 一致，提取后作为检索 must"
+            placeholder="选填：与素材库 frame_size 一致；是否在提取中标为 AND 由 AND 模板配置"
             clearable
             style="width: 100%"
           >
@@ -1046,6 +1047,8 @@ onBeforeUnmount(() => {
         </span>
       </template>
     </el-dialog>
+
+    <TokenJoinTemplateDialog v-model="tokenJoinDialogVisible" :workspace="currentWorkspace" />
   </div>
 </template>
 
@@ -1077,6 +1080,40 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 16px;
+  flex-wrap: wrap;
+}
+
+.va-datasource {
+  width: 100%;
+}
+
+.va-inline-group {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  flex: 1;
+  min-width: 0;
+}
+
+.va-group-label {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  white-space: nowrap;
+}
+
+.va-search-panel,
+.va-upload-panel {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--el-border-color-lighter);
+}
+
+.va-upload-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
 }
 
 .toggle-tag {
@@ -1116,14 +1153,10 @@ onBeforeUnmount(() => {
   width: 240px;
 }
 
-.right-controls {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
 .tag-search {
-  width: min(720px, 54vw);
+  flex: 1;
+  min-width: min(100%, 320px);
+  width: auto;
 }
 
 .compact-uploader {

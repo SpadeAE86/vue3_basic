@@ -20,9 +20,10 @@ import {
   rematchVideoMatchShotApi,
   type VideoMatchShotDto,
 } from '@/api/video_match'
+import { getTokenJoinDefaultFieldsApi } from '@/api/video_analysis'
 import { IMAGEGEN_RETRY_STARTED_EVENT } from '@/composables/image/useGenerateHistory'
 import TokenChipsReadonly from '@/components/video_match/TokenChipsReadonly.vue'
-import { tagsJsonToSearchTokens } from '@/utils/matchTagsFromSegment'
+import { tagsJsonToSearchTokens, DEFAULT_TOKEN_JOIN_AND_FIELDS } from '@/utils/matchTagsFromSegment'
 import { stashVideoAnalysisPrefillFromMatch, stashVideoAnalysisNavFromBoard } from '@/utils/videoAnalysisSessionCache'
 
 type BoardSection = 'image' | 'video' | 'video_match'
@@ -668,9 +669,19 @@ function canJumpVideoAnalysisFromShot(row: VideoMatchShotDto): boolean {
   )
 }
 
-function goVideoAnalysisFromShot(row: VideoMatchShotDto) {
+async function goVideoAnalysisFromShot(row: VideoMatchShotDto) {
   if (!canJumpVideoAnalysisFromShot(row)) return
-  const tokens = tagsJsonToSearchTokens((row.tags_json ?? {}) as Record<string, unknown>)
+  const ws = storyboardJobWorkspace.value || 'v1'
+  let andFields = [...DEFAULT_TOKEN_JOIN_AND_FIELDS]
+  try {
+    const r = await getTokenJoinDefaultFieldsApi(ws)
+    if (r.success && r.and_segment_fields?.length) {
+      andFields = r.and_segment_fields
+    }
+  } catch {
+    /* 内置默认 */
+  }
+  const tokens = tagsJsonToSearchTokens((row.tags_json ?? {}) as Record<string, unknown>, andFields)
   const snap = storyboardJobStrategySnapshot.value
   const bm25 = typeof snap?.bm25_weight === 'number' ? snap.bm25_weight : 0.3
   const vec = typeof snap?.vector_weight === 'number' ? snap.vector_weight : 0.7

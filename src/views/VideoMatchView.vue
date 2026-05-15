@@ -2,7 +2,14 @@
 import { ref, computed, onMounted, onUnmounted, watch, reactive } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { Headset, Microphone, Position, RefreshRight, Setting, VideoPlay } from '@element-plus/icons-vue'
+import {
+  Headset,
+  Microphone,
+  Position,
+  RefreshRight,
+  Setting,
+  VideoPlay,
+} from '@element-plus/icons-vue'
 import {
   createVideoMatchJobApi,
   getVideoMatchJobApi,
@@ -20,6 +27,7 @@ import {
 import {
   getVideoAnalysisWorkspacesApi,
   getSearchStrategiesApi,
+  getTokenJoinDefaultFieldsApi,
   saveSearchStrategyApi,
   deleteSearchStrategyApi,
   type SearchStrategy,
@@ -27,8 +35,9 @@ import {
 import type { WorkspaceOption } from '@/types/videoAnalysis'
 import SearchStrategySelect from '@/components/video_analysis/SearchStrategySelect.vue'
 import SearchStrategyDialog from '@/components/video_analysis/SearchStrategyDialog.vue'
+import TokenJoinTemplateDialog from '@/components/video_analysis/TokenJoinTemplateDialog.vue'
 import TokenChipsReadonly from '@/components/video_match/TokenChipsReadonly.vue'
-import { tagsJsonToSearchTokens } from '@/utils/matchTagsFromSegment'
+import { tagsJsonToSearchTokens, DEFAULT_TOKEN_JOIN_AND_FIELDS } from '@/utils/matchTagsFromSegment'
 import { stashVideoAnalysisPrefillFromMatch } from '@/utils/videoAnalysisSessionCache'
 import { ZHIJI_CAR_MODEL_OPTIONS, VIDEO_FRAME_SIZE_OPTIONS, normalizeZhijiCarSelectValue } from '@/constants/zhijiCarModels'
 
@@ -190,6 +199,24 @@ const vmIndexFields = ref<{ text_fields: string[]; vector_fields: string[] }>({
   vector_fields: [],
 })
 
+/** 与当前 workspace 默认 AND 模板对齐（标签预览 / 跳转视频分析） */
+const tokenJoinDialogVisible = ref(false)
+const tokenJoinAndFields = ref<string[]>([...DEFAULT_TOKEN_JOIN_AND_FIELDS])
+
+async function loadTokenJoinAndFields() {
+  const ws = form.value.workspace.trim() || 'v1'
+  try {
+    const r = await getTokenJoinDefaultFieldsApi(ws)
+    if (r.success && Array.isArray(r.and_segment_fields) && r.and_segment_fields.length) {
+      tokenJoinAndFields.value = r.and_segment_fields
+    } else {
+      tokenJoinAndFields.value = [...DEFAULT_TOKEN_JOIN_AND_FIELDS]
+    }
+  } catch {
+    tokenJoinAndFields.value = [...DEFAULT_TOKEN_JOIN_AND_FIELDS]
+  }
+}
+
 /** 分镜详情：HTTP trace（任务看板同款）+ 标签只读 */
 const matchDetailVisible = ref(false)
 const matchDetailLoading = ref(false)
@@ -205,11 +232,17 @@ const shotTranscribeRow = ref<VideoMatchShotDto | null>(null)
 const vmShotRematchingId = ref<number | null>(null)
 
 const matchDetailTokens = computed(() =>
-  tagsJsonToSearchTokens((matchDetailRow.value?.tags_json ?? {}) as Record<string, unknown>),
+  tagsJsonToSearchTokens(
+    (matchDetailRow.value?.tags_json ?? {}) as Record<string, unknown>,
+    tokenJoinAndFields.value,
+  ),
 )
 
 const shotTranscribeTokens = computed(() =>
-  tagsJsonToSearchTokens((shotTranscribeRow.value?.tags_json ?? {}) as Record<string, unknown>),
+  tagsJsonToSearchTokens(
+    (shotTranscribeRow.value?.tags_json ?? {}) as Record<string, unknown>,
+    tokenJoinAndFields.value,
+  ),
 )
 
 function formatMatchDetailJson(v: unknown) {
@@ -324,9 +357,19 @@ function canJumpVideoAnalysisFromVmShot(row: VideoMatchShotDto): boolean {
   )
 }
 
-function goVideoAnalysisFromVmShot(row: VideoMatchShotDto) {
+async function goVideoAnalysisFromVmShot(row: VideoMatchShotDto) {
   if (!canJumpVideoAnalysisFromVmShot(row)) return
-  const tokens = tagsJsonToSearchTokens((row.tags_json ?? {}) as Record<string, unknown>)
+  const ws = matchJobWorkspace.value || form.value.workspace.trim() || 'v1'
+  let andFields = [...DEFAULT_TOKEN_JOIN_AND_FIELDS]
+  try {
+    const r = await getTokenJoinDefaultFieldsApi(ws)
+    if (r.success && r.and_segment_fields?.length) {
+      andFields = r.and_segment_fields
+    }
+  } catch {
+    /* 使用内置默认 */
+  }
+  const tokens = tagsJsonToSearchTokens((row.tags_json ?? {}) as Record<string, unknown>, andFields)
   const snap = jobStrategySnapshot.value
   const bm25 = typeof snap?.bm25_weight === 'number' ? snap.bm25_weight : 0.3
   const vec = typeof snap?.vector_weight === 'number' ? snap.vector_weight : 0.7
@@ -959,8 +1002,15 @@ watch(
   () => form.value.workspace,
   () => {
     void fetchVmIndexFields()
+    void loadTokenJoinAndFields()
   },
 )
+
+watch(tokenJoinDialogVisible, async (open, wasOpen) => {
+  if (wasOpen === true && open === false) {
+    await loadTokenJoinAndFields()
+  }
+})
 
 watch(vmStrategyDialogVisible, (open) => {
   if (!open || vmStrategyDialogMode.value !== 'create') return
@@ -982,6 +1032,7 @@ onMounted(async () => {
   await loadStrategies()
   await loadHistoryJobs()
   await fetchVmIndexFields()
+  await loadTokenJoinAndFields()
 })
 
 onUnmounted(() => {
@@ -993,67 +1044,88 @@ onUnmounted(() => {
 <template>
   <div class="video-match-page video-analysis-container">
     <el-card class="control-panel" shadow="never" :body-style="{ padding: '12px 20px' }">
-      <div class="header-controls">
-        <div class="left-controls">
+      <div class="header-controls vm-header-unified">
+        <div class="left-controls vm-context-row">
           <h3 class="section-title">视频匹配</h3>
-          <el-select
-            v-model="historyJobId"
-            filterable
-            clearable
-            placeholder="载入已转写任务"
-            class="history-job-select"
-            size="small"
-            @change="onHistoryJobChange"
-          >
-            <el-option
-              v-for="j in historyJobs"
-              :key="j.id"
-              :label="historyJobLabel(j)"
-              :value="j.id"
-            />
-          </el-select>
-          <el-tooltip
-            placement="top"
-            content="与视频分析索引一致。载入历史任务时会按该任务自动切换；也可手动切换后再编辑策略权重。"
-          >
-            <el-select v-model="form.workspace" size="small" class="workspace-select">
+          <div class="vm-inline-group">
+            <el-select
+              v-model="historyJobId"
+              filterable
+              clearable
+              placeholder="载入已转写任务"
+              class="history-job-select"
+              size="small"
+              @change="onHistoryJobChange"
+            >
               <el-option
-                v-for="ws in workspaceOptions"
-                :key="ws.key"
-                :label="ws.label"
-                :value="ws.key"
+                v-for="j in historyJobs"
+                :key="j.id"
+                :label="historyJobLabel(j)"
+                :value="j.id"
               />
             </el-select>
-          </el-tooltip>
-          <div class="strategy-row">
-            <SearchStrategySelect
-              v-model="selectedStrategy"
-              :strategies="strategies"
-              placeholder="选择搜索策略"
-              @refresh="loadStrategies"
-              @delete="onStrategyDelete"
-              @create="openVmStrategyCreateDialog"
-            />
-            <el-button
-              circle
-              size="small"
-              color="#6366f1"
-              :disabled="!selectedStrategy"
-              title="编辑当前策略权重"
-              @click="openVmStrategyEditDialog"
-            >
-              <el-icon><Setting /></el-icon>
-            </el-button>
             <el-tooltip
-              :disabled="canMixCompose"
               placement="top"
-              :content="mixComposeDisabledHint || '提交混剪（后台转码 + 拼轨 + 下发）'"
+              content="与视频分析索引一致；载入历史任务时会自动切换 workspace"
             >
-              <span class="inline-btn-wrap mix-compose-actions">
-                <span class="mix-srt-toggle" @click.stop>
-                  <el-switch v-model="mixPreferSrt" size="small" :disabled="composing" />
-                  <span class="mix-srt-label">外挂 SRT</span>
-                </span>
+              <el-select v-model="form.workspace" size="small" class="workspace-select">
+                <el-option
+                  v-for="ws in workspaceOptions"
+                  :key="ws.key"
+                  :label="ws.label"
+                  :value="ws.key"
+                />
+              </el-select>
+            </el-tooltip>
+          </div>
+        </div>
+        <div class="vm-header-right">
+          <div v-if="currentJobId" class="job-status-bar">
+            <el-tooltip placement="bottom" :content="'完整任务编号：' + currentJobId">
+              <span class="job-ref subtle">任务 {{ shortJobIdForDisplay(currentJobId) }}</span>
+            </el-tooltip>
+            <el-tag v-if="parseStatus" size="small" effect="plain" :type="pipelineStatusZh(parseStatus).tag">
+              口播转写 · {{ pipelineStatusZh(parseStatus).label }}
+            </el-tag>
+            <el-tag v-if="jobSearchStatus" size="small" effect="plain" :type="pipelineStatusZh(jobSearchStatus).tag">
+              素材匹配 · {{ pipelineStatusZh(jobSearchStatus).label }}
+            </el-tag>
+            <el-button size="small" @click="refreshJob">刷新任务</el-button>
+          </div>
+          <div class="vm-pipeline-actions">
+            <div class="vm-action-group">
+              <SearchStrategySelect
+                v-model="selectedStrategy"
+                :strategies="strategies"
+                placeholder="选择搜索策略"
+                @refresh="loadStrategies"
+                @delete="onStrategyDelete"
+                @create="openVmStrategyCreateDialog"
+              />
+              <el-button
+                circle
+                size="small"
+                color="#6366f1"
+                :disabled="!selectedStrategy"
+                title="编辑策略权重（BM25 / 向量 / RRF）"
+                @click="openVmStrategyEditDialog"
+              >
+                <el-icon><Setting /></el-icon>
+              </el-button>
+              <el-button type="success" :disabled="!canMatch || matching" :loading="matching" @click="onMatch">
+                匹配
+              </el-button>
+            </div>
+            <div class="vm-action-group vm-compose-inline">
+              <span class="mix-srt-toggle" @click.stop>
+                <el-switch v-model="mixPreferSrt" size="small" :disabled="composing" />
+                <span class="mix-srt-label">外挂 SRT</span>
+              </span>
+              <el-tooltip
+                :disabled="canMixCompose"
+                placement="top"
+                :content="mixComposeDisabledHint || '提交混剪（后台转码 + 拼轨 + 下发）'"
+              >
                 <el-button
                   type="primary"
                   plain
@@ -1063,164 +1135,168 @@ onUnmounted(() => {
                 >
                   混剪合成
                 </el-button>
-              </span>
-            </el-tooltip>
-            <el-button
-              type="success"
-              :disabled="!canMatch || matching"
-              :loading="matching"
-              @click="onMatch"
-            >
-              匹配
-            </el-button>
-          </div>
-          <el-alert
-            v-if="lastMixCompose"
-            class="mix-compose-status"
-            :type="
-              lastMixCompose.status === 'failed'
-                ? 'error'
-                : lastMixCompose.status === 'done'
-                  ? 'success'
-                  : 'info'
-            "
-            :closable="true"
-            show-icon
-            @close="dismissMixComposeAlert"
-          >
-            <template #title>混剪：{{ lastMixCompose.status }}</template>
-            <div class="mix-compose-status-body">
-              <div class="mono">
-                <span class="lbl">compose</span> {{ lastMixCompose.compose_id }}
-              </div>
-              <div class="mono">
-                <span class="lbl">biz</span> {{ lastMixCompose.biz_id }}
-              </div>
-              <div v-if="lastMixCompose.result_obs_url" class="result-link">
-                <template v-if="mixComposeResultHref(lastMixCompose.result_obs_url)">
-                  <a
-                    :href="mixComposeResultHref(lastMixCompose.result_obs_url)!"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    >成品 URL</a
-                  >
-                </template>
-                <template v-else>
-                  <div class="mix-result-path">
-                    <div class="muted small">以下为 OBS 对象键（不是浏览器直链）；用于 Worker/CDN 拼接</div>
-                    <div class="mono path-text">{{ lastMixCompose.result_obs_url }}</div>
-                    <el-button
-                      size="small"
-                      link
-                      type="primary"
-                      @click="copyMixOutputPath(lastMixCompose.result_obs_url!)"
-                    >
-                      复制路径
-                    </el-button>
-                  </div>
-                </template>
-              </div>
-              <div v-if="lastMixCompose.prefer_srt" class="mix-srt-block">
-                <template v-if="(lastMixCompose.result_srt_text || '').trim()">
-                  <div class="muted small">外挂字幕（与口播时间轴对齐）</div>
-                  <el-button
-                    size="small"
-                    link
-                    type="primary"
-                    @click="copyMixOutputPath(lastMixCompose.result_srt_text!)"
-                  >
-                    复制 SRT
-                  </el-button>
-                  <el-button
-                    size="small"
-                    link
-                    type="primary"
-                    @click="downloadMixSrtFile(lastMixCompose.result_srt_text!, lastMixCompose.compose_id)"
-                  >
-                    下载 .srt
-                  </el-button>
-                </template>
-                <div v-else-if="lastMixCompose.status === 'done'" class="muted small">
-                  未返回 SRT 文本（可查看服务端日志）
-                </div>
-              </div>
-              <div v-if="lastMixCompose.error_message" class="mix-err">{{ lastMixCompose.error_message }}</div>
+              </el-tooltip>
             </div>
-          </el-alert>
-        </div>
-        <div v-if="currentJobId" class="right-controls job-status-bar">
-          <el-tooltip placement="bottom" :content="'完整任务编号（排障时提供给技术支持）：' + currentJobId">
-            <span class="job-ref subtle">任务 {{ shortJobIdForDisplay(currentJobId) }}</span>
-          </el-tooltip>
-          <el-tag v-if="parseStatus" size="small" effect="plain" :type="pipelineStatusZh(parseStatus).tag">
-            口播转写 · {{ pipelineStatusZh(parseStatus).label }}
-          </el-tag>
-          <el-tag v-if="jobSearchStatus" size="small" effect="plain" :type="pipelineStatusZh(jobSearchStatus).tag">
-            素材匹配 · {{ pipelineStatusZh(jobSearchStatus).label }}
-          </el-tag>
-          <el-button size="small" @click="refreshJob">刷新任务</el-button>
+          </div>
         </div>
       </div>
 
-      <el-form class="parse-form" label-width="72px" @submit.prevent="onParse">
-        <el-form-item label="口播脚本" required>
-          <el-input
-            v-model="form.script"
-            type="textarea"
-            :rows="4"
-            placeholder="例如：智己LS6，城市道路，展示一键泊车功能..."
-          />
-        </el-form-item>
-        <div class="form-row-inline">
-          <el-form-item label="主题">
-            <el-input v-model="form.topic" placeholder="选填" />
-          </el-form-item>
-          <el-form-item label="标题">
-            <el-input v-model="form.title" placeholder="选填" />
-          </el-form-item>
-          <el-form-item label="车型">
-            <el-select
-              v-model="form.car_model"
-              placeholder="请选择车型（影响转写参考词表）"
-              clearable
-              style="width: 100%"
-            >
-              <el-option
-                v-for="opt in ZHIJI_CAR_MODEL_OPTIONS"
-                :key="opt.value"
-                :label="opt.label"
-                :value="opt.value"
-              />
-            </el-select>
-          </el-form-item>
-        </div>
-        <el-form-item label="画面比例">
-          <el-select
-            v-model="form.frame_size"
-            placeholder="选填：横/竖屏约束，将写入每镜检索标签（与索引 frame_size 一致）"
-            clearable
-            class="frame-size-select"
-          >
-            <el-option
-              v-for="opt in VIDEO_FRAME_SIZE_OPTIONS"
-              :key="`fs_${opt.value || 'any'}`"
-              :label="opt.label"
-              :value="opt.value"
+      <div class="vm-parse-block">
+        <el-form class="parse-form" label-width="72px" @submit.prevent="onParse">
+          <el-form-item label="口播脚本" required>
+            <el-input
+              v-model="form.script"
+              type="textarea"
+              :rows="3"
+              placeholder="例如：智己LS6，城市道路，展示一键泊车功能..."
             />
-          </el-select>
-        </el-form-item>
-        <el-form-item>
-          <el-button type="primary" :loading="parsing" @click="onParse">
-            {{ parsing ? '转写中...' : '解析 / 转写' }}
-          </el-button>
-        </el-form-item>
-      </el-form>
+          </el-form-item>
+          <div class="vm-extra-fields">
+            <div class="form-row-inline">
+              <el-form-item label="主题">
+                <el-input v-model="form.topic" placeholder="选填" />
+              </el-form-item>
+              <el-form-item label="标题">
+                <el-input v-model="form.title" placeholder="选填" />
+              </el-form-item>
+              <el-form-item label="车型">
+                <el-select
+                  v-model="form.car_model"
+                  placeholder="请选择车型（影响转写参考词表）"
+                  clearable
+                  style="width: 100%"
+                >
+                  <el-option
+                    v-for="opt in ZHIJI_CAR_MODEL_OPTIONS"
+                    :key="opt.value"
+                    :label="opt.label"
+                    :value="opt.value"
+                  />
+                </el-select>
+              </el-form-item>
+            </div>
+            <el-form-item label="画面比例">
+              <el-select
+                v-model="form.frame_size"
+                placeholder="选填：横/竖屏约束，将写入每镜检索标签（与索引 frame_size 一致）"
+                clearable
+                class="frame-size-select"
+              >
+                <el-option
+                  v-for="opt in VIDEO_FRAME_SIZE_OPTIONS"
+                  :key="`fs_${opt.value || 'any'}`"
+                  :label="opt.label"
+                  :value="opt.value"
+                />
+              </el-select>
+            </el-form-item>
+          </div>
+          <el-form-item>
+            <div class="parse-actions-row">
+              <el-button type="primary" :loading="parsing" @click="onParse">
+                {{ parsing ? '转写中...' : '解析 / 转写' }}
+              </el-button>
+              <el-tooltip content="AND 命中模板（转写 MUST / v2 term filter）" placement="bottom">
+                <el-button
+                  circle
+                  size="default"
+                  class="template-gear-btn"
+                  title="AND 命中模板"
+                  @click="tokenJoinDialogVisible = true"
+                >
+                  <el-icon><Setting /></el-icon>
+                </el-button>
+              </el-tooltip>
+            </div>
+          </el-form-item>
+        </el-form>
+        <el-alert v-if="parseError" type="error" :closable="false" show-icon class="parse-alert">
+          {{ parseError }}
+        </el-alert>
+      </div>
 
-      <el-alert v-if="parseError" type="error" :closable="false" show-icon class="parse-alert">
-        {{ parseError }}
-      </el-alert>
-      <el-alert v-if="jobSearchError" type="warning" :closable="false" show-icon class="parse-alert">
+      <el-alert
+        v-if="jobSearchError"
+        type="warning"
+        :closable="false"
+        show-icon
+        class="parse-alert vm-search-error-alert"
+      >
         {{ jobSearchError }}
+      </el-alert>
+
+      <el-alert
+        v-if="lastMixCompose"
+        class="mix-compose-status"
+        :type="
+          lastMixCompose.status === 'failed'
+            ? 'error'
+            : lastMixCompose.status === 'done'
+              ? 'success'
+              : 'info'
+        "
+        :closable="true"
+        show-icon
+        @close="dismissMixComposeAlert"
+      >
+        <template #title>混剪：{{ lastMixCompose.status }}</template>
+        <div class="mix-compose-status-body">
+          <div class="mono">
+            <span class="lbl">compose</span> {{ lastMixCompose.compose_id }}
+          </div>
+          <div class="mono">
+            <span class="lbl">biz</span> {{ lastMixCompose.biz_id }}
+          </div>
+          <div v-if="lastMixCompose.result_obs_url" class="result-link">
+            <template v-if="mixComposeResultHref(lastMixCompose.result_obs_url)">
+              <a
+                :href="mixComposeResultHref(lastMixCompose.result_obs_url)!"
+                target="_blank"
+                rel="noopener noreferrer"
+                >成品 URL</a
+              >
+            </template>
+            <template v-else>
+              <div class="mix-result-path">
+                <div class="muted small">以下为 OBS 对象键（不是浏览器直链）；用于 Worker/CDN 拼接</div>
+                <div class="mono path-text">{{ lastMixCompose.result_obs_url }}</div>
+                <el-button
+                  size="small"
+                  link
+                  type="primary"
+                  @click="copyMixOutputPath(lastMixCompose.result_obs_url!)"
+                >
+                  复制路径
+                </el-button>
+              </div>
+            </template>
+          </div>
+          <div v-if="lastMixCompose.prefer_srt" class="mix-srt-block">
+            <template v-if="(lastMixCompose.result_srt_text || '').trim()">
+              <div class="muted small">外挂字幕（与口播时间轴对齐）</div>
+              <el-button
+                size="small"
+                link
+                type="primary"
+                @click="copyMixOutputPath(lastMixCompose.result_srt_text!)"
+              >
+                复制 SRT
+              </el-button>
+              <el-button
+                size="small"
+                link
+                type="primary"
+                @click="downloadMixSrtFile(lastMixCompose.result_srt_text!, lastMixCompose.compose_id)"
+              >
+                下载 .srt
+              </el-button>
+            </template>
+            <div v-else-if="lastMixCompose.status === 'done'" class="muted small">
+              未返回 SRT 文本（可查看服务端日志）
+            </div>
+          </div>
+          <div v-if="lastMixCompose.error_message" class="mix-err">{{ lastMixCompose.error_message }}</div>
+        </div>
       </el-alert>
     </el-card>
 
@@ -1545,6 +1621,8 @@ onUnmounted(() => {
       </template>
     </el-dialog>
 
+    <TokenJoinTemplateDialog v-model="tokenJoinDialogVisible" :workspace="form.workspace" />
+
     <SearchStrategyDialog
       v-model="vmStrategyDialogVisible"
       :mode="vmStrategyDialogMode"
@@ -1601,9 +1679,13 @@ onUnmounted(() => {
 .header-controls {
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  align-items: flex-start;
   flex-wrap: wrap;
-  gap: 16px;
+  gap: 12px;
+}
+
+.vm-header-unified {
+  padding-bottom: 10px;
 }
 
 .left-controls {
@@ -1611,6 +1693,82 @@ onUnmounted(() => {
   align-items: center;
   gap: 16px;
   flex-wrap: wrap;
+}
+
+.vm-context-row {
+  align-items: center;
+}
+
+.vm-inline-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: nowrap;
+}
+
+.vm-header-right {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  max-width: 100%;
+}
+
+.vm-pipeline-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+.vm-action-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.vm-compose-inline {
+  padding-left: 8px;
+  border-left: 1px solid var(--el-border-color-lighter);
+}
+
+.vm-parse-block {
+  margin-top: 12px;
+}
+
+.parse-actions-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.vm-search-error-alert {
+  margin-top: 10px;
+}
+
+.job-status-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.vm-group-label {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  white-space: nowrap;
+}
+
+.vm-extra-fields {
+  margin-bottom: 4px;
+}
+
+.template-gear-btn .el-icon {
+  font-size: 20px;
 }
 
 .section-title {
@@ -1678,8 +1836,8 @@ onUnmounted(() => {
 }
 
 .mix-compose-status {
-  margin-top: 10px;
-  max-width: 760px;
+  margin-top: 12px;
+  max-width: none;
 }
 
 .mix-compose-status-body {
@@ -1723,7 +1881,7 @@ onUnmounted(() => {
 }
 
 .parse-form {
-  margin-top: 12px;
+  margin-top: 0;
   max-width: 960px;
 }
 

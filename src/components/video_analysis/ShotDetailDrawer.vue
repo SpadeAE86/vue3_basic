@@ -75,7 +75,7 @@ type ShotCard = {
   // 搜索结果附加字段
   _score?: number | null
   _highlight?: Record<string, string[]> | null
-  _search_mode?: 'precise' | 'fuzzy' | null
+  _search_mode?: 'precise' | 'fuzzy' | 'fuzzy_rrf' | null
   // 允许任意额外字段
   [key: string]: unknown
 }

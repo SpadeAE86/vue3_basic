@@ -217,6 +217,8 @@ export type VideoAnalysisSearchToken = {
   text: string
   join?: 'AND' | 'OR'
   not?: boolean
+  type?: string
+  source_field?: string | null
 }
 
 export async function searchVideoAnalysisCardsApi(
@@ -274,6 +276,82 @@ export async function saveSearchStrategyApi(strategy: SearchStrategy) {
 export async function deleteSearchStrategyApi(id: number) {
   const resp = await fetch(`${API_BASE}/video-analysis/search-strategies/${id}`, {
     method: 'DELETE',
+  })
+  return resp.json()
+}
+
+// ---------------- AND 模板（转写 MUST 字段 / term filter） ----------------
+
+export type TokenJoinTemplate = {
+  id?: number
+  name: string
+  workspace: string
+  is_default: boolean
+  and_segment_fields: string[]
+  created_at?: string
+  updated_at?: string
+}
+
+export async function getTokenJoinAllowedFieldsApi(): Promise<{ success: boolean; fields?: string[] }> {
+  const resp = await fetch(`${API_BASE}/video-analysis/token-join-templates/allowed-fields`)
+  return resp.json()
+}
+
+export async function getTokenJoinDefaultFieldsApi(
+  workspace: string,
+): Promise<{ success: boolean; and_segment_fields?: string[]; workspace?: string }> {
+  const sp = new URLSearchParams({ workspace })
+  const resp = await fetch(`${API_BASE}/video-analysis/token-join-templates/default-fields?${sp}`)
+  return resp.json()
+}
+
+export async function listTokenJoinTemplatesApi(workspace?: string): Promise<{
+  success: boolean
+  templates?: TokenJoinTemplate[]
+}> {
+  const sp = new URLSearchParams()
+  if (workspace) sp.set('workspace', workspace)
+  const q = sp.toString()
+  const resp = await fetch(`${API_BASE}/video-analysis/token-join-templates${q ? `?${q}` : ''}`)
+  return resp.json()
+}
+
+export async function createTokenJoinTemplateApi(body: {
+  name: string
+  workspace?: string
+  and_segment_fields: string[]
+  is_default?: boolean
+}) {
+  const resp = await fetch(`${API_BASE}/video-analysis/token-join-templates`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  return resp.json()
+}
+
+export async function updateTokenJoinTemplateApi(
+  id: number,
+  body: { name?: string; and_segment_fields?: string[]; is_default?: boolean },
+) {
+  const resp = await fetch(`${API_BASE}/video-analysis/token-join-templates/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  return resp.json()
+}
+
+export async function deleteTokenJoinTemplateApi(id: number) {
+  const resp = await fetch(`${API_BASE}/video-analysis/token-join-templates/${id}`, {
+    method: 'DELETE',
+  })
+  return resp.json()
+}
+
+export async function setDefaultTokenJoinTemplateApi(id: number) {
+  const resp = await fetch(`${API_BASE}/video-analysis/token-join-templates/${id}/set-default`, {
+    method: 'POST',
   })
   return resp.json()
 }

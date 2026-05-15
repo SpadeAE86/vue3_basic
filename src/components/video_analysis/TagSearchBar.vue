@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
-import { ElMessage } from 'element-plus'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { getSearchStrategiesApi, saveSearchStrategyApi, deleteSearchStrategyApi, type SearchStrategy } from '@/api/video_analysis'
 import SearchStrategySelect from './SearchStrategySelect.vue'
 import SearchStrategyDialog from './SearchStrategyDialog.vue'
@@ -16,6 +16,8 @@ export type SearchToken = {
   join?: TokenJoin // join with previous token (ignored for first)
   not?: boolean
   type?: TokenType
+  /** segment / v2 索引 keyword 字段名；AND 时参与 term filter */
+  sourceField?: string
 }
 
 const props = withDefaults(
@@ -34,15 +36,18 @@ const props = withDefaults(
     placeholder?: string
     maxPreviewChars?: number
     radius?: string
+    /** 更矮的标签区（如视频分析顶栏） */
+    dense?: boolean
   }>(),
   {
     modelValue: () => [],
     workspace: 'v2',
     loading: false,
     fuzzy: true,
-    placeholder: '输入标签回车添加；空格可分词',
+    placeholder: '回车添加标签；空格可分词；在标签上按下拖到另一枚可多选，Delete 批量删除',
     maxPreviewChars: 6,
     radius: '999px',
+    dense: false,
   },
 )
 
@@ -245,7 +250,6 @@ watch(strategyDialogVisible, (open) => {
   localVectorWeights.value = next
 })
 
-import { onMounted } from 'vue'
 onMounted(() => {
   loadStrategies()
   fetchIndexFields()
@@ -258,6 +262,154 @@ const editorOpen = ref(false)
 const popoverAnchor = ref<HTMLElement | null>(null)
 
 const tokens = computed(() => props.modelValue ?? [])
+const selectedTokenIds = ref<string[]>([])
+
+/** 按下标签拖拽到另一标签：按 DOM 序范围多选；短按打开编辑 */
+type DragSession = {
+  pressIndex: number
+  startX: number
+  startY: number
+  active: boolean
+  token: SearchToken
+  anchorEl: HTMLElement
+}
+let dragSession: DragSession | null = null
+
+function findTokenIndexAtPoint(cx: number, cy: number): number | null {
+  const els = document.elementsFromPoint(cx, cy)
+  for (const node of els) {
+    const el = node as HTMLElement
+    const tag = el.closest?.('.tag-search-composer .token') as HTMLElement | null
+    if (!tag) continue
+    const idxStr = tag.dataset.tokenIndex
+    if (idxStr != null) {
+      const i = parseInt(idxStr, 10)
+      if (!Number.isNaN(i) && i >= 0 && i < tokens.value.length) return i
+    }
+  }
+  return null
+}
+
+function onWindowPointerMove(e: PointerEvent) {
+  if (!dragSession) return
+  const dx = e.clientX - dragSession.startX
+  const dy = e.clientY - dragSession.startY
+  if (!dragSession.active && dx * dx + dy * dy >= 25) {
+    dragSession.active = true
+  }
+  if (dragSession.active) {
+    const hi = findTokenIndexAtPoint(e.clientX, e.clientY)
+    if (hi != null) selectTokenRange(dragSession.pressIndex, hi)
+  }
+}
+
+function endDragListeners() {
+  window.removeEventListener('pointermove', onWindowPointerMove)
+  window.removeEventListener('pointerup', onWindowPointerUp)
+  window.removeEventListener('pointercancel', onWindowPointerUp)
+}
+
+function onWindowPointerUp() {
+  if (!dragSession) return
+  const wasDrag = dragSession.active
+  const { token, anchorEl } = dragSession
+  endDragListeners()
+  dragSession = null
+  if (!wasDrag) {
+    openEditor(anchorEl, token)
+  }
+}
+
+function onTokenPointerDown(e: PointerEvent, t: SearchToken, idx: number) {
+  if (e.button !== 0) return
+  const target = e.target as HTMLElement
+  if (target.closest?.('.token-remove-hit')) return
+
+  clearSelection()
+  dragSession = {
+    pressIndex: idx,
+    startX: e.clientX,
+    startY: e.clientY,
+    active: false,
+    token: t,
+    anchorEl: e.currentTarget as HTMLElement,
+  }
+  window.addEventListener('pointermove', onWindowPointerMove)
+  window.addEventListener('pointerup', onWindowPointerUp)
+  window.addEventListener('pointercancel', onWindowPointerUp)
+}
+
+watch(tokens, (list) => {
+  const ids = new Set(list.map((t) => t.id))
+  selectedTokenIds.value = selectedTokenIds.value.filter((id) => ids.has(id))
+})
+
+function isTokenSelected(id: string) {
+  return selectedTokenIds.value.includes(id)
+}
+
+function clearSelection() {
+  selectedTokenIds.value = []
+}
+
+function selectTokenRange(from: number, to: number) {
+  const a = Math.min(from, to)
+  const b = Math.max(from, to)
+  const slice = tokens.value.slice(a, b + 1)
+  selectedTokenIds.value = slice.map((t) => t.id)
+}
+
+function removeSelectedTokens() {
+  if (selectedTokenIds.value.length === 0) return
+  const rm = new Set(selectedTokenIds.value)
+  const next = tokens.value.filter((t) => !rm.has(t.id))
+  selectedTokenIds.value = []
+  emit('update:modelValue', next)
+}
+
+async function clearAllTokens() {
+  if (tokens.value.length === 0) return
+  if (tokens.value.length > 10) {
+    try {
+      await ElMessageBox.confirm(`确定清空全部 ${tokens.value.length} 个标签？`, '清空', { type: 'warning' })
+    } catch {
+      return
+    }
+  }
+  clearSelection()
+  emit('update:modelValue', [])
+}
+
+onUnmounted(() => {
+  if (dragSession) {
+    endDragListeners()
+    dragSession = null
+  }
+})
+
+function onInputKeydown(e: KeyboardEvent) {
+  if (e.key !== 'Backspace' && e.key !== 'Delete') return
+  if (inputText.value.trim()) return
+  if (selectedTokenIds.value.length > 0) {
+    e.preventDefault()
+    removeSelectedTokens()
+    return
+  }
+  if (e.key === 'Backspace' && tokens.value.length > 0) {
+    e.preventDefault()
+    const next = tokens.value.slice(0, -1)
+    emit('update:modelValue', next)
+  }
+}
+
+function onComposerKeydown(e: KeyboardEvent) {
+  if (e.key !== 'Backspace' && e.key !== 'Delete') return
+  const t = e.target as HTMLElement | null
+  if (t?.closest?.('.inp')) return
+  if (selectedTokenIds.value.length === 0) return
+  e.preventDefault()
+  removeSelectedTokens()
+}
 
 function uid() {
   return `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
@@ -297,8 +449,8 @@ function removeToken(id: string) {
 // 记录打开编辑器时的原始状态，用于取消时回滚
 let originalTokenState: SearchToken | null = null
 
-function openEditor(e: MouseEvent, t: SearchToken) {
-  popoverAnchor.value = e.currentTarget as HTMLElement
+function openEditor(anchorEl: HTMLElement, t: SearchToken) {
+  popoverAnchor.value = anchorEl
   // 保存原始状态的深拷贝用于回滚
   originalTokenState = JSON.parse(JSON.stringify(t))
   // 直接引用原对象，实现即时响应
@@ -399,24 +551,28 @@ function handleEnterKey() {
 </script>
 
 <template>
-  <div class="tag-search-composer">
-    <div class="token-box">
+  <div class="tag-search-composer" tabindex="0" @keydown="onComposerKeydown">
+    <div class="token-box" :class="{ 'token-box--dense': dense }">
       <el-tag
         v-for="(t, idx) in tokens"
         :key="t.id"
+        :data-token-index="idx"
         :type="tagType(t)"
         :effect="tagEffect(t)"
         :round="true"
         class="token"
+        :class="{ 'token--selected': isTokenSelected(t.id) }"
         :style="getTagStyle(t)"
-        @click="(e) => openEditor(e, t)"
+        @pointerdown="onTokenPointerDown($event, t, idx)"
       >
         <span v-if="idx !== 0" class="join">{{ t.join ?? 'AND' }}</span>
         <span v-if="t.not" class="not">NOT</span>
         <el-tooltip :content="t.text" placement="top" :show-after="350">
           <span class="txt">{{ previewText(t) }}</span>
         </el-tooltip>
-        <el-icon class="x" @click.stop="removeToken(t.id)"><i-ep-close /></el-icon>
+        <el-icon class="x token-remove-hit" @pointerdown.stop.prevent @click.stop="removeToken(t.id)">
+          <i-ep-close />
+        </el-icon>
       </el-tag>
 
       <el-input
@@ -424,11 +580,28 @@ function handleEnterKey() {
         :placeholder="placeholder"
         class="inp"
         @keydown.enter.prevent="handleEnterKey"
+        @keydown="onInputKeydown"
       />
     </div>
 
     <div class="composer-footer">
       <div class="left-area">
+        <div class="footer-leading-actions">
+          <slot name="footer-leading-actions" />
+        </div>
+        <el-tooltip content="清空全部标签" placement="top">
+          <el-button
+            circle
+            size="small"
+            type="danger"
+            plain
+            :disabled="tokens.length === 0"
+            class="clear-tags-btn"
+            @click="clearAllTokens"
+          >
+            <el-icon><i-ep-delete /></el-icon>
+          </el-button>
+        </el-tooltip>
         <el-icon v-if="loading" class="search-loading" title="远程搜索中…">
           <i-ep-loading />
         </el-icon>
@@ -519,6 +692,17 @@ function handleEnterKey() {
   border-color: #409eff;
 }
 
+.footer-leading-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.clear-tags-btn {
+  flex-shrink: 0;
+}
+
 .token-box {
   display: flex;
   flex-wrap: wrap;
@@ -528,6 +712,10 @@ function handleEnterKey() {
   min-height: 40px;
   max-height: 120px;
   overflow-y: auto;
+}
+
+.token-box--dense {
+  max-height: 96px;
 }
 
 .token-box::-webkit-scrollbar {
@@ -551,6 +739,7 @@ function handleEnterKey() {
 .left-area {
   display: flex;
   align-items: center;
+  gap: 8px;
   min-height: 32px;
 }
 
@@ -596,6 +785,12 @@ function handleEnterKey() {
 
 .token:hover .x {
   opacity: 0.65;
+}
+
+.token--selected {
+  outline: 2px solid #f59e0b;
+  outline-offset: 1px;
+  box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.35);
 }
 
 .inp {

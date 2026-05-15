@@ -102,6 +102,7 @@ export function buildSearchCacheKey(parts: {
     text: t.text.trim(),
     join: t.join ?? 'AND',
     not: !!t.not,
+    sf: t.source_field ?? '',
   }))
   const sig = (parts.strategySig ?? '').trim()
   return `${parts.workspace}|${h}|${parts.fuzzy ? 1 : 0}|${parts.size}|${sig}|${JSON.stringify(payload)}`
@@ -195,6 +196,7 @@ export const videoAnalysisSearchCache = {
       return null
     }
     const hit = entries[idx]
+    if (!hit) return null
     const now = Date.now()
     hit.ts = now
     entries.splice(idx, 1)
