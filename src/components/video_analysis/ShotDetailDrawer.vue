@@ -140,6 +140,7 @@ const FIELD_LABEL: Record<string, string> = {
   generic_hq_road_run: '通用路跑',
   analysis_doc_id: '文档ID',
   frame_size: '画幅',
+  frame_orientation: '横竖屏',
   resolution: '分辨率',
   video_duration: '视频时长(s)',
 }

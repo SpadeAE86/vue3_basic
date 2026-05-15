@@ -1,4 +1,5 @@
 import type { SearchToken } from '@/components/video_analysis/TagSearchBar.vue'
+import { inferFrameOrientation, FRAME_ORIENTATION_UNKNOWN } from '@/utils/frameOrientation'
 
 /** 与后端默认模板一致（无 DB 时使用） */
 export const DEFAULT_TOKEN_JOIN_AND_FIELDS = ['car_model', 'movement', 'product_status_scene']
@@ -39,6 +40,16 @@ export function tagsJsonToSearchTokens(
 
   addToken('car_model', seg.car_model, mustSet.has('car_model'), 'keyword')
   addToken('frame_size', seg.frame_size, mustSet.has('frame_size'), 'keyword')
+
+  const orientRaw = seg.frame_orientation
+  const orient =
+    (typeof orientRaw === 'string' && orientRaw.trim() && orientRaw !== FRAME_ORIENTATION_UNKNOWN
+      ? orientRaw.trim()
+      : null) ?? inferFrameOrientation(String(seg.frame_size ?? ''))
+  if (orient && orient !== FRAME_ORIENTATION_UNKNOWN) {
+    addToken('frame_orientation', orient, mustSet.has('frame_orientation'), 'keyword')
+  }
+
   addToken('product_status_scene', seg.product_status_scene, mustSet.has('product_status_scene'), 'keyword')
   addToken('footage_type', seg.footage_type, mustSet.has('footage_type'), 'keyword')
   addToken('movement', seg.movement, mustSet.has('movement'), 'keyword')
