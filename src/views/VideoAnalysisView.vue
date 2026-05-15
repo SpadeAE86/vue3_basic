@@ -428,8 +428,6 @@ function kickRemoteSearch() {
     return
   }
 
-  const historyId =
-    selectedHistory.value && selectedHistory.value !== '__all__' ? selectedHistory.value : undefined
   const backendTok = toBackendTokens(tokens)
   
   // 动态决定是否模糊检索：如果存在 text 类型的 token，则使用模糊（混合）检索；否则使用精确（BM25）检索
@@ -438,7 +436,6 @@ function kickRemoteSearch() {
 
   const cacheKey = buildSearchCacheKey({
     workspace: currentWorkspace.value,
-    historyId,
     fuzzy: isFuzzy,
     tokens: backendTok,
     size: 80,
@@ -466,7 +463,6 @@ function kickRemoteSearch() {
     {
       tokens: backendTok,
       fuzzy: isFuzzy,
-      history_id: historyId,
       size: 80,
       workspace: currentWorkspace.value,
       bm25_weight: searchStrategyWeights.value.bm25_weight,
@@ -742,12 +738,9 @@ onMounted(async () => {
   } else {
     const tok = (searchTokens.value ?? []).filter((t) => t.text?.trim())
     if (tok.length) {
-      const hid =
-        selectedHistory.value && selectedHistory.value !== '__all__' ? selectedHistory.value : undefined
       const backendTok = toBackendTokens(tok)
       const key = buildSearchCacheKey({
         workspace: currentWorkspace.value,
-        historyId: hid,
         fuzzy: searchFuzzy.value,
         tokens: backendTok,
         size: 80,

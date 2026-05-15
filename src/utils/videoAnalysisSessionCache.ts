@@ -87,9 +87,10 @@ function safeParse<T>(raw: string | null): T | null {
   }
 }
 
-/** 与后端 kickRemoteSearch 参数一致即可稳定命中 */
+/** 与后端 /search 语义一致即可稳定命中（检索不按历史收窄，键中不包含 historyId） */
 export function buildSearchCacheKey(parts: {
   workspace: string
+  /** @deprecated 已忽略，仅为兼容旧调用 */
   historyId?: string
   fuzzy: boolean
   tokens: VideoAnalysisSearchToken[]
@@ -97,7 +98,7 @@ export function buildSearchCacheKey(parts: {
   /** 权重 / RRF 开关变化须使缓存失效 */
   strategySig?: string
 }): string {
-  const h = (parts.historyId || '').trim() || '*'
+  const h = '*'
   const payload = parts.tokens.map((t) => ({
     text: t.text.trim(),
     join: t.join ?? 'AND',
