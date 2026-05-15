@@ -168,7 +168,7 @@ onUnmounted(() => {
             </template>
           </el-menu-item>
           <el-menu-item index="/video-match">
-            <el-icon><i-ep-magic-stick /></el-icon>
+            <el-icon><i-ep-compass /></el-icon>
             <template #title>视频匹配</template>
           </el-menu-item>
         </el-sub-menu>
@@ -196,9 +196,13 @@ onUnmounted(() => {
               </span>
             </template>
           </el-menu-item>
-          <el-menu-item index="/task-board/video-match">
+          <el-menu-item index="/task-board/video-match-transcribe">
             <el-icon><i-ep-magic-stick /></el-icon>
-            <template #title>视频匹配</template>
+            <template #title>脚本转写</template>
+          </el-menu-item>
+          <el-menu-item index="/task-board/video-match-search">
+            <el-icon><i-ep-compass /></el-icon>
+            <template #title>素材匹配</template>
           </el-menu-item>
         </el-sub-menu>
 

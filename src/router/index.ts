@@ -52,13 +52,24 @@ const router = createRouter({
     },
     {
       path: '/task-board/script-transcription',
-      redirect: { name: 'task-board-video-match' },
+      redirect: { name: 'task-board-video-match-transcribe' },
+    },
+    {
+      path: '/task-board/video-match-transcribe',
+      name: 'task-board-video-match-transcribe',
+      component: () => import('../views/TaskBoardView.vue'),
+      meta: { title: '脚本转写任务', boardSection: 'video_match_transcribe' },
+    },
+    {
+      path: '/task-board/video-match-search',
+      name: 'task-board-video-match-search',
+      component: () => import('../views/TaskBoardView.vue'),
+      meta: { title: '素材匹配任务', boardSection: 'video_match_search' },
     },
     {
       path: '/task-board/video-match',
       name: 'task-board-video-match',
-      component: () => import('../views/TaskBoardView.vue'),
-      meta: { title: '视频匹配任务', boardSection: 'video_match' },
+      redirect: { name: 'task-board-video-match-transcribe' },
     },
     {
       path: '/video-analysis',

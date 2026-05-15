@@ -215,6 +215,8 @@ const vmIndexFields = ref<{ text_fields: string[]; vector_fields: string[] }>({
   text_fields: [],
   vector_fields: [],
 })
+const vmTextWeightDefaults = ref<Record<string, number>>({})
+const vmVectorWeightDefaults = ref<Record<string, number>>({})
 
 /** 与当前 workspace 默认 AND 模板对齐（标签预览 / 跳转视频分析） */
 const tokenJoinDialogVisible = ref(false)
@@ -669,19 +671,25 @@ async function fetchVmIndexFields() {
       success?: boolean
       text_fields?: string[]
       vector_fields?: string[]
+      text_field_weights?: Record<string, number>
+      vector_field_weights?: Record<string, number>
     }
     if (res.success) {
       vmIndexFields.value = {
         text_fields: res.text_fields || [],
         vector_fields: res.vector_fields || [],
       }
+      vmTextWeightDefaults.value = res.text_field_weights || {}
+      vmVectorWeightDefaults.value = res.vector_field_weights || {}
       const tw = { ...vmStrategyTextWeights.value }
       const vw = { ...vmStrategyVectorWeights.value }
+      const twDef = vmTextWeightDefaults.value
+      const vwDef = vmVectorWeightDefaults.value
       for (const f of vmIndexFields.value.text_fields) {
-        if (tw[f] === undefined) tw[f] = 1
+        if (tw[f] === undefined) tw[f] = twDef[f] ?? 1
       }
       for (const f of vmIndexFields.value.vector_fields) {
-        if (vw[f] === undefined) vw[f] = 0
+        if (vw[f] === undefined) vw[f] = vwDef[f] ?? 0
       }
       vmStrategyTextWeights.value = tw
       vmStrategyVectorWeights.value = vw
@@ -1682,6 +1690,8 @@ onUnmounted(() => {
       :vector-weights="vmStrategyVectorWeights"
       :use-rrf="vmStrategyUseRrf"
       :index-fields="vmIndexFields"
+      :text-weight-defaults="vmTextWeightDefaults"
+      :vector-weight-defaults="vmVectorWeightDefaults"
       @update:bm25-weight="vmStrategyBm25 = $event"
       @update:vector-weight="vmStrategyVector = $event"
       @update:text-weights="vmStrategyTextWeights = $event"

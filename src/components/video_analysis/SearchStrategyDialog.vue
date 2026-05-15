@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
+import { searchStrategyFieldLabelZh } from '@/utils/searchStrategyFieldLabels'
 
 /** 非 RRF：OpenSearch hybrid 1×BM25 + 最多 4×KNN */
 const MAX_ACTIVE_VECTOR_ROUTES_FLAT = 4
@@ -16,6 +17,9 @@ const props = defineProps<{
   vectorWeights: Record<string, number>
   useRrf: boolean
   indexFields: { text_fields: string[]; vector_fields: string[] }
+  /** 索引模型标注的 BM25 默认权重（新字段不在库里时用） */
+  textWeightDefaults?: Record<string, number>
+  vectorWeightDefaults?: Record<string, number>
 }>()
 
 const emit = defineEmits<{
@@ -45,6 +49,41 @@ const localBm25 = ref(props.bm25Weight)
 const localVector = ref(props.vectorWeight)
 const localTextWeights = ref<Record<string, number>>({ ...props.textWeights })
 const localVectorWeights = ref<Record<string, number>>({ ...props.vectorWeights })
+
+const textDef = computed(() => props.textWeightDefaults || {})
+const vectorDef = computed(() => props.vectorWeightDefaults || {})
+
+function fieldLabel(field: string) {
+  return searchStrategyFieldLabelZh(field)
+}
+
+function effectiveTextW(field: string) {
+  const raw = localTextWeights.value[field]
+  if (raw !== undefined && Number.isFinite(Number(raw))) return Number(raw)
+  return textDef.value[field] ?? 1
+}
+
+function effectiveVectorW(field: string) {
+  const raw = localVectorWeights.value[field]
+  if (raw !== undefined && Number.isFinite(Number(raw))) return Number(raw)
+  return vectorDef.value[field] ?? 0
+}
+
+function countOtherActiveVectorRoutes(except: string): number {
+  let n = 0
+  for (const k of props.indexFields.vector_fields) {
+    if (k === except) continue
+    if (effectiveVectorW(k) > 0) n += 1
+  }
+  return n
+}
+
+function setTextFieldWeight(field: string, raw: number | null | undefined) {
+  const next = Number(raw)
+  if (!Number.isFinite(next)) return
+  localTextWeights.value = { ...localTextWeights.value, [field]: next }
+  onSliderChange()
+}
 
 function zeroAllVectorFields(): Record<string, number> {
   const o: Record<string, number> = {}
@@ -92,12 +131,9 @@ watch(
 function setVectorFieldWeight(field: string, raw: number | null | undefined) {
   const next = Number(raw)
   if (!Number.isFinite(next)) return
-  const prev = localVectorWeights.value[field] ?? 0
+  const prev = effectiveVectorW(field)
   if (next > 0 && prev <= 0) {
-    const others = Object.entries(localVectorWeights.value).filter(
-      ([k, v]) => k !== field && (v ?? 0) > 0,
-    ).length
-    if (others >= maxActiveVectorRoutes.value) {
+    if (countOtherActiveVectorRoutes(field) >= maxActiveVectorRoutes.value) {
       ElMessage.warning(
         props.useRrf
           ? `向量路最多启用 ${maxActiveVectorRoutes.value} 条`
@@ -218,24 +254,24 @@ function handleSave() {
         <div v-if="indexFields.text_fields.length" class="field-weights-section">
           <div class="section-title">文本字段权重 (BM25)</div>
           <div v-for="field in indexFields.text_fields" :key="field" class="slider-row mini">
-            <span class="label" :title="field">{{ field }}</span>
+            <span class="label" :title="field">{{ fieldLabel(field) }}</span>
             <div class="custom-slider-group">
               <el-slider
-                :model-value="Math.min(localTextWeights[field] || 0, 2)"
-                @update:model-value="localTextWeights[field] = $event; onSliderChange()"
+                :model-value="Math.min(effectiveTextW(field), 2)"
+                @update:model-value="setTextFieldWeight(field, $event)"
                 :min="0"
                 :max="2"
                 :step="0.1"
                 :show-input="false"
               />
               <el-input-number
-                v-model="localTextWeights[field]"
+                :model-value="effectiveTextW(field)"
                 :min="0"
                 :max="10"
                 :step="0.1"
                 size="small"
                 controls-position="right"
-                @change="onSliderChange"
+                @update:model-value="setTextFieldWeight(field, $event)"
               />
             </div>
           </div>
@@ -251,12 +287,12 @@ function handleSave() {
             v-for="field in indexFields.vector_fields"
             :key="field"
             class="slider-row mini"
-            :class="{ inactive: !(localVectorWeights[field] > 0) }"
+            :class="{ inactive: !(effectiveVectorW(field) > 0) }"
           >
-            <span class="label" :title="field">{{ field }}</span>
+            <span class="label" :title="field">{{ fieldLabel(field) }}</span>
             <div class="custom-slider-group">
               <el-slider
-                :model-value="Math.min(localVectorWeights[field] || 0, 2)"
+                :model-value="Math.min(effectiveVectorW(field), 2)"
                 @update:model-value="setVectorFieldWeight(field, $event)"
                 :min="0"
                 :max="2"
@@ -264,7 +300,7 @@ function handleSave() {
                 :show-input="false"
               />
               <el-input-number
-                :model-value="localVectorWeights[field] ?? 0"
+                :model-value="effectiveVectorW(field)"
                 :min="0"
                 :max="10"
                 :step="0.1"

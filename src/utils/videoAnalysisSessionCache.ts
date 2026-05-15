@@ -66,6 +66,11 @@ export type VideoAnalysisPrefillFromMatch = {
   searchFuzzy: boolean
   /** 填入后是否自动请求 /search */
   autoSearch: boolean
+  /**
+   * 若与最近一次成功 /search 写入 session LRU 的键一致，则挂载时只还原结果、不 POST
+   *（典型：同标签页内刚从视频分析搜完再回看板跳转回来）
+   */
+  preferredSearchCacheKey?: string | null
 }
 
 type SearchCacheEntry = {

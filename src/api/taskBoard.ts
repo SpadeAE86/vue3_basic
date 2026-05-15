@@ -40,6 +40,29 @@ export async function fetchVideoMatchJobTaskDetail(jobId: string) {
   return resp.json()
 }
 
+export async function fetchMaterialMatchesForBoard(params?: {
+  workspace?: string
+  source?: string
+  status?: string
+  limit?: number
+}) {
+  const sp = new URLSearchParams()
+  if (params?.workspace) sp.set('workspace', params.workspace)
+  if (params?.source) sp.set('source', params.source)
+  if (params?.status) sp.set('status', params.status)
+  if (params?.limit != null) sp.set('limit', String(params.limit))
+  const q = sp.toString()
+  const resp = await fetch(`${API_BASE}/video-match/material-matches${q ? `?${q}` : ''}`)
+  return resp.json()
+}
+
+export async function fetchMaterialMatchTaskDetail(matchId: string) {
+  const resp = await fetch(
+    `${API_BASE}/video-match/material-matches/${encodeURIComponent(matchId)}/detail`,
+  )
+  return resp.json()
+}
+
 export async function retryVideoAnalysisHistoryTask(historyId: string) {
   const resp = await fetch(
     `${API_BASE}/video-analysis/history/${encodeURIComponent(historyId)}/retry`,

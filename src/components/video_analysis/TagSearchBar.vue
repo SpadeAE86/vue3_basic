@@ -45,7 +45,7 @@ const props = withDefaults(
     loading: false,
     fuzzy: true,
     placeholder: '回车添加标签；空格可分词；在标签上按下拖到另一枚可多选，Delete 批量删除',
-    maxPreviewChars: 6,
+    maxPreviewChars: 512,
     radius: '999px',
     dense: false,
   },
@@ -79,29 +79,64 @@ const localVectorWeights = ref<Record<string, number>>(props.strategyWeights.vec
 const newStrategyName = ref('')
 const newStrategyIsDefault = ref(false)
 
-const indexFields = ref<{text_fields: string[], vector_fields: string[]}>({
+const indexFields = ref<{ text_fields: string[]; vector_fields: string[] }>({
   text_fields: [],
-  vector_fields: []
+  vector_fields: [],
 })
+/** 索引模型上 Text/Keyword、Vector 标注的默认权重（新字段补全、与后端 hybrid 一致） */
+const textWeightDefaults = ref<Record<string, number>>({})
+const vectorWeightDefaults = ref<Record<string, number>>({})
+
+function mergeTextWeightsFromIndex(saved: Record<string, number>): Record<string, number> {
+  const fields = indexFields.value.text_fields
+  if (!fields?.length) return { ...saved }
+  const defs = textWeightDefaults.value
+  const out = { ...saved }
+  for (const f of fields) {
+    const v = out[f]
+    if (v === undefined || !Number.isFinite(Number(v))) {
+      out[f] = defs[f] ?? 1.0
+    }
+  }
+  return out
+}
+
+function mergeVectorWeightsFromIndex(saved: Record<string, number>): Record<string, number> {
+  const fields = indexFields.value.vector_fields
+  if (!fields?.length) return { ...saved }
+  const defs = vectorWeightDefaults.value
+  const out = { ...saved }
+  for (const f of fields) {
+    const v = out[f]
+    if (v === undefined || !Number.isFinite(Number(v))) {
+      out[f] = defs[f] ?? 0
+    }
+  }
+  return out
+}
 
 async function fetchIndexFields() {
   try {
-    const ws = props.workspace || 'v2' 
-    const res = await fetch(`/api/video-analysis/index-fields?workspace=${ws}`).then(r => r.json())
+    const ws = props.workspace || 'v2'
+    const res = await fetch(`/api/video-analysis/index-fields?workspace=${ws}`).then((r) => r.json())
     if (res.success) {
       indexFields.value = {
         text_fields: res.text_fields || [],
-        vector_fields: res.vector_fields || []
+        vector_fields: res.vector_fields || [],
       }
-      
-      // Initialize default weights if not present
-      res.text_fields.forEach((f: string) => {
-        if (localTextWeights.value[f] === undefined) localTextWeights.value[f] = 1.0
-      })
-      // 向量路默认 0：未配置的字段不参与 KNN（避免误以为「全开」）；与 hybrid 最多 4 路策略一致
-      res.vector_fields.forEach((f: string) => {
-        if (localVectorWeights.value[f] === undefined) localVectorWeights.value[f] = 0
-      })
+      textWeightDefaults.value = (res.text_field_weights || {}) as Record<string, number>
+      vectorWeightDefaults.value = (res.vector_field_weights || {}) as Record<string, number>
+
+      const tw = { ...localTextWeights.value }
+      const vw = { ...localVectorWeights.value }
+      for (const f of indexFields.value.text_fields) {
+        if (tw[f] === undefined) tw[f] = textWeightDefaults.value[f] ?? 1.0
+      }
+      for (const f of indexFields.value.vector_fields) {
+        if (vw[f] === undefined) vw[f] = vectorWeightDefaults.value[f] ?? 0
+      }
+      localTextWeights.value = tw
+      localVectorWeights.value = vw
     }
   } catch (e) {
     console.error('Failed to fetch index fields', e)
@@ -130,8 +165,8 @@ function applyStrategy(s: SearchStrategy) {
   localBm25.value = s.bm25_weight
   localVector.value = s.vector_weight
   localUseRrf.value = !!s.use_rrf
-  localTextWeights.value = s.text_weights || {}
-  localVectorWeights.value = s.vector_weights || {}
+  localTextWeights.value = mergeTextWeightsFromIndex(s.text_weights || {})
+  localVectorWeights.value = mergeVectorWeightsFromIndex(s.vector_weights || {})
   emitUpdate()
 }
 
@@ -142,8 +177,8 @@ watch(selectedStrategy, (newVal) => {
       localBm25.value = s.bm25_weight
       localVector.value = s.vector_weight
       localUseRrf.value = !!s.use_rrf
-      localTextWeights.value = s.text_weights || {}
-      localVectorWeights.value = s.vector_weights || {}
+      localTextWeights.value = mergeTextWeightsFromIndex(s.text_weights || {})
+      localVectorWeights.value = mergeVectorWeightsFromIndex(s.vector_weights || {})
       emitUpdate()
     }
   }
@@ -155,8 +190,8 @@ watch(
     localBm25.value = sw.bm25_weight
     localVector.value = sw.vector_weight
     localUseRrf.value = !!sw.use_rrf
-    localTextWeights.value = { ...(sw.text_weights || {}) }
-    localVectorWeights.value = { ...(sw.vector_weights || {}) }
+    localTextWeights.value = mergeTextWeightsFromIndex({ ...(sw.text_weights || {}) })
+    localVectorWeights.value = mergeVectorWeightsFromIndex({ ...(sw.vector_weights || {}) })
   },
   { deep: true },
 )
@@ -250,9 +285,9 @@ watch(strategyDialogVisible, (open) => {
   localVectorWeights.value = next
 })
 
-onMounted(() => {
-  loadStrategies()
-  fetchIndexFields()
+onMounted(async () => {
+  await fetchIndexFields()
+  await loadStrategies()
 })
 // ------------------------
 
@@ -657,6 +692,8 @@ function handleEnterKey() {
       :vector-weights="localVectorWeights"
       :use-rrf="localUseRrf"
       :index-fields="indexFields"
+      :text-weight-defaults="textWeightDefaults"
+      :vector-weight-defaults="vectorWeightDefaults"
       @update:bm25-weight="localBm25 = $event"
       @update:vector-weight="localVector = $event"
       @update:text-weights="localTextWeights = $event"
@@ -771,7 +808,7 @@ function handleEnterKey() {
 }
 
 .txt {
-  max-width: 92px;
+  max-width: min(720px, calc(100vw - 320px));
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

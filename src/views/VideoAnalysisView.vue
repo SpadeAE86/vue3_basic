@@ -424,6 +424,23 @@ function applySearchHit(
   remoteSearchCards.value = fresh
 }
 
+function sleepMs(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/** 缓存命中也短暂展示 loading，避免「没反应」感 */
+async function withMinSearchSpinner(minMs: number, run: () => void | Promise<void>): Promise<void> {
+  remoteSearching.value = true
+  const t0 = Date.now()
+  try {
+    await run()
+  } finally {
+    const pad = Math.max(0, minMs - (Date.now() - t0))
+    if (pad) await sleepMs(pad)
+    remoteSearching.value = false
+  }
+}
+
 function kickRemoteSearch() {
   const tokens = (searchTokens.value ?? []).filter((t) => t.text && t.text.trim())
   const stratSig = JSON.stringify({
@@ -459,13 +476,21 @@ function kickRemoteSearch() {
 
   const cached = videoAnalysisSearchCache.get(cacheKey)
   if (cached?.cards?.length) {
-    applySearchHit(
-      cached.cards as ShotCard[],
-      (cached.search_mode as 'precise' | 'fuzzy' | 'fuzzy_rrf') ?? null,
-    )
-    lastSuccessfulSearchKey.value = cacheKey
-    schedulePersistPageState()
-    remoteSearching.value = false
+    remoteSearching.value = true
+    const t0 = Date.now()
+    const finish = () => {
+      applySearchHit(
+        cached.cards as ShotCard[],
+        (cached.search_mode as 'precise' | 'fuzzy' | 'fuzzy_rrf') ?? null,
+      )
+      lastSuccessfulSearchKey.value = cacheKey
+      schedulePersistPageState()
+      remoteSearching.value = false
+    }
+    requestAnimationFrame(() => {
+      const wait = Math.max(0, 280 - (Date.now() - t0))
+      setTimeout(finish, wait)
+    })
     return
   }
 
@@ -691,19 +716,18 @@ onMounted(async () => {
 
   /** 整块初始化期间保持 true，避免切换 workspace 的 watcher 清空看板/快照刚写入的 selectedHistory */
   restoringSnapshot.value = true
-  try {
-    const boardNav = consumeVideoAnalysisNavFromBoard()
+  const boardNav = consumeVideoAnalysisNavFromBoard()
 
-    if (boardNav?.historyId?.trim()) {
-      currentWorkspace.value = (boardNav.workspace || 'v1').trim() || 'v1'
-      selectedHistory.value = boardNav.historyId.trim()
-      splitScenes.value = true
-      searchTokens.value = []
-      lastSuccessfulSearchKey.value = null
-      remoteSearchCards.value = []
-      analysisResults.value = []
-      ElMessage.success('已定位到任务看板选中的分析记录')
-    } else {
+  if (boardNav?.historyId?.trim()) {
+    currentWorkspace.value = (boardNav.workspace || 'v1').trim() || 'v1'
+    selectedHistory.value = boardNav.historyId.trim()
+    splitScenes.value = true
+    searchTokens.value = []
+    lastSuccessfulSearchKey.value = null
+    remoteSearchCards.value = []
+    analysisResults.value = []
+    ElMessage.success('已定位到任务看板选中的分析记录')
+  } else {
       prefill = consumeVideoAnalysisPrefillFromMatch()
       if (prefill) {
         if (prefill.workspace) currentWorkspace.value = prefill.workspace
@@ -725,7 +749,9 @@ onMounted(async () => {
         lastSuccessfulSearchKey.value = null
         remoteSearchCards.value = []
         analysisResults.value = []
-        ElMessage.success('已从视频匹配填入检索条件与模板权重')
+        if (!prefill.preferredSearchCacheKey) {
+          ElMessage.success('已填入检索条件与策略权重')
+        }
       } else {
         const snap = loadPageSnapshot()
         if (snap) {
@@ -737,18 +763,27 @@ onMounted(async () => {
           if (snap.searchFuzzy !== undefined) searchFuzzy.value = snap.searchFuzzy
         }
       }
-    }
-
-    await refreshHistory()
-
-    if (selectedHistory.value) {
-      await handleHistoryChange(selectedHistory.value)
-    }
-  } finally {
-    restoringSnapshot.value = false
   }
 
-  if (prefill?.autoSearch && (searchTokens.value ?? []).some((t) => t.text?.trim())) {
+  await refreshHistory()
+
+  if (selectedHistory.value) {
+    await handleHistoryChange(selectedHistory.value)
+  }
+
+  if (prefill?.preferredSearchCacheKey) {
+    await withMinSearchSpinner(320, async () => {
+      await nextTick()
+      const hit = videoAnalysisSearchCache.get(prefill.preferredSearchCacheKey!)
+      if (hit?.cards?.length) {
+        applySearchHit(hit.cards as ShotCard[], (hit.search_mode as 'precise' | 'fuzzy' | 'fuzzy_rrf') ?? null)
+        lastSuccessfulSearchKey.value = prefill.preferredSearchCacheKey!
+        ElMessage.success('已恢复本次检索结果（未重新请求接口）')
+      } else {
+        ElMessage.info('当前标签页内无本次检索的本地缓存；检索框内无待提交文字时按 Enter 可重新搜索')
+      }
+    })
+  } else if (prefill?.autoSearch && (searchTokens.value ?? []).some((t) => t.text?.trim())) {
     await nextTick()
     kickRemoteSearch()
   } else {
@@ -770,12 +805,16 @@ onMounted(async () => {
       })
       const hit = videoAnalysisSearchCache.get(key)
       if (hit?.cards?.length) {
-        applySearchHit(hit.cards as ShotCard[], (hit.search_mode as 'precise' | 'fuzzy' | 'fuzzy_rrf') ?? null)
-        lastSuccessfulSearchKey.value = key
+        await withMinSearchSpinner(280, async () => {
+          await nextTick()
+          applySearchHit(hit.cards as ShotCard[], (hit.search_mode as 'precise' | 'fuzzy' | 'fuzzy_rrf') ?? null)
+          lastSuccessfulSearchKey.value = key
+        })
       }
     }
   }
 
+  restoringSnapshot.value = false
   schedulePersistPageState()
 })
 
@@ -796,9 +835,10 @@ watch(currentWorkspace, async () => {
 //   - 有 token → 本地过滤立即生效（filteredResults computed）；不自动触发远程搜索
 //   - 无 token → 清空搜索结果，恢复历史卡片
 watch([searchTokens, searchFuzzy], ([tokens, fuzzy], [oldTokens, oldFuzzy]) => {
-  if (!(tokens ?? []).some(t => t.text?.trim())) {
+  if (restoringSnapshot.value) return
+  if (!(tokens ?? []).some((t) => t.text?.trim())) {
     kickRemoteSearch() // 内部 tokens.length===0 分支：中止请求 + 清空 remoteSearchCards
-  } else if (fuzzy !== oldFuzzy) {
+  } else if (oldFuzzy !== undefined && fuzzy !== oldFuzzy) {
     // 如果仅仅是 searchFuzzy 变化，且有 token，我们应该触发重新搜索
     kickRemoteSearch()
   }

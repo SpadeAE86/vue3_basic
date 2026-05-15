@@ -24,6 +24,7 @@ export interface VideoMatchShotDto {
   match_elapsed_ms?: number | null
   match_hit_count?: number
   search_request_id?: string | null
+  match_id?: string | null
 }
 
 export interface VideoMatchJobSummary {

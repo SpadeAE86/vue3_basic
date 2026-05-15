@@ -10,6 +10,7 @@ import {
   getTokenJoinAllowedFieldsApi,
   type TokenJoinTemplate,
 } from '@/api/video_analysis'
+import { searchStrategyFieldLabelZh } from '@/utils/searchStrategyFieldLabels'
 
 const props = withDefaults(
   defineProps<{
@@ -180,7 +181,7 @@ async function onDelete(row: TokenJoinTemplate) {
               effect="plain"
               class="field-chip"
             >
-              {{ f }}
+              {{ searchStrategyFieldLabelZh(f) }}
             </el-tag>
           </div>
           <span v-else class="muted">—</span>
@@ -219,7 +220,12 @@ async function onDelete(row: TokenJoinTemplate) {
         </el-form-item>
         <el-form-item label="必须命中字段（AND）">
           <el-select v-model="formFields" multiple filterable placeholder="选择字段" style="width: 100%">
-            <el-option v-for="f in allowedFields" :key="f" :label="f" :value="f" />
+            <el-option
+              v-for="f in allowedFields"
+              :key="f"
+              :label="`${searchStrategyFieldLabelZh(f)}（${f}）`"
+              :value="f"
+            />
           </el-select>
         </el-form-item>
       </el-form>

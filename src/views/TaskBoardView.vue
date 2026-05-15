@@ -10,6 +10,8 @@ import {
   fetchVideoAnalysisTaskDetail,
   fetchVideoMatchJobsForBoard,
   fetchVideoMatchJobTaskDetail,
+  fetchMaterialMatchesForBoard,
+  fetchMaterialMatchTaskDetail,
   retryImageHistoryTask,
   retryVideoAnalysisHistoryTask,
   retryVideoMatchJobTask,
@@ -23,10 +25,19 @@ import {
 import { getTokenJoinDefaultFieldsApi } from '@/api/video_analysis'
 import { IMAGEGEN_RETRY_STARTED_EVENT } from '@/composables/image/useGenerateHistory'
 import TokenChipsReadonly from '@/components/video_match/TokenChipsReadonly.vue'
+import type { SearchToken } from '@/components/video_analysis/TagSearchBar.vue'
+import HttpTraceJsonBlock from '@/components/task_board/HttpTraceJsonBlock.vue'
 import { tagsJsonToSearchTokens, DEFAULT_TOKEN_JOIN_AND_FIELDS } from '@/utils/matchTagsFromSegment'
 import { stashVideoAnalysisPrefillFromMatch, stashVideoAnalysisNavFromBoard } from '@/utils/videoAnalysisSessionCache'
-
-type BoardSection = 'image' | 'video' | 'video_match'
+import { computeVideoAnalysisSearchCacheKey } from '@/utils/videoAnalysisSearchKey'
+import { type BoardSection, isVmBoard } from '@/views/task_board/taskBoardTypes'
+import {
+  rowCreatedAt,
+  rowDurationLabel,
+  rowStatusNorm,
+  vmParseColStatus,
+  vmRowNeedsLiveDurationTick,
+} from '@/views/task_board/taskBoardRowUtils'
 
 const route = useRoute()
 const router = useRouter()
@@ -34,7 +45,8 @@ const router = useRouter()
 const boardSection = computed<BoardSection>(() => {
   const s = route.meta.boardSection
   if (s === 'video') return 'video'
-  if (s === 'video_match') return 'video_match'
+  if (s === 'video_match_transcribe') return 'video_match_transcribe'
+  if (s === 'video_match_search') return 'video_match_search'
   return 'image'
 })
 
@@ -44,10 +56,13 @@ const loading = ref(false)
 const imageRows = ref<Record<string, unknown>[]>([])
 const videoRows = ref<Record<string, unknown>[]>([])
 const vmJobRows = ref<Record<string, unknown>[]>([])
+const materialMatchRows = ref<Record<string, unknown>[]>([])
 
 const dateRange = ref<[Date, Date] | null>(null)
 const statusFilter = ref<string>('')
 const workspaceFilter = ref<string>('')
+/** 各看板按关键字段子串过滤（任务/履历 ID、match_id、关联 ID 等） */
+const idSearchFilter = ref<string>('')
 const currentPage = ref(1)
 const pageSize = ref(10)
 
@@ -83,12 +98,10 @@ function syncRunningDurationTimer() {
       imageRows.value.some((r) => rowStatusNorm(r, 'image') === 'running')) ||
     (boardSection.value === 'video' &&
       videoRows.value.some((r) => rowStatusNorm(r, 'video') === 'running')) ||
-    (boardSection.value === 'video_match' &&
-      vmJobRows.value.some((r) => {
-        const st = rowStatusNorm(r, 'video_match')
-        if (st === 'running' || st === 'pending_match') return true
-        return vmParseColStatus(r) === 'running' || vmSearchColStatus(r) === 'running'
-      }))
+    (boardSection.value === 'video_match_search' &&
+      materialMatchRows.value.some((r) => vmRowNeedsLiveDurationTick(r, 'video_match_search'))) ||
+    (boardSection.value === 'video_match_transcribe' &&
+      vmJobRows.value.some((r) => vmRowNeedsLiveDurationTick(r, 'video_match_transcribe')))
   if (need) {
     if (!durationLiveTimer) {
       durationLiveTimer = setInterval(() => {
@@ -104,145 +117,31 @@ function syncRunningDurationTimer() {
 function pickRows(): Record<string, unknown>[] {
   if (boardSection.value === 'image') return imageRows.value
   if (boardSection.value === 'video') return videoRows.value
-  if (boardSection.value === 'video_match') return vmJobRows.value
+  if (boardSection.value === 'video_match_transcribe') return vmJobRows.value
+  if (boardSection.value === 'video_match_search') return materialMatchRows.value
   return []
 }
 
-function rowCreatedAt(r: Record<string, unknown>): Date | null {
-  return parseApiDateTime(r.created_at as string | undefined)
-}
-
-function rowUpdatedAt(r: Record<string, unknown>): Date | null {
-  return parseApiDateTime(r.updated_at as string | undefined)
-}
-
-/** 本轮异步运行开始时间（重试时会刷新）；生图看板耗时时优先于 created_at */
-function rowCurrentRunStartedAt(r: Record<string, unknown>): Date | null {
-  return parseApiDateTime(r.current_run_started_at as string | undefined)
-}
-
-/**
- * 解析接口时间。列表 `duration_ms` 已由后端计算；此处仍用于创建时间展示与筛选。
- * 无 `Z`/偏移的 `YYYY-MM-DDTHH:mm:ss` 在本项目中与带 `Z` 字段混用时浏览器会按**本地**解析，
- * 易与 UTC 字段差 8h；接口已统一输出 Z，若仍遇到裸 ISO 则按 **UTC** 解释以与 `…Z` 一致。
- */
-function parseApiDateTime(v: string | number | undefined): Date | null {
-  if (v == null) return null
-  if (typeof v === 'number' && Number.isFinite(v)) {
-    const d = new Date(v)
-    return Number.isNaN(d.getTime()) ? null : d
-  }
-  if (typeof v !== 'string') return null
-  const raw = v.trim()
-  if (!raw) return null
-  let s = raw.includes(' ') && !raw.includes('T') ? raw.replace(' ', 'T') : raw
-  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?$/.test(s)) {
-    s = `${s}Z`
-  }
-  const d = new Date(s)
-  return Number.isNaN(d.getTime()) ? null : d
-}
-
-function rowDurationStartForImage(r: Record<string, unknown>): Date | null {
-  return rowCurrentRunStartedAt(r) ?? rowCreatedAt(r)
-}
-
-function _formatDurationMs(ms: number): string {
-  if (ms < 0) return '—'
-  if (ms < 1000) return `${Math.round(ms)} ms`
-  if (ms < 60_000) return `${Math.floor(ms / 1000)} s`
-  const m = Math.floor(ms / 60_000)
-  const s = Math.floor((ms % 60_000) / 1000)
-  return `${m} 分 ${s} 秒`
-}
-
-function rowDurationLabel(r: Record<string, unknown>, section: BoardSection): string {
+function rowMatchesRecordIdFilter(r: Record<string, unknown>): boolean {
+  const q = idSearchFilter.value.trim().toLowerCase()
+  if (!q) return true
+  const section = boardSection.value
+  const hay: string[] = []
   if (section === 'image') {
-    const st = rowStatusNorm(r, section)
-    if (st !== 'running') {
-      const dm = r.duration_ms
-      if (typeof dm === 'number' && Number.isFinite(dm) && dm >= 0) {
-        return _formatDurationMs(dm)
-      }
-    }
-    const start = rowDurationStartForImage(r)
-    if (!start) return '—'
-    if (st === 'running') {
-      void durationTick.value
-      return _formatDurationMs(Date.now() - start.getTime())
-    }
-    const ua = rowUpdatedAt(r)
-    if (!ua) return '—'
-    return _formatDurationMs(ua.getTime() - start.getTime())
+    hay.push(String(r.id ?? ''), String(r.taskId ?? ''))
+  } else if (section === 'video') {
+    hay.push(String(r.id ?? ''))
+  } else if (section === 'video_match_transcribe') {
+    hay.push(String(r.id ?? ''))
+  } else if (section === 'video_match_search') {
+    hay.push(
+      String(r.id ?? ''),
+      String(r.video_match_job_id ?? ''),
+      String(r.video_match_shot_row_id ?? ''),
+      String(r.va_context_history_id ?? ''),
+    )
   }
-
-  if (section === 'video_match') {
-    const st = rowStatusNorm(r, section)
-    const ca = rowCreatedAt(r)
-    if (!ca) return '—'
-    const parseLive = vmParseColStatus(r) === 'running'
-    const searchLive = vmSearchColStatus(r) === 'running'
-    if (
-      st === 'running' ||
-      st === 'pending_match' ||
-      parseLive ||
-      searchLive
-    ) {
-      void durationTick.value
-      return _formatDurationMs(Date.now() - ca.getTime())
-    }
-    const ua = rowUpdatedAt(r)
-    if (!ua) return '—'
-    return _formatDurationMs(ua.getTime() - ca.getTime())
-  }
-
-  const ca = rowCreatedAt(r)
-  if (!ca) return '—'
-  if (section === 'video' && rowStatusNorm(r, section) === 'running') {
-    void durationTick.value
-    return _formatDurationMs(Date.now() - ca.getTime())
-  }
-  const ua = rowUpdatedAt(r)
-  if (!ua) return '—'
-  return _formatDurationMs(ua.getTime() - ca.getTime())
-}
-
-function rowStatusNorm(r: Record<string, unknown>, section: BoardSection): string {
-  if (section === 'image') {
-    const s = ((r.status as string) || '').toLowerCase()
-    if (r.error) return 'failed'
-    if (s === 'failed' || s === 'error') return 'failed'
-    if (s === 'running' || s === 'pending') return 'running'
-    if (r.url || r.obs_url || r.doubao_url) return 'success'
-    if (s === 'success' || s === 'succeed' || s === 'succeeded') return 'success'
-    return s || 'unknown'
-  }
-  if (section === 'video') {
-    const raw = String(r.status ?? '').trim()
-    const s = raw.toLowerCase()
-    if (s === 'failed' || s === 'error') return 'failed'
-    if (s === 'running' || s === 'pending') return 'running'
-    if (s === 'success' || s === 'succeed' || s === 'succeeded') return 'success'
-    return raw ? raw.toLowerCase() : 'unknown'
-  }
-  if (section === 'video_match') {
-    const ps = String(r.parse_status ?? '').toLowerCase()
-    const ss = String(r.search_status ?? '').toLowerCase()
-    if (ps === 'failed' || ss === 'failed') return 'failed'
-    if (
-      ps === 'running' ||
-      ps === 'pending' ||
-      ps === 'processing' ||
-      ss === 'running' ||
-      ss === 'processing'
-    ) {
-      return 'running'
-    }
-    if (ps === 'done' && ss === 'pending') return 'pending_match'
-    if (ps === 'done' && ss === 'done') return 'success'
-    return ps || ss || 'unknown'
-  }
-  return 'unknown'
+  return hay.some((x) => x.toLowerCase().includes(q))
 }
 
 const filteredRows = computed(() => {
@@ -260,6 +159,9 @@ const filteredRows = computed(() => {
   if (statusFilter.value) {
     list = list.filter((r) => rowStatusNorm(r, boardSection.value) === statusFilter.value)
   }
+  if (idSearchFilter.value.trim()) {
+    list = list.filter((r) => rowMatchesRecordIdFilter(r))
+  }
   return list
 })
 
@@ -268,7 +170,7 @@ const pagedRows = computed(() => {
   return filteredRows.value.slice(start, start + pageSize.value)
 })
 
-watch([boardSection, statusFilter, dateRange, workspaceFilter], () => {
+watch([boardSection, statusFilter, dateRange, workspaceFilter, idSearchFilter], () => {
   currentPage.value = 1
 })
 
@@ -319,6 +221,21 @@ async function loadVmJobs(silent = false) {
   }
 }
 
+async function loadMaterialMatches(silent = false) {
+  if (!silent) loading.value = true
+  try {
+    const ws = workspaceFilter.value.trim() || undefined
+    const data = await fetchMaterialMatchesForBoard({ limit: 100, workspace: ws })
+    if (data?.success && Array.isArray(data.matches)) {
+      materialMatchRows.value = data.matches as Record<string, unknown>[]
+    } else {
+      materialMatchRows.value = []
+    }
+  } finally {
+    if (!silent) loading.value = false
+  }
+}
+
 async function refresh() {
   loading.value = true
   try {
@@ -327,8 +244,10 @@ async function refresh() {
       await loadImage()
     } else if (s === 'video') {
       await loadVideo()
-    } else {
+    } else if (s === 'video_match_transcribe') {
       await loadVmJobs()
+    } else if (s === 'video_match_search') {
+      await loadMaterialMatches()
     }
   } finally {
     loading.value = false
@@ -337,7 +256,7 @@ async function refresh() {
 
 onMounted(refresh)
 
-watch([boardSection, imageRows, videoRows, vmJobRows], syncRunningDurationTimer, { deep: true })
+watch([boardSection, imageRows, videoRows, vmJobRows, materialMatchRows], syncRunningDurationTimer, { deep: true })
 
 /** 当前看板存在「进行中」任务时定时拉取历史，避免后台已完成仍显示生成中 */
 let boardHistoryPollTimer: ReturnType<typeof setInterval> | null = null
@@ -346,11 +265,17 @@ function syncBoardHistoryPoll() {
   const section = boardSection.value
   const imageRunning = imageRows.value.some((r) => rowStatusNorm(r, 'image') === 'running')
   const videoRunning = videoRows.value.some((r) => rowStatusNorm(r, 'video') === 'running')
-  const scriptRunning = vmJobRows.value.some((r) => rowStatusNorm(r, 'video_match') === 'running')
+  const materialRunning =
+    section === 'video_match_search' &&
+    materialMatchRows.value.some((r) => rowStatusNorm(r, 'video_match_search') === 'running')
+  const vmTranscribeRunning =
+    section === 'video_match_transcribe' &&
+    vmJobRows.value.some((r) => rowStatusNorm(r, 'video_match_transcribe') === 'running')
   const needPoll =
     (section === 'image' && imageRunning) ||
     (section === 'video' && videoRunning) ||
-    (section === 'video_match' && scriptRunning)
+    materialRunning ||
+    vmTranscribeRunning
 
   if (needPoll && !boardHistoryPollTimer) {
     const tick = async () => {
@@ -361,8 +286,13 @@ function syncBoardHistoryPoll() {
         } else if (s === 'video' && videoRows.value.some((r) => rowStatusNorm(r, 'video') === 'running')) {
           await loadVideo(true)
         } else if (
-          s === 'video_match' &&
-          vmJobRows.value.some((r) => rowStatusNorm(r, 'video_match') === 'running')
+          s === 'video_match_search' &&
+          materialMatchRows.value.some((r) => rowStatusNorm(r, 'video_match_search') === 'running')
+        ) {
+          await loadMaterialMatches(true)
+        } else if (
+          s === 'video_match_transcribe' &&
+          vmJobRows.value.some((r) => rowStatusNorm(r, 'video_match_transcribe') === 'running')
         ) {
           await loadVmJobs(true)
         }
@@ -378,7 +308,7 @@ function syncBoardHistoryPoll() {
   }
 }
 
-watch([boardSection, imageRows, videoRows, vmJobRows], syncBoardHistoryPoll, { deep: true })
+watch([boardSection, imageRows, videoRows, vmJobRows, materialMatchRows], syncBoardHistoryPoll, { deep: true })
 
 onUnmounted(() => {
   if (durationLiveTimer) {
@@ -401,13 +331,15 @@ watch(
 watch(workspaceFilter, async () => {
   const s = boardSection.value
   if (s === 'video') await loadVideo()
-  else if (s === 'video_match') await loadVmJobs()
+  else if (s === 'video_match_transcribe') await loadVmJobs()
+  else if (s === 'video_match_search') await loadMaterialMatches()
 })
 
 function resetFilters() {
   dateRange.value = null
   statusFilter.value = ''
-  if (boardSection.value === 'video' || boardSection.value === 'video_match') {
+  idSearchFilter.value = ''
+  if (boardSection.value === 'video' || isVmBoard(boardSection.value)) {
     workspaceFilter.value = ''
   }
 }
@@ -467,7 +399,9 @@ async function openDetail(row: Record<string, unknown>) {
         ? await fetchImageTaskDetail(id)
         : section === 'video'
           ? await fetchVideoAnalysisTaskDetail(id)
-          : await fetchVideoMatchJobTaskDetail(id)
+          : section === 'video_match_transcribe'
+            ? await fetchVideoMatchJobTaskDetail(id)
+            : await fetchMaterialMatchTaskDetail(id)
     if (res?.success && res.detail) {
       detailPayload.value = res.detail as Record<string, unknown>
     } else {
@@ -478,6 +412,184 @@ async function openDetail(row: Record<string, unknown>) {
   } finally {
     detailLoading.value = false
   }
+}
+
+/** 素材履历中的 query_preview 与当时 /search 的 query_text 一致（全为相关性片段时可用单 token 还原） */
+function tokensFromMaterialQueryPreview(raw: unknown): SearchToken[] {
+  const q = String(raw ?? '').trim()
+  if (!q) return []
+  return [
+    {
+      id: `board_va_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 9)}`,
+      text: q,
+      join: 'AND',
+      not: false,
+      type: 'keyword',
+    },
+  ]
+}
+
+/** 与 POST /video-analysis/search 入参一致（strategy_snapshot.search_tokens，新数据才有） */
+function searchTokensFromMaterialSnapshot(row: Record<string, unknown>): SearchToken[] {
+  const snap = row.strategy_snapshot
+  if (!snap || typeof snap !== 'object') return []
+  const raw = (snap as Record<string, unknown>).search_tokens
+  if (!Array.isArray(raw) || raw.length === 0) return []
+  const out: SearchToken[] = []
+  let i = 0
+  const base = Date.now().toString(36)
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue
+    const o = item as Record<string, unknown>
+    const text = String(o.text ?? '').trim()
+    if (!text) continue
+    i += 1
+    const j = String(o.join ?? 'AND').toUpperCase()
+    const join: 'AND' | 'OR' = j === 'OR' ? 'OR' : 'AND'
+    const not = !!o.not
+    const typRaw = String(o.type ?? 'keyword').toLowerCase()
+    const type: 'keyword' | 'text' = typRaw === 'text' ? 'text' : 'keyword'
+    const sf =
+      typeof o.source_field === 'string' && o.source_field.trim() ? o.source_field.trim() : undefined
+    out.push({
+      id: `rst_${base}_${i}_${Math.random().toString(36).slice(2, 8)}`,
+      text,
+      join,
+      not,
+      type,
+      ...(sf ? { sourceField: sf } : {}),
+    })
+  }
+  return out
+}
+
+function canJumpVideoAnalysisFromMaterialRow(row: Record<string, unknown>): boolean {
+  const src = String(row.source ?? '')
+  if (src === 'video_analysis_search') {
+    if (String(row.va_context_history_id ?? '').trim()) return true
+    if (searchTokensFromMaterialSnapshot(row).length > 0) return true
+    return !!String(row.query_preview ?? '').trim()
+  }
+  if (src === 'video_match_shot') {
+    return (
+      !!String(row.video_match_job_id ?? '').trim() && Number(row.video_match_shot_row_id ?? 0) > 0
+    )
+  }
+  return false
+}
+
+async function goVideoAnalysisFromMaterialRow(row: Record<string, unknown>) {
+  const src = String(row.source ?? '')
+  const ws = String(row.workspace ?? 'v1').trim() || 'v1'
+  if (src === 'video_analysis_search') {
+    const hid = String(row.va_context_history_id ?? '').trim()
+    if (hid) {
+      stashVideoAnalysisNavFromBoard({ workspace: ws, historyId: hid })
+      router.push({ name: 'video-analysis' })
+      return
+    }
+    const snap = row.strategy_snapshot as Record<string, unknown> | null | undefined
+    const fromSnap = searchTokensFromMaterialSnapshot(row)
+    const preview = String(row.query_preview ?? '').trim()
+    const tokList = fromSnap.length > 0 ? fromSnap : tokensFromMaterialQueryPreview(preview)
+    if (tokList.length === 0) {
+      ElMessage.warning('该条履历缺少检索标签，无法回填到视频分析')
+      return
+    }
+    const bm25 = typeof snap?.bm25_weight === 'number' ? (snap.bm25_weight as number) : 0.3
+    const vec = typeof snap?.vector_weight === 'number' ? (snap.vector_weight as number) : 0.7
+    const rrf = !!snap?.use_rrf
+    const fuzzy = typeof snap?.fuzzy === 'boolean' ? (snap.fuzzy as boolean) : true
+    const tw = snap?.text_weights as Record<string, number> | undefined
+    const vw = snap?.vector_weights as Record<string, number> | undefined
+    const preferredSearchCacheKey = computeVideoAnalysisSearchCacheKey({
+      workspace: ws,
+      fuzzy,
+      tokens: tokList,
+      strategyWeights: {
+        bm25_weight: bm25,
+        vector_weight: vec,
+        use_rrf: rrf,
+        ...(tw && typeof tw === 'object' && !Array.isArray(tw) ? { text_weights: tw } : {}),
+        ...(vw && typeof vw === 'object' && !Array.isArray(vw) ? { vector_weights: vw } : {}),
+      },
+    })
+    stashVideoAnalysisPrefillFromMatch({
+      workspace: ws,
+      selectedHistory: '__all__',
+      searchTokens: tokList,
+      searchStrategyWeights: {
+        bm25_weight: bm25,
+        vector_weight: vec,
+        use_rrf: rrf,
+        ...(tw && typeof tw === 'object' && !Array.isArray(tw) ? { text_weights: tw } : {}),
+        ...(vw && typeof vw === 'object' && !Array.isArray(vw) ? { vector_weights: vw } : {}),
+      },
+      searchFuzzy: fuzzy,
+      autoSearch: false,
+      preferredSearchCacheKey,
+    })
+    router.push({ name: 'video-analysis' })
+    return
+  }
+  if (src === 'video_match_shot') {
+    const jid = String(row.video_match_job_id ?? '').trim()
+    const sid = Number(row.video_match_shot_row_id ?? 0)
+    if (!jid || sid <= 0) {
+      ElMessage.warning('缺少任务或分镜信息')
+      return
+    }
+    try {
+      const res = await getVideoMatchJobApi(jid)
+      if (!res.success || !res.shots?.length) {
+        ElMessage.error(res.error || '加载视频匹配任务失败')
+        return
+      }
+      const shot = res.shots.find((s) => s.id === sid)
+      if (!shot?.tags_json || !Object.keys(shot.tags_json as object).length) {
+        ElMessage.warning('该分镜无结构化标签，无法回填到视频分析搜索栏')
+        return
+      }
+      const jobWs = String(res.workspace ?? ws).trim() || 'v1'
+      let andFields = [...DEFAULT_TOKEN_JOIN_AND_FIELDS]
+      try {
+        const r = await getTokenJoinDefaultFieldsApi(jobWs)
+        if (r.success && r.and_segment_fields?.length) {
+          andFields = r.and_segment_fields
+        }
+      } catch {
+        /* 内置默认 */
+      }
+      const tokens = tagsJsonToSearchTokens(shot.tags_json as Record<string, unknown>, andFields)
+      const snap = res.search_strategy_snapshot
+      const bm25 =
+        typeof snap?.bm25_weight === 'number' ? (snap.bm25_weight as number) : 0.3
+      const vec =
+        typeof snap?.vector_weight === 'number' ? (snap.vector_weight as number) : 0.7
+      const rrf = !!snap?.use_rrf
+      const tw = snap?.text_weights as Record<string, number> | undefined
+      const vw = snap?.vector_weights as Record<string, number> | undefined
+      stashVideoAnalysisPrefillFromMatch({
+        workspace: jobWs,
+        selectedHistory: '__all__',
+        searchTokens: tokens,
+        searchStrategyWeights: {
+          bm25_weight: bm25,
+          vector_weight: vec,
+          use_rrf: rrf,
+          ...(tw && typeof tw === 'object' && !Array.isArray(tw) ? { text_weights: tw } : {}),
+          ...(vw && typeof vw === 'object' && !Array.isArray(vw) ? { vector_weights: vw } : {}),
+        },
+        searchFuzzy: true,
+        autoSearch: true,
+      })
+      router.push('/video-analysis')
+    } catch (e: unknown) {
+      ElMessage.error((e as Error)?.message || '请求失败')
+    }
+    return
+  }
+  ElMessage.warning('当前来源不支持跳转视频分析')
 }
 
 async function openStoryboard(row: Record<string, unknown>) {
@@ -772,12 +884,68 @@ async function retryImageRow(row: Record<string, unknown>) {
 
 const vmRetryingId = ref('')
 
-function vmJobCanRetry(row: Record<string, unknown>): boolean {
+function vmJobCanRetryTranscribe(row: Record<string, unknown>): boolean {
   const ps = String(row.parse_status ?? '').toLowerCase()
-  const ss = String(row.search_status ?? '').toLowerCase()
-  if (ps === 'running' || ss === 'running' || ps === 'processing' || ss === 'processing') return false
-  if (ps === 'failed') return true
-  return ps === 'done' && ss === 'failed'
+  if (ps === 'running' || ps === 'processing' || ps === 'pending') return false
+  return ps === 'failed'
+}
+
+const mmRetryingKey = ref('')
+
+function materialSourceLabel(src: unknown): string {
+  const s = String(src ?? '').trim()
+  if (s === 'video_analysis_search') return '视频分析搜索'
+  if (s === 'video_match_shot') return '视频匹配分镜'
+  return s || '—'
+}
+
+function formatMaterialStrategyTemplate(snap: unknown): string {
+  if (snap == null || typeof snap !== 'object') return '—'
+  const o = snap as Record<string, unknown>
+  const parts: string[] = []
+  const name = typeof o.name === 'string' ? o.name.trim() : ''
+  if (name) parts.push(name)
+  if (o.fuzzy === true) parts.push('模糊')
+  else if (o.fuzzy === false) parts.push('非模糊')
+  if (o.use_rrf === true) parts.push('RRF')
+  const b = o.bm25_weight
+  const v = o.vector_weight
+  if (typeof b === 'number' && Number.isFinite(b) && typeof v === 'number' && Number.isFinite(v)) {
+    parts.push(`BM25 ${b} / 向量 ${v}`)
+  }
+  return parts.length ? parts.join(' · ') : '—'
+}
+
+function materialMatchCanRetry(row: Record<string, unknown>): boolean {
+  if (String(row.source ?? '') !== 'video_match_shot') return false
+  if (String(row.status ?? '').toLowerCase() !== 'failed') return false
+  const jid = String(row.video_match_job_id ?? '').trim()
+  const sid = row.video_match_shot_row_id
+  return !!jid && sid != null && Number(sid) > 0
+}
+
+async function retryMaterialMatchRow(row: Record<string, unknown>) {
+  const jid = String(row.video_match_job_id ?? '').trim()
+  const sid = Number(row.video_match_shot_row_id ?? 0)
+  if (!jid || sid <= 0) {
+    ElMessage.warning('缺少任务或分镜 ID')
+    return
+  }
+  const k = `${jid}:${sid}`
+  mmRetryingKey.value = k
+  try {
+    const res = (await rematchVideoMatchShotApi(jid, sid)) as { success?: boolean; error?: string }
+    if (res?.success) {
+      ElMessage.success('已重新检索该分镜')
+      await loadMaterialMatches(true)
+    } else {
+      ElMessage.error(typeof res?.error === 'string' ? res.error : '重试失败')
+    }
+  } catch (e: unknown) {
+    ElMessage.error((e as Error)?.message || '重试请求失败')
+  } finally {
+    mmRetryingKey.value = ''
+  }
 }
 
 async function retryVmJobRow(row: Record<string, unknown>) {
@@ -818,25 +986,6 @@ function statusTagType(st: string) {
   if (st === 'running') return 'warning'
   if (st === 'pending_match') return 'info'
   return 'info'
-}
-
-/** 主表「转写」列 */
-function vmParseColStatus(r: Record<string, unknown>): string {
-  const ps = String(r.parse_status ?? '').toLowerCase()
-  if (ps === 'failed') return 'failed'
-  if (ps === 'done') return 'success'
-  if (ps === 'running' || ps === 'pending' || ps === 'processing') return 'running'
-  return ps || 'unknown'
-}
-
-/** 主表「匹配」列 */
-function vmSearchColStatus(r: Record<string, unknown>): string {
-  const ss = String(r.search_status ?? '').toLowerCase()
-  if (ss === 'failed') return 'failed'
-  if (ss === 'done') return 'success'
-  if (ss === 'running' || ss === 'processing') return 'running'
-  if (ss === 'pending') return 'pending_match'
-  return ss || 'unknown'
 }
 
 const isImageGenDetail = computed(
@@ -902,10 +1051,18 @@ watch(shotTranscribeVisible, (open) => {
             <el-option label="成功" value="success" />
             <el-option label="失败" value="failed" />
             <el-option label="进行中" value="running" />
-            <el-option label="待匹配" value="pending_match" />
           </el-select>
         </el-form-item>
-        <el-form-item v-if="boardSection === 'video' || boardSection === 'video_match'" label="工作区">
+        <el-form-item label="记录 ID">
+          <el-input
+            v-model="idSearchFilter"
+            clearable
+            placeholder="子串匹配：履历 ID、视频匹配任务/分镜、VA 上下文等"
+            style="width: 260px"
+            @keyup.enter="currentPage = 1"
+          />
+        </el-form-item>
+        <el-form-item v-if="boardSection === 'video' || isVmBoard(boardSection)" label="工作区">
           <el-select v-model="workspaceFilter" clearable placeholder="全部" style="width: 120px">
             <el-option label="v1" value="v1" />
             <el-option label="v2" value="v2" />
@@ -955,7 +1112,7 @@ watch(shotTranscribeVisible, (open) => {
         </el-table-column>
         <el-table-column label="耗时" width="120" align="center">
           <template #default="{ row }">
-            {{ rowDurationLabel(row, 'image') }}
+            {{ rowDurationLabel(row, 'image', durationTick) }}
           </template>
         </el-table-column>
         <el-table-column prop="model" label="模型" width="130" show-overflow-tooltip />
@@ -1014,7 +1171,7 @@ watch(shotTranscribeVisible, (open) => {
         </el-table-column>
         <el-table-column label="耗时" width="120" align="center">
           <template #default="{ row }">
-            {{ rowDurationLabel(row, 'video') }}
+            {{ rowDurationLabel(row, 'video', durationTick) }}
           </template>
         </el-table-column>
         <el-table-column label="视频标题" min-width="200" show-overflow-tooltip>
@@ -1056,9 +1213,9 @@ watch(shotTranscribeVisible, (open) => {
         </el-table-column>
       </el-table>
 
-      <!-- 视频匹配（口播转写 + 素材匹配，同源 video_match_job） -->
+      <!-- 视频匹配 · 脚本转写 -->
       <el-table
-        v-else-if="boardSection === 'video_match'"
+        v-else-if="boardSection === 'video_match_transcribe'"
         v-loading="loading"
         :data="pagedRows"
         stripe
@@ -1080,18 +1237,6 @@ watch(shotTranscribeVisible, (open) => {
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="匹配状态" width="104" align="center">
-          <template #default="{ row }">
-            <el-tag
-              :type="statusTagType(vmSearchColStatus(row))"
-              effect="light"
-              size="small"
-              class="status-pill status-tag-admin"
-            >
-              {{ statusLabel(vmSearchColStatus(row)) }}
-            </el-tag>
-          </template>
-        </el-table-column>
         <el-table-column label="标题/主题" min-width="160" show-overflow-tooltip>
           <template #default="{ row }">
             {{ vmJobTitle(row) }}
@@ -1104,7 +1249,7 @@ watch(shotTranscribeVisible, (open) => {
         </el-table-column>
         <el-table-column label="耗时" width="120" align="center">
           <template #default="{ row }">
-            {{ rowDurationLabel(row, 'video_match') }}
+            {{ rowDurationLabel(row, 'video_match_transcribe', durationTick) }}
           </template>
         </el-table-column>
         <el-table-column prop="workspace" label="工作区" width="88" />
@@ -1114,11 +1259,116 @@ watch(shotTranscribeVisible, (open) => {
               <el-button type="primary" link @click="openDetail(row)">查看详情</el-button>
               <el-button type="primary" link @click="openStoryboard(row)">查看分镜</el-button>
               <el-button
-                v-if="vmJobCanRetry(row)"
+                v-if="vmJobCanRetryTranscribe(row)"
                 type="primary"
                 link
                 :loading="vmRetryingId === String(row.id ?? '').trim()"
                 @click="retryVmJobRow(row)"
+              >
+                重试
+              </el-button>
+            </div>
+          </template>
+        </el-table-column>
+      </el-table>
+
+      <!-- 视频匹配 · 素材匹配 -->
+      <el-table
+        v-else-if="boardSection === 'video_match_search'"
+        v-loading="loading"
+        :data="pagedRows"
+        stripe
+        :border="false"
+        class="admin-table"
+        header-cell-class-name="admin-th"
+        style="width: 100%"
+      >
+        <el-table-column prop="id" label="履历 ID" min-width="112" show-overflow-tooltip />
+        <el-table-column label="来源" width="120" show-overflow-tooltip>
+          <template #default="{ row }">
+            {{ materialSourceLabel(row.source) }}
+          </template>
+        </el-table-column>
+        <el-table-column label="总状态" width="104" align="center">
+          <template #default="{ row }">
+            <el-tag
+              :type="statusTagType(rowStatusNorm(row, 'video_match_search'))"
+              effect="light"
+              size="small"
+              class="status-pill status-tag-admin"
+            >
+              {{ statusLabel(rowStatusNorm(row, 'video_match_search')) }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="检索摘要" min-width="160" show-overflow-tooltip>
+          <template #default="{ row }">
+            {{ shortStr(row.query_preview, 64) }}
+          </template>
+        </el-table-column>
+        <el-table-column label="命中数" width="72" align="center">
+          <template #default="{ row }">
+            {{ row.hit_count != null ? row.hit_count : '—' }}
+          </template>
+        </el-table-column>
+        <el-table-column label="Top1 视频" min-width="140" show-overflow-tooltip>
+          <template #default="{ row }">
+            <a
+              v-if="(row.top1_obs_url || '').trim()"
+              class="match-url-link"
+              :href="(row.top1_obs_url || '').trim()"
+              target="_blank"
+              rel="noopener noreferrer"
+              >{{ shortStr(row.top1_obs_url, 36) }}</a
+            >
+            <span v-else class="muted-small">—</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="检索模板" min-width="168" show-overflow-tooltip>
+          <template #default="{ row }">
+            {{ formatMaterialStrategyTemplate(row.strategy_snapshot) }}
+          </template>
+        </el-table-column>
+        <el-table-column label="模式" width="88" show-overflow-tooltip>
+          <template #default="{ row }">
+            {{ row.search_mode || '—' }}
+          </template>
+        </el-table-column>
+        <el-table-column label="创建时间" min-width="168">
+          <template #default="{ row }">
+            {{ rowCreatedAt(row)?.toLocaleString() ?? '—' }}
+          </template>
+        </el-table-column>
+        <el-table-column label="耗时" width="120" align="center">
+          <template #default="{ row }">
+            {{ rowDurationLabel(row, 'video_match_search', durationTick) }}
+          </template>
+        </el-table-column>
+        <el-table-column prop="workspace" label="工作区" width="88" />
+        <el-table-column label="操作" width="240" fixed="right" align="center">
+          <template #default="{ row }">
+            <div class="op-links">
+              <el-button type="primary" link @click="openDetail(row)">查看详情</el-button>
+              <el-tooltip
+                content="回到视频分析：若当时挂在某条分析上会直接定位；全库搜索则用本行检索摘要与模板权重自动再搜（与分镜跳转一致）"
+                placement="top"
+              >
+                <el-button
+                  class="va-jump-icon-btn"
+                  :icon="Position"
+                  circle
+                  size="small"
+                  :disabled="!canJumpVideoAnalysisFromMaterialRow(row)"
+                  aria-label="跳转视频分析"
+                  @click="goVideoAnalysisFromMaterialRow(row)"
+                />
+              </el-tooltip>
+              <el-button
+                v-if="materialMatchCanRetry(row)"
+                type="primary"
+                link
+                :loading="mmRetryingKey === `${String(row.video_match_job_id ?? '').trim()}:${Number(row.video_match_shot_row_id ?? 0)}`"
+                @click="retryMaterialMatchRow(row)"
               >
                 重试
               </el-button>
@@ -1160,6 +1410,7 @@ watch(shotTranscribeVisible, (open) => {
           <template #title>口播转写失败，暂无分镜</template>
           <div v-if="storyboardParentRow" class="storyboard-alert-actions">
             <el-button
+              v-if="storyboardParentRow && vmJobCanRetryTranscribe(storyboardParentRow)"
               type="primary"
               size="small"
               :loading="vmRetryingId === String(storyboardParentRow.id ?? '').trim()"
@@ -1180,7 +1431,22 @@ watch(shotTranscribeVisible, (open) => {
           <el-table-column prop="shot_order" label="#" width="52" />
           <el-table-column prop="segment_text" label="口播" min-width="140" show-overflow-tooltip />
           <el-table-column prop="description" label="画面描述" min-width="120" show-overflow-tooltip />
-          <el-table-column label="匹配状态" width="96" align="center">
+          <el-table-column
+            v-if="boardSection === 'video_match_transcribe'"
+            label="match_id"
+            min-width="120"
+            show-overflow-tooltip
+          >
+            <template #default="{ row }">
+              {{ (row.match_id && String(row.match_id).trim()) || '—' }}
+            </template>
+          </el-table-column>
+          <el-table-column
+            v-if="boardSection === 'video_match_search'"
+            label="匹配状态"
+            width="96"
+            align="center"
+          >
             <template #default="{ row }">
               <el-tag
                 :type="shotStatusTagTypeBoard(shotSearchStatusNormBoard(row))"
@@ -1192,7 +1458,12 @@ watch(shotTranscribeVisible, (open) => {
               </el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="本镜耗时(ms)" width="104" align="center">
+          <el-table-column
+            v-if="boardSection === 'video_match_search'"
+            label="本镜耗时(ms)"
+            width="104"
+            align="center"
+          >
             <template #default="{ row }">
               {{
                 row.match_elapsed_ms != null && Number.isFinite(Number(row.match_elapsed_ms))
@@ -1201,7 +1472,7 @@ watch(shotTranscribeVisible, (open) => {
               }}
             </template>
           </el-table-column>
-          <el-table-column label="Top1 视频" min-width="168">
+          <el-table-column v-if="boardSection === 'video_match_search'" label="Top1 视频" min-width="168">
             <template #default="{ row }">
               <a
                 v-if="(row.top1_obs_url || '').trim()"
@@ -1214,14 +1485,26 @@ watch(shotTranscribeVisible, (open) => {
               <span v-else class="muted-small">—</span>
             </template>
           </el-table-column>
-          <el-table-column label="转写操作" width="108" fixed="right" align="center">
+          <el-table-column
+            v-if="boardSection === 'video_match_transcribe'"
+            label="转写操作"
+            width="108"
+            fixed="right"
+            align="center"
+          >
             <template #default="{ row }">
               <el-button type="primary" link :disabled="row.id == null" @click="openShotTranscribe(row)">
                 查看转写
               </el-button>
             </template>
           </el-table-column>
-          <el-table-column label="匹配操作" width="248" fixed="right" align="center">
+          <el-table-column
+            v-if="boardSection === 'video_match_search'"
+            label="匹配操作"
+            width="248"
+            fixed="right"
+            align="center"
+          >
             <template #default="{ row }">
               <div class="shot-op-cell">
                 <el-button type="primary" link :disabled="row.id == null" @click="openShotMatch(row)">
@@ -1266,6 +1549,8 @@ watch(shotTranscribeVisible, (open) => {
       destroy-on-close
     >
       <template v-if="shotTranscribeRow">
+        <div v-if="shotTranscribeRow.match_id" class="field-label">match_id（素材匹配履历）</div>
+        <div v-if="shotTranscribeRow.match_id" class="text-panel">{{ shotTranscribeRow.match_id }}</div>
         <div class="field-label">口播</div>
         <div class="text-panel">{{ shotTranscribeRow.segment_text || '—' }}</div>
         <div class="field-label">画面描述</div>
@@ -1331,25 +1616,28 @@ watch(shotTranscribeVisible, (open) => {
           <div class="field-label">Request Headers</div>
           <pre class="code-block muted">{{ formatJson(detailPayload.requestHeaders) }}</pre>
 
-          <div class="field-label">Request Body</div>
-          <p v-if="detailIsShotMatch" class="hint trace-body-hint">
-            以下内容仅作审计对照：检索请求里的<strong>长向量</strong>入库前会替换为
-            <code>_omitted: numeric_vector</code>
-            占位；若整体仍超长则会再出现
-            <code>_truncated</code>
-            。<strong>重试匹配</strong>由服务端根据当前分镜的
-            <code>tags_json</code>
-            重新调用检索逻辑，<strong>不会</strong>也不应依赖本条 Request Body 回放。
-          </p>
-          <pre class="code-block" :class="{ 'code-block--shot-trace': detailIsShotMatch }">{{
-            formatJson(detailPayload.requestBody)
-          }}</pre>
+          <HttpTraceJsonBlock
+            label="Request Body"
+            :model-value="detailPayload.requestBody"
+            :pre-extra-class="detailIsShotMatch ? 'code-block--shot-trace' : undefined"
+          >
+            <template v-if="detailIsShotMatch" #before-body>
+              <p class="hint trace-body-hint">
+                以下内容仅作审计对照：检索请求里的<strong>长向量</strong>入库前会替换为
+                <code>_omitted: numeric_vector</code>
+                占位；若整体仍超长则会再出现
+                <code>_truncated</code>
+                。<strong>重试匹配</strong>由服务端根据当前分镜的
+                <code>tags_json</code>
+                重新调用检索逻辑，<strong>不会</strong>也不应依赖本条 Request Body 回放。
+              </p>
+            </template>
+          </HttpTraceJsonBlock>
 
           <div class="field-label">Response Headers</div>
           <pre class="code-block muted">{{ formatJson(detailPayload.responseHeaders) }}</pre>
 
-          <div class="field-label">Response Body</div>
-          <pre class="code-block">{{ formatJson(detailPayload.responseBody) }}</pre>
+          <HttpTraceJsonBlock label="Response Body" :model-value="detailPayload.responseBody" />
 
           <template v-if="detailIsShotMatch">
             <div class="field-label">Top 命中（OpenSearch _score，与分镜检索结果一致）</div>
