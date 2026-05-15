@@ -34,7 +34,7 @@ import {
   type VideoAnalysisPageSnapshot,
 } from '@/utils/videoAnalysisSessionCache'
 import { tagsJsonToSearchTokens, DEFAULT_TOKEN_JOIN_AND_FIELDS } from '@/utils/matchTagsFromSegment'
-import { ZHIJI_CAR_MODEL_OPTIONS, VIDEO_FRAME_SIZE_OPTIONS } from '@/constants/zhijiCarModels'
+import { ZHIJI_CAR_MODEL_OPTIONS, VIDEO_FRAME_ORIENTATION_OPTIONS, videoFrameSizeOptionsForOrientation } from '@/constants/zhijiCarModels'
 
 /** 拉取历史分镜卡片时遮罩，与异步提交分析任务解耦，避免阻塞再次上传 */
 const isLoadingHistory = ref(false)
@@ -81,6 +81,21 @@ watch(() => rewriteTaskState.pendingTokens, (tokens) => {
     kickRemoteSearch()
   }
 }, { immediate: true })
+
+const rewriteFrameSizeOptions = computed(() =>
+  videoFrameSizeOptionsForOrientation(rewriteTaskState.form.frame_orientation),
+)
+
+watch(
+  () => rewriteTaskState.form.frame_orientation,
+  () => {
+    const allowed = new Set<string>(rewriteFrameSizeOptions.value.map((x) => x.value))
+    const fs = rewriteTaskState.form.frame_size
+    if (fs && !allowed.has(fs)) {
+      rewriteTaskState.form.frame_size = ''
+    }
+  },
+)
 
 // ─── 模块级搜索缓存（跨路由导航保持，keep-alive 替代方案）────────────────
 let _cachedResults: UiShotCard[] = []
@@ -643,6 +658,7 @@ const submitRewrite = async () => {
         title: rewriteTaskState.form.title.trim() || undefined,
         car_model: rewriteTaskState.form.car_model.trim() || undefined,
         frame_size: rewriteTaskState.form.frame_size.trim() || undefined,
+        frame_orientation: rewriteTaskState.form.frame_orientation.trim() || undefined,
       })
     }).then(r => r.json())
 
@@ -990,8 +1006,23 @@ onBeforeUnmount(() => {
             style="width: 100%"
           >
             <el-option
-              v-for="opt in VIDEO_FRAME_SIZE_OPTIONS"
+              v-for="opt in rewriteFrameSizeOptions"
               :key="`va_fs_${opt.value || 'any'}`"
+              :label="opt.label"
+              :value="opt.value"
+            />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="横竖屏">
+          <el-select
+            v-model="rewriteTaskState.form.frame_orientation"
+            placeholder="选填：仅横竖屏 keyword（frame_orientation），不定比例"
+            clearable
+            style="width: 100%"
+          >
+            <el-option
+              v-for="opt in VIDEO_FRAME_ORIENTATION_OPTIONS"
+              :key="`va_fo_${opt.value || 'any'}`"
               :label="opt.label"
               :value="opt.value"
             />

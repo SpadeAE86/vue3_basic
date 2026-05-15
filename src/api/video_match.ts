@@ -35,6 +35,7 @@ export interface VideoMatchJobSummary {
   topic?: string | null
   car_model?: string | null
   frame_size?: string | null
+  frame_orientation?: string | null
   created_at?: string | null
   updated_at?: string | null
   request_id?: string | null
@@ -57,6 +58,7 @@ export interface VideoMatchJobResponse {
   title?: string | null
   car_model?: string | null
   frame_size?: string | null
+  frame_orientation?: string | null
   parse_status?: string
   parse_error?: string | null
   workspace?: string
@@ -91,6 +93,7 @@ export async function createVideoMatchJobApi(body: {
   title?: string
   car_model?: string
   frame_size?: string
+  frame_orientation?: string
   workspace?: string
   mock?: boolean
 }): Promise<VideoMatchJobResponse> {

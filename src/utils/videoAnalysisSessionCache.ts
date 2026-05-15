@@ -29,6 +29,7 @@ export const rewriteTaskState = reactive({
     title: '',
     car_model: '',
     frame_size: '',
+    frame_orientation: '',
   },
   pendingTokens: null as SearchToken[] | null
 })

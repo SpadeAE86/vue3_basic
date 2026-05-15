@@ -21,3 +21,26 @@ export const VIDEO_FRAME_SIZE_OPTIONS = [
   { value: '横版16:9', label: '横屏 16:9' },
   { value: '竖版9:16', label: '竖屏 9:16' },
 ] as const
+
+export type VideoFrameSizeOption = (typeof VIDEO_FRAME_SIZE_OPTIONS)[number]
+
+/** 已选横竖屏时隐藏互斥的比例项，避免横屏下列出 9:16 等 */
+export function videoFrameSizeOptionsForOrientation(
+  orientation: string | null | undefined,
+): VideoFrameSizeOption[] {
+  const o = (orientation ?? '').trim()
+  if (o === '横屏') {
+    return VIDEO_FRAME_SIZE_OPTIONS.filter((x) => x.value !== '竖版9:16')
+  }
+  if (o === '竖屏') {
+    return VIDEO_FRAME_SIZE_OPTIONS.filter((x) => x.value !== '横版16:9')
+  }
+  return [...VIDEO_FRAME_SIZE_OPTIONS]
+}
+
+/** 与索引 ``frame_orientation`` keyword 一致；可不选具体画面比例 */
+export const VIDEO_FRAME_ORIENTATION_OPTIONS = [
+  { value: '', label: '不限' },
+  { value: '横屏', label: '横屏（不定比例）' },
+  { value: '竖屏', label: '竖屏（不定比例）' },
+] as const

@@ -39,7 +39,7 @@ import TokenJoinTemplateDialog from '@/components/video_analysis/TokenJoinTempla
 import TokenChipsReadonly from '@/components/video_match/TokenChipsReadonly.vue'
 import { tagsJsonToSearchTokens, DEFAULT_TOKEN_JOIN_AND_FIELDS } from '@/utils/matchTagsFromSegment'
 import { stashVideoAnalysisPrefillFromMatch } from '@/utils/videoAnalysisSessionCache'
-import { ZHIJI_CAR_MODEL_OPTIONS, VIDEO_FRAME_SIZE_OPTIONS, normalizeZhijiCarSelectValue } from '@/constants/zhijiCarModels'
+import { ZHIJI_CAR_MODEL_OPTIONS, VIDEO_FRAME_SIZE_OPTIONS, VIDEO_FRAME_ORIENTATION_OPTIONS, videoFrameSizeOptionsForOrientation, normalizeZhijiCarSelectValue } from '@/constants/zhijiCarModels'
 
 const router = useRouter()
 
@@ -49,12 +49,29 @@ const form = ref({
   title: '',
   car_model: '',
   frame_size: '',
+  frame_orientation: '',
   workspace: 'v1',
 })
 
 const workspaceOptions = ref<WorkspaceOption[]>([
   { key: 'v1', label: '经典分析 v1', description: '', is_default: true },
 ])
+
+/** 随横竖屏过滤画面比例选项，避免组合互斥 */
+const videoMatchFrameSizeOptions = computed(() =>
+  videoFrameSizeOptionsForOrientation(form.value.frame_orientation),
+)
+
+watch(
+  () => form.value.frame_orientation,
+  () => {
+    const allowed = new Set<string>(videoMatchFrameSizeOptions.value.map((x) => x.value))
+    const fs = form.value.frame_size
+    if (fs && !allowed.has(fs)) {
+      form.value.frame_size = ''
+    }
+  },
+)
 
 const parsing = ref(false)
 const matching = ref(false)
@@ -531,6 +548,19 @@ function applyVideoMatchJobInputsToForm(res: VideoMatchJobResponse) {
     const ok = VIDEO_FRAME_SIZE_OPTIONS.some((o) => o.value === fs)
     form.value.frame_size = ok ? fs : ''
   }
+  {
+    const fo = (res.frame_orientation ?? '').trim()
+    const ok = VIDEO_FRAME_ORIENTATION_OPTIONS.some((o) => o.value === fo)
+    form.value.frame_orientation = ok ? fo : ''
+  }
+  {
+    const allowed = new Set<string>(
+      videoFrameSizeOptionsForOrientation(form.value.frame_orientation).map((x) => x.value),
+    )
+    if (form.value.frame_size && !allowed.has(form.value.frame_size)) {
+      form.value.frame_size = ''
+    }
+  }
 
   const snap = res.search_strategy_snapshot
   if (snap && typeof snap === 'object' && snap !== null && 'name' in snap) {
@@ -756,6 +786,7 @@ async function onParse() {
       title: form.value.title.trim() || undefined,
       car_model: form.value.car_model.trim() || undefined,
       frame_size: form.value.frame_size.trim() || undefined,
+      frame_orientation: form.value.frame_orientation.trim() || undefined,
       workspace: form.value.workspace.trim() || 'v1',
       mock: false,
     })
@@ -1175,21 +1206,38 @@ onUnmounted(() => {
                 </el-select>
               </el-form-item>
             </div>
-            <el-form-item label="画面比例">
-              <el-select
-                v-model="form.frame_size"
-                placeholder="选填：横/竖屏约束，将写入每镜检索标签（与索引 frame_size 一致）"
-                clearable
-                class="frame-size-select"
-              >
-                <el-option
-                  v-for="opt in VIDEO_FRAME_SIZE_OPTIONS"
-                  :key="`fs_${opt.value || 'any'}`"
-                  :label="opt.label"
-                  :value="opt.value"
-                />
-              </el-select>
-            </el-form-item>
+            <div class="form-row-inline vm-frame-constraints-row">
+              <el-form-item label="画面比例">
+                <el-select
+                  v-model="form.frame_size"
+                  placeholder="选填：与索引 frame_size 一致"
+                  clearable
+                  class="frame-size-select"
+                >
+                  <el-option
+                    v-for="opt in videoMatchFrameSizeOptions"
+                    :key="`fs_${opt.value || 'any'}`"
+                    :label="opt.label"
+                    :value="opt.value"
+                  />
+                </el-select>
+              </el-form-item>
+              <el-form-item label="横竖屏">
+                <el-select
+                  v-model="form.frame_orientation"
+                  placeholder="选填：仅定横竖屏（不定比例），写入 frame_orientation"
+                  clearable
+                  class="frame-orientation-select"
+                >
+                  <el-option
+                    v-for="opt in VIDEO_FRAME_ORIENTATION_OPTIONS"
+                    :key="`fo_${opt.value || 'any'}`"
+                    :label="opt.label"
+                    :value="opt.value"
+                  />
+                </el-select>
+              </el-form-item>
+            </div>
           </div>
           <el-form-item>
             <div class="parse-actions-row">
@@ -1889,6 +1937,10 @@ onUnmounted(() => {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 8px 16px;
+}
+
+.vm-frame-constraints-row {
+  grid-template-columns: 1fr 1fr;
 }
 
 @media (max-width: 900px) {
