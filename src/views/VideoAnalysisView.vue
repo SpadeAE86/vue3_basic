@@ -43,6 +43,7 @@ const isSubmittingBatch = ref(false)
 const selectedFiles = ref<File[]>([])
 const selectedHistory = ref('')
 const searchTokens = ref<SearchToken[]>([])
+const searchStrategyName = ref('')
 const searchStrategyWeights = ref<SearchStrategyWeightsState>({
   bm25_weight: 0.3,
   vector_weight: 0.7,
@@ -143,10 +144,12 @@ const analysisResults = ref<UiShotCard[]>([])
 // remoteSearchCards = /search 接口返回的结果（与 analysisResults 独立，清 token 后清空）
 const remoteSearchCards = ref<UiShotCard[]>([])
 const remoteSearching = ref(false)
+/** 当前 token 组合是否已收到过至少一次后端响应（区分"搜索中"与"搜索返回空"） */
+const remoteSearchDone = ref(false)
 let searchAbort: AbortController | null = null
 let searchSeq = 0
 
-const searchFuzzy = ref(true)
+const enableRoadRunFallback = ref(true)
 
 let persistTimer: ReturnType<typeof setTimeout> | null = null
 function schedulePersistPageState() {
@@ -160,7 +163,8 @@ function schedulePersistPageState() {
       splitScenes: splitScenes.value,
       searchTokens: [...searchTokens.value],
       lastSearchCacheKey: lastSuccessfulSearchKey.value,
-      searchFuzzy: searchFuzzy.value,
+      searchStrategyName: searchStrategyName.value,
+      enableRoadRunFallback: enableRoadRunFallback.value,
     }
     savePageSnapshot(snap)
   }, 350)
@@ -359,10 +363,11 @@ function matchTag(tags: string[], token: string) {
 const effectiveResults = computed(() => {
   const hasTokens = (searchTokens.value ?? []).some(t => t.text?.trim())
   if (!hasTokens) {
-    // 无 token：历史卡片或模块级缓存
     return analysisResults.value.length > 0 ? analysisResults.value : _cachedResults
   }
-  // 有 token：搜索结果（加载完前先用历史卡片做本地过滤，不出现空卡片状态）
+  // 有 token 且已有后端响应（包括空结果）→ 以远程结果为准，不再 fallback
+  if (remoteSearchDone.value) return remoteSearchCards.value
+  // 搜索中尚未返回：临时用历史卡片垫底避免空屏
   return remoteSearchCards.value.length > 0 ? remoteSearchCards.value : analysisResults.value
 })
 
@@ -422,6 +427,7 @@ function applySearchHit(
   const fresh = toUiCards(rawCards)
   _cachedResults = fresh
   remoteSearchCards.value = fresh
+  remoteSearchDone.value = true
 }
 
 function sleepMs(ms: number): Promise<void> {
@@ -441,7 +447,13 @@ async function withMinSearchSpinner(minMs: number, run: () => void | Promise<voi
   }
 }
 
+let searchDebounceTimer: number | null = null
 function kickRemoteSearch() {
+  if (searchDebounceTimer !== null) clearTimeout(searchDebounceTimer)
+  searchDebounceTimer = window.setTimeout(doKickRemoteSearch, 50)
+}
+
+function doKickRemoteSearch() {
   const tokens = (searchTokens.value ?? []).filter((t) => t.text && t.text.trim())
   const stratSig = JSON.stringify({
     r: !!searchStrategyWeights.value.use_rrf,
@@ -451,9 +463,9 @@ function kickRemoteSearch() {
     vw: searchStrategyWeights.value.vector_weights ?? {},
   })
   if (!tokens.length) {
-    // token 全清：中止进行中的请求，清空搜索结果 → effectiveResults 自动回到历史卡片
     if (searchAbort) { searchAbort.abort(); searchAbort = null }
     remoteSearchCards.value = []
+    remoteSearchDone.value = false
     remoteSearching.value = false
     lastSuccessfulSearchKey.value = null
     schedulePersistPageState()
@@ -462,22 +474,23 @@ function kickRemoteSearch() {
 
   const backendTok = toBackendTokens(tokens)
   
-  // 动态决定是否模糊检索：如果存在 text 类型的 token，则使用模糊（混合）检索；否则使用精确（BM25）检索
-  // 除非用户手动切换了 searchFuzzy 的状态，我们以 searchFuzzy.value 为准
-  const isFuzzy = searchFuzzy.value
+  const fallbackParam = enableRoadRunFallback.value
 
   const cacheKey = buildSearchCacheKey({
     workspace: currentWorkspace.value,
-    fuzzy: isFuzzy,
+    fuzzy: fallbackParam, // Reuse fuzzy property in cache key to avoid changing cache type
     tokens: backendTok,
     size: 80,
     strategySig: stratSig,
+    strategyName: searchStrategyName.value,
   })
 
   const cached = videoAnalysisSearchCache.get(cacheKey)
-  if (cached?.cards?.length) {
+  if (cached && Array.isArray(cached.cards)) {
     remoteSearching.value = true
     const t0 = Date.now()
+    // 截取 cache key 中最后的 JSON token 部分作摘要，拼上卡片数量
+    const cacheKeyShort = cacheKey.slice(-32)
     const finish = () => {
       applySearchHit(
         cached.cards as ShotCard[],
@@ -486,6 +499,11 @@ function kickRemoteSearch() {
       lastSuccessfulSearchKey.value = cacheKey
       schedulePersistPageState()
       remoteSearching.value = false
+      ElMessage({
+        type: 'info',
+        message: `命中本地缓存（…${cacheKeyShort}），共 ${cached.cards.length} 张卡片，未重新请求接口`,
+        duration: 3000,
+      })
     }
     requestAnimationFrame(() => {
       const wait = Math.max(0, 280 - (Date.now() - t0))
@@ -502,9 +520,10 @@ function kickRemoteSearch() {
   searchVideoAnalysisCardsApi(
     {
       tokens: backendTok,
-      fuzzy: isFuzzy,
+      enable_road_run_fallback: fallbackParam,
       size: 80,
       workspace: currentWorkspace.value,
+      strategy_name: searchStrategyName.value || undefined,
       bm25_weight: searchStrategyWeights.value.bm25_weight,
       vector_weight: searchStrategyWeights.value.vector_weight,
       text_weights: searchStrategyWeights.value.text_weights,
@@ -703,7 +722,7 @@ const submitRewrite = async () => {
 }
 
 watch(
-  [searchTokens, currentWorkspace, selectedHistory, splitScenes, searchFuzzy],
+  [searchTokens, currentWorkspace, selectedHistory, splitScenes],
   () => schedulePersistPageState(),
   { deep: true },
 )
@@ -734,7 +753,6 @@ onMounted(async () => {
         selectedHistory.value = prefill.selectedHistory || '__all__'
         splitScenes.value = true
         searchTokens.value = Array.isArray(prefill.searchTokens) ? [...prefill.searchTokens] : []
-        searchFuzzy.value = prefill.searchFuzzy !== false
         const w = prefill.searchStrategyWeights
         if (w) {
           searchStrategyWeights.value = {
@@ -745,6 +763,9 @@ onMounted(async () => {
             ...(w.text_weights ? { text_weights: w.text_weights } : {}),
             ...(w.vector_weights ? { vector_weights: w.vector_weights } : {}),
           }
+        }
+        if (prefill.searchStrategyName) {
+          searchStrategyName.value = prefill.searchStrategyName
         }
         lastSuccessfulSearchKey.value = null
         remoteSearchCards.value = []
@@ -760,7 +781,14 @@ onMounted(async () => {
           splitScenes.value = snap.splitScenes ?? true
           searchTokens.value = Array.isArray(snap.searchTokens) ? [...snap.searchTokens] : []
           lastSuccessfulSearchKey.value = snap.lastSearchCacheKey ?? null
-          if (snap.searchFuzzy !== undefined) searchFuzzy.value = snap.searchFuzzy
+          if (snap.searchStrategyName) {
+            searchStrategyName.value = snap.searchStrategyName
+          }
+          if (snap.enableRoadRunFallback !== undefined) {
+            enableRoadRunFallback.value = snap.enableRoadRunFallback
+          } else if (snap.searchFuzzy !== undefined) {
+            enableRoadRunFallback.value = snap.searchFuzzy
+          }
         }
       }
   }
@@ -775,10 +803,14 @@ onMounted(async () => {
     await withMinSearchSpinner(320, async () => {
       await nextTick()
       const hit = videoAnalysisSearchCache.get(prefill.preferredSearchCacheKey!)
-      if (hit?.cards?.length) {
+      if (hit && Array.isArray(hit.cards)) {
         applySearchHit(hit.cards as ShotCard[], (hit.search_mode as 'precise' | 'fuzzy' | 'fuzzy_rrf') ?? null)
         lastSuccessfulSearchKey.value = prefill.preferredSearchCacheKey!
-        ElMessage.success('已恢复本次检索结果（未重新请求接口）')
+        if (prefill.sourceMatchId) {
+          ElMessage.success(`已复用匹配任务 ${prefill.sourceMatchId.split('-')[0]}... 的检索结果缓存，共 ${hit.cards.length} 张`)
+        } else {
+          ElMessage.success(`已恢复本次检索结果（未重新请求接口），共 ${hit.cards.length} 张`)
+        }
       } else {
         ElMessage.info('当前标签页内无本次检索的本地缓存；检索框内无待提交文字时按 Enter 可重新搜索')
       }
@@ -792,7 +824,7 @@ onMounted(async () => {
       const backendTok = toBackendTokens(tok)
       const key = buildSearchCacheKey({
         workspace: currentWorkspace.value,
-        fuzzy: searchFuzzy.value,
+        fuzzy: enableRoadRunFallback.value,
         tokens: backendTok,
         size: 80,
         strategySig: JSON.stringify({
@@ -831,16 +863,12 @@ watch(currentWorkspace, async () => {
   schedulePersistPageState()
 })
 
-// token 变化 或 searchFuzzy 变化：
-//   - 有 token → 本地过滤立即生效（filteredResults computed）；不自动触发远程搜索
-//   - 无 token → 清空搜索结果，恢复历史卡片
-watch([searchTokens, searchFuzzy], ([tokens, fuzzy], [oldTokens, oldFuzzy]) => {
+// token 变化时：无 token → 清空搜索结果恢复历史卡片；有 token → 本地过滤立即生效（filteredResults computed）
+// tokens 置空时中止搜索
+watch(searchTokens, (tokens) => {
   if (restoringSnapshot.value) return
   if (!(tokens ?? []).some((t) => t.text?.trim())) {
     kickRemoteSearch() // 内部 tokens.length===0 分支：中止请求 + 清空 remoteSearchCards
-  } else if (oldFuzzy !== undefined && fuzzy !== oldFuzzy) {
-    // 如果仅仅是 searchFuzzy 变化，且有 token，我们应该触发重新搜索
-    kickRemoteSearch()
   }
 })
 
@@ -917,8 +945,9 @@ onBeforeUnmount(() => {
       <div class="va-search-panel">
         <TagSearchBar
           v-model="searchTokens"
+          v-model:strategyName="searchStrategyName"
           v-model:strategyWeights="searchStrategyWeights"
-          v-model:fuzzy="searchFuzzy"
+          v-model:enableRoadRunFallback="enableRoadRunFallback"
           :workspace="currentWorkspace"
           :loading="remoteSearching"
           dense

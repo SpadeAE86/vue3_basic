@@ -46,9 +46,12 @@ export type VideoAnalysisPageSnapshot = {
   /** 兼容旧快照 */
   fuzzySearch?: boolean
   searchFuzzy?: boolean
+  enableRoadRunFallback?: boolean
   searchTokens: SearchToken[]
   /** 最近一次成功 /search 对应的缓存键；用于挂载时对齐 */
   lastSearchCacheKey: string | null
+  /** 选中策略名 */
+  searchStrategyName?: string
 }
 
 /** 视频匹配分镜「跳转视频分析」时写入 sessionStorage，进入分析页后 consume */
@@ -63,7 +66,10 @@ export type VideoAnalysisPrefillFromMatch = {
     text_weights?: Record<string, number>
     vector_weights?: Record<string, number>
   }
-  searchFuzzy: boolean
+  /** 跳转时如果知道使用的是哪个策略，可以直接选中它 */
+  searchStrategyName?: string
+  searchFuzzy?: boolean
+  enableRoadRunFallback?: boolean
   /** 填入后是否自动请求 /search */
   autoSearch: boolean
   /**
@@ -71,6 +77,8 @@ export type VideoAnalysisPrefillFromMatch = {
    *（典型：同标签页内刚从视频分析搜完再回看板跳转回来）
    */
   preferredSearchCacheKey?: string | null
+  /** 跳转来源的匹配任务 ID，用于复用缓存时向用户展示关联性 */
+  sourceMatchId?: string
 }
 
 type SearchCacheEntry = {
@@ -94,25 +102,30 @@ function safeParse<T>(raw: string | null): T | null {
 }
 
 /** 与后端 /search 语义一致即可稳定命中（检索不按历史收窄，键中不包含 historyId） */
-export function buildSearchCacheKey(parts: {
+export function buildSearchCacheKey(args: {
   workspace: string
   /** @deprecated 已忽略，仅为兼容旧调用 */
   historyId?: string
   fuzzy: boolean
   tokens: VideoAnalysisSearchToken[]
-  size: number
+  size?: number
   /** 权重 / RRF 开关变化须使缓存失效 */
   strategySig?: string
+  strategyName?: string
 }): string {
-  const h = '*'
-  const payload = parts.tokens.map((t) => ({
+  const parts = [
+    args.workspace,
+    args.fuzzy ? 'fuzzy' : 'precise',
+    args.strategyName || args.strategySig || 'default',
+    args.size ?? 50,
+  ]
+  const payload = args.tokens.map((t) => ({
     text: t.text.trim(),
     join: t.join ?? 'AND',
     not: !!t.not,
     sf: t.source_field ?? '',
   }))
-  const sig = (parts.strategySig ?? '').trim()
-  return `${parts.workspace}|${h}|${parts.fuzzy ? 1 : 0}|${parts.size}|${sig}|${JSON.stringify(payload)}`
+  return parts.join('|') + '|' + JSON.stringify(payload)
 }
 
 function loadSearchFile(): SearchCacheFile {

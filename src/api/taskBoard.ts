@@ -1,13 +1,19 @@
 const API_BASE = '/api'
 
-export async function fetchImageHistoryForBoard() {
-  const resp = await fetch(`${API_BASE}/image/history`)
+export async function fetchImageHistoryForBoard(params?: { ids?: string }) {
+  const sp = new URLSearchParams()
+  if (params?.ids) sp.set('ids', params.ids)
+  const q = sp.toString()
+  const resp = await fetch(`${API_BASE}/image/history${q ? `?${q}` : ''}`)
   return resp.json()
 }
 
-export async function fetchVideoAnalysisHistoryForBoard(workspace?: string) {
-  const q = workspace ? `?workspace=${encodeURIComponent(workspace)}` : ''
-  const resp = await fetch(`${API_BASE}/video-analysis/history${q}`)
+export async function fetchVideoAnalysisHistoryForBoard(params?: { workspace?: string, ids?: string }) {
+  const sp = new URLSearchParams()
+  if (params?.workspace) sp.set('workspace', params.workspace)
+  if (params?.ids) sp.set('ids', params.ids)
+  const q = sp.toString()
+  const resp = await fetch(`${API_BASE}/video-analysis/history${q ? `?${q}` : ''}`)
   return resp.json()
 }
 
@@ -25,11 +31,13 @@ export async function fetchVideoMatchJobsForBoard(params?: {
   parse_status?: string
   workspace?: string
   limit?: number
+  ids?: string
 }) {
   const sp = new URLSearchParams()
   if (params?.parse_status) sp.set('parse_status', params.parse_status)
   if (params?.workspace) sp.set('workspace', params.workspace)
   if (params?.limit != null) sp.set('limit', String(params.limit))
+  if (params?.ids) sp.set('ids', params.ids)
   const q = sp.toString()
   const resp = await fetch(`${API_BASE}/video-match/jobs${q ? `?${q}` : ''}`)
   return resp.json()
@@ -45,12 +53,14 @@ export async function fetchMaterialMatchesForBoard(params?: {
   source?: string
   status?: string
   limit?: number
+  ids?: string
 }) {
   const sp = new URLSearchParams()
   if (params?.workspace) sp.set('workspace', params.workspace)
   if (params?.source) sp.set('source', params.source)
   if (params?.status) sp.set('status', params.status)
   if (params?.limit != null) sp.set('limit', String(params.limit))
+  if (params?.ids) sp.set('ids', params.ids)
   const q = sp.toString()
   const resp = await fetch(`${API_BASE}/video-match/material-matches${q ? `?${q}` : ''}`)
   return resp.json()

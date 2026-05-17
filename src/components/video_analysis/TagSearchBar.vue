@@ -23,6 +23,7 @@ export type SearchToken = {
 const props = withDefaults(
   defineProps<{
     modelValue: SearchToken[]
+    strategyName?: string
     strategyWeights: {
       bm25_weight: number
       vector_weight: number
@@ -32,7 +33,7 @@ const props = withDefaults(
     }
     workspace?: string
     loading?: boolean
-    fuzzy?: boolean
+    enableRoadRunFallback?: boolean
     placeholder?: string
     maxPreviewChars?: number
     radius?: string
@@ -43,7 +44,6 @@ const props = withDefaults(
     modelValue: () => [],
     workspace: 'v2',
     loading: false,
-    fuzzy: true,
     placeholder: '回车添加标签；空格可分词；在标签上按下拖到另一枚可多选，Delete 批量删除',
     maxPreviewChars: 512,
     radius: '999px',
@@ -53,6 +53,7 @@ const props = withDefaults(
 
 const emit = defineEmits<{
   (e: 'update:modelValue', v: SearchToken[]): void
+  (e: 'update:strategyName', v: string): void
   (e: 'update:strategyWeights', v: {
     bm25_weight: number
     vector_weight: number
@@ -60,7 +61,7 @@ const emit = defineEmits<{
     vector_weights?: Record<string, number>
     use_rrf?: boolean
   }): void
-  (e: 'update:fuzzy', v: boolean): void
+  (e: 'update:enableRoadRunFallback', v: boolean): void
   (e: 'search'): void
 }>()
 
@@ -170,8 +171,24 @@ function applyStrategy(s: SearchStrategy) {
   emitUpdate()
 }
 
+watch(
+  () => props.strategyName,
+  (name) => {
+    if (name && name !== selectedStrategy.value) {
+      const s = strategies.value.find((x) => x.name === name)
+      if (s) {
+        applyStrategy(s)
+      } else {
+        selectedStrategy.value = name
+      }
+    }
+  },
+  { immediate: true }
+)
+
 watch(selectedStrategy, (newVal) => {
   if (newVal) {
+    emit('update:strategyName', newVal)
     const s = strategies.value.find((x) => x.name === newVal)
     if (s) {
       localBm25.value = s.bm25_weight
@@ -402,6 +419,12 @@ function removeSelectedTokens() {
   emit('update:modelValue', next)
 }
 
+function toggleRoadRunFallback() {
+  if (props.enableRoadRunFallback !== undefined) {
+    emit('update:enableRoadRunFallback', !props.enableRoadRunFallback)
+  }
+}
+
 async function clearAllTokens() {
   if (tokens.value.length === 0) return
   if (tokens.value.length > 10) {
@@ -438,6 +461,13 @@ function onInputKeydown(e: KeyboardEvent) {
 }
 
 function onComposerKeydown(e: KeyboardEvent) {
+  if (e.key === 'Enter') {
+    const t = e.target as HTMLElement | null
+    if (t?.closest?.('.inp')) return // Let the input handle it
+    e.preventDefault()
+    handleEnterKey()
+    return
+  }
   if (e.key !== 'Backspace' && e.key !== 'Delete') return
   const t = e.target as HTMLElement | null
   if (t?.closest?.('.inp')) return
@@ -486,11 +516,14 @@ let originalTokenState: SearchToken | null = null
 
 function openEditor(anchorEl: HTMLElement, t: SearchToken) {
   popoverAnchor.value = anchorEl
-  // 保存原始状态的深拷贝用于回滚
+  // 把原始状态深拷贝以便回滚
   originalTokenState = JSON.parse(JSON.stringify(t))
-  // 直接引用原对象，实现即时响应
+  // 直接让原来实例接受双向绑定
   editing.value = t
-  editorOpen.value = true
+  // 延迟打开，避免当前 pointerup 产生的 click 事件冒泡触发 popover 的 click-outside 导致瞬间关闭
+  setTimeout(() => {
+    editorOpen.value = true
+  }, 10)
 }
 
 function saveEditor() {
@@ -645,20 +678,19 @@ function handleEnterKey() {
       <!-- 搜索策略配置工具栏，和 PromptComposer 类似的一体化设计 -->
       <div class="toolbar">
         <el-button
-          v-if="fuzzy !== undefined"
+          v-if="enableRoadRunFallback !== undefined"
+          class="fuzzy-toggle-btn"
+          :class="{ 'is-fuzzy': enableRoadRunFallback }"
           size="small"
-          class="ghost-btn fuzzy-toggle-btn"
-          :class="{ 'is-fuzzy': fuzzy }"
-          @click="emit('update:fuzzy', !fuzzy)"
-          :title="fuzzy ? '当前：模糊检索 (包含向量)' : '当前：精准检索 (仅关键词)'"
+          text
+          @click="toggleRoadRunFallback"
         >
-          <el-icon class="fuzzy-icon">
-            <i-ep-connection v-if="fuzzy" />
+          <el-icon>
+            <i-ep-magic-stick v-if="enableRoadRunFallback" />
             <i-ep-aim v-else />
           </el-icon>
-          <span>{{ fuzzy ? '模糊' : '精准' }}</span>
+          路跑兜底
         </el-button>
-        
         <SearchStrategySelect
           v-model="selectedStrategy"
           :strategies="strategies"

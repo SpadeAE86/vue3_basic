@@ -228,11 +228,13 @@ export async function searchVideoAnalysisCardsApi(
     history_id?: string
     size?: number
     workspace?: string
+    strategy_name?: string
     bm25_weight?: number
     vector_weight?: number
     text_weights?: Record<string, number>
     vector_weights?: Record<string, number>
     use_rrf?: boolean
+    enable_road_run_fallback?: boolean
   },
   opts?: { signal?: AbortSignal },
 ) {

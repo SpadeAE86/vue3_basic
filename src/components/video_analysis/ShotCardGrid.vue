@@ -292,7 +292,12 @@ function parseExplanation(explanation: any, matchedQueries: string[] = []): { it
                   :key="shot.id"
                   class="score-breakdown"
                 >
-                <div class="score-title">得分明细 ({{ shot._search_mode?.includes('fuzzy') ? '混合检索' : '精确检索' }})</div>
+                <div class="score-title">
+                  得分明细 ({{ shot.is_fallback ? '路跑兜底' : (shot._search_mode?.includes('fuzzy') ? '混合检索' : '精确检索') }})
+                </div>
+                <p v-if="shot.is_fallback" class="rrf-plain" style="color: #fbbf24; margin-bottom: 6px;">
+                  ⚠️ 未完全匹配硬标签，由路跑兜底召回
+                </p>
                 <div v-if="shot._explanation">
 
                   <div v-if="parsed.bm25Items.length > 0" class="score-group bm25-group">
@@ -343,14 +348,17 @@ function parseExplanation(explanation: any, matchedQueries: string[] = []): { it
             </template>
             <div
               class="score-badge"
+              :class="{ 'fallback-badge': shot.is_fallback }"
               style="pointer-events: auto; cursor: help;"
             >
               {{
-                shot._search_mode === 'fuzzy_rrf'
-                  ? Number(shot._score).toFixed(2)
-                  : shot._search_mode?.includes('fuzzy')
-                    ? Math.round((shot._score as number) * 100) + '%'
-                    : (shot._score as number).toFixed(2)
+                shot.is_fallback
+                  ? '兜底 ' + Number(shot._score).toFixed(2)
+                  : shot._search_mode === 'fuzzy_rrf'
+                    ? Number(shot._score).toFixed(2)
+                    : shot._search_mode?.includes('fuzzy')
+                      ? Math.round((shot._score as number) * 100) + '%'
+                      : (shot._score as number).toFixed(2)
               }}
             </div>
           </el-tooltip>
@@ -517,6 +525,11 @@ function parseExplanation(explanation: any, matchedQueries: string[] = []): { it
 .score-badge:hover {
   background: rgba(0, 0, 0, 0.7);
   transform: scale(1.05);
+}
+.fallback-badge {
+  background: rgba(245, 158, 11, 0.2);
+  color: #fbbf24;
+  border-color: rgba(245, 158, 11, 0.4);
 }
 .index-badge {
   position: absolute;

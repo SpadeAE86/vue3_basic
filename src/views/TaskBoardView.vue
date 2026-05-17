@@ -174,13 +174,20 @@ watch([boardSection, statusFilter, dateRange, workspaceFilter, idSearchFilter], 
   currentPage.value = 1
 })
 
-async function loadImage(silent = false) {
+async function loadImage(silent = false, targetIds?: string[]) {
   if (!silent) loading.value = true
   try {
-    const data = await fetchImageHistoryForBoard()
+    const data = await fetchImageHistoryForBoard(targetIds?.length ? { ids: targetIds.join(',') } : undefined)
     if (data?.success && Array.isArray(data.history)) {
-      imageRows.value = data.history as Record<string, unknown>[]
-    } else {
+      if (targetIds?.length) {
+        data.history.forEach((newItem: Record<string, unknown>) => {
+          const idx = imageRows.value.findIndex((r) => r.id === newItem.id || r.taskId === newItem.taskId)
+          if (idx !== -1) Object.assign(imageRows.value[idx], newItem)
+        })
+      } else {
+        imageRows.value = data.history as Record<string, unknown>[]
+      }
+    } else if (!targetIds?.length) {
       imageRows.value = []
     }
   } finally {
@@ -188,13 +195,24 @@ async function loadImage(silent = false) {
   }
 }
 
-async function loadVideo(silent = false) {
+async function loadVideo(silent = false, targetIds?: string[]) {
   if (!silent) loading.value = true
   try {
-    const data = await fetchVideoAnalysisHistoryForBoard(workspaceFilter.value || undefined)
+    const params = {
+      workspace: workspaceFilter.value || undefined,
+      ids: targetIds?.length ? targetIds.join(',') : undefined
+    }
+    const data = await fetchVideoAnalysisHistoryForBoard(params)
     if (data?.success && Array.isArray(data.history)) {
-      videoRows.value = data.history as Record<string, unknown>[]
-    } else {
+      if (targetIds?.length) {
+        data.history.forEach((newItem: Record<string, unknown>) => {
+          const idx = videoRows.value.findIndex((r) => r.id === newItem.id || r.taskId === newItem.taskId)
+          if (idx !== -1) Object.assign(videoRows.value[idx], newItem)
+        })
+      } else {
+        videoRows.value = data.history as Record<string, unknown>[]
+      }
+    } else if (!targetIds?.length) {
       videoRows.value = []
     }
   } finally {
@@ -202,18 +220,26 @@ async function loadVideo(silent = false) {
   }
 }
 
-async function loadVmJobs(silent = false) {
+async function loadVmJobs(silent = false, targetIds?: string[]) {
   if (!silent) loading.value = true
   try {
     const ws = workspaceFilter.value.trim() || undefined
-    const params: { workspace?: string; limit: number } = {
+    const params: { workspace?: string; limit: number; ids?: string } = {
       limit: 100,
       workspace: ws,
     }
+    if (targetIds?.length) params.ids = targetIds.join(',')
     const data = await fetchVideoMatchJobsForBoard(params)
     if (data?.success && Array.isArray(data.jobs)) {
-      vmJobRows.value = data.jobs as Record<string, unknown>[]
-    } else {
+      if (targetIds?.length) {
+        data.jobs.forEach((newItem: Record<string, unknown>) => {
+          const idx = vmJobRows.value.findIndex((r) => r.id === newItem.id || r.taskId === newItem.taskId)
+          if (idx !== -1) Object.assign(vmJobRows.value[idx], newItem)
+        })
+      } else {
+        vmJobRows.value = data.jobs as Record<string, unknown>[]
+      }
+    } else if (!targetIds?.length) {
       vmJobRows.value = []
     }
   } finally {
@@ -221,14 +247,23 @@ async function loadVmJobs(silent = false) {
   }
 }
 
-async function loadMaterialMatches(silent = false) {
+async function loadMaterialMatches(silent = false, targetIds?: string[]) {
   if (!silent) loading.value = true
   try {
     const ws = workspaceFilter.value.trim() || undefined
-    const data = await fetchMaterialMatchesForBoard({ limit: 100, workspace: ws })
+    const params: { limit: number; workspace?: string; ids?: string } = { limit: 100, workspace: ws }
+    if (targetIds?.length) params.ids = targetIds.join(',')
+    const data = await fetchMaterialMatchesForBoard(params)
     if (data?.success && Array.isArray(data.matches)) {
-      materialMatchRows.value = data.matches as Record<string, unknown>[]
-    } else {
+      if (targetIds?.length) {
+        data.matches.forEach((newItem: Record<string, unknown>) => {
+          const idx = materialMatchRows.value.findIndex((r) => r.id === newItem.id || r.taskId === newItem.taskId)
+          if (idx !== -1) Object.assign(materialMatchRows.value[idx], newItem)
+        })
+      } else {
+        materialMatchRows.value = data.matches as Record<string, unknown>[]
+      }
+    } else if (!targetIds?.length) {
       materialMatchRows.value = []
     }
   } finally {
@@ -278,26 +313,29 @@ function syncBoardHistoryPoll() {
     vmTranscribeRunning
 
   if (needPoll && !boardHistoryPollTimer) {
+    let isPolling = false
     const tick = async () => {
+      if (isPolling) return
+      isPolling = true
       const s = boardSection.value
       try {
-        if (s === 'image' && imageRows.value.some((r) => rowStatusNorm(r, 'image') === 'running')) {
-          await loadImage(true)
-        } else if (s === 'video' && videoRows.value.some((r) => rowStatusNorm(r, 'video') === 'running')) {
-          await loadVideo(true)
-        } else if (
-          s === 'video_match_search' &&
-          materialMatchRows.value.some((r) => rowStatusNorm(r, 'video_match_search') === 'running')
-        ) {
-          await loadMaterialMatches(true)
-        } else if (
-          s === 'video_match_transcribe' &&
-          vmJobRows.value.some((r) => rowStatusNorm(r, 'video_match_transcribe') === 'running')
-        ) {
-          await loadVmJobs(true)
+        if (s === 'image') {
+          const running = imageRows.value.filter((r) => rowStatusNorm(r, 'image') === 'running')
+          if (running.length) await loadImage(true, running.map(r => String(r.id || r.taskId)))
+        } else if (s === 'video') {
+          const running = videoRows.value.filter((r) => rowStatusNorm(r, 'video') === 'running')
+          if (running.length) await loadVideo(true, running.map(r => String(r.id || r.taskId)))
+        } else if (s === 'video_match_search') {
+          const running = materialMatchRows.value.filter((r) => rowStatusNorm(r, 'video_match_search') === 'running')
+          if (running.length) await loadMaterialMatches(true, running.map(r => String(r.id || r.taskId)))
+        } else if (s === 'video_match_transcribe') {
+          const running = vmJobRows.value.filter((r) => rowStatusNorm(r, 'video_match_transcribe') === 'running')
+          if (running.length) await loadVmJobs(true, running.map(r => String(r.id || r.taskId)))
         }
       } catch {
         /* 静默轮询失败不打断 */
+      } finally {
+        isPolling = false
       }
     }
     void tick()

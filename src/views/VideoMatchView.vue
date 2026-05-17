@@ -369,11 +369,8 @@ async function rematchVmShot(row: VideoMatchShotDto) {
 }
 
 function canJumpVideoAnalysisFromVmShot(row: VideoMatchShotDto): boolean {
-  return (
-    (row.search_status || '').toLowerCase() === 'done' &&
-    !!row.tags_json &&
-    Object.keys(row.tags_json as object).length > 0
-  )
+  // 无论成功/失败，只要有标签就允许跳转到视频分析搜索框复现
+  return !!row.tags_json && Object.keys(row.tags_json as object).length > 0
 }
 
 async function goVideoAnalysisFromVmShot(row: VideoMatchShotDto) {
@@ -388,7 +385,12 @@ async function goVideoAnalysisFromVmShot(row: VideoMatchShotDto) {
   } catch {
     /* 使用内置默认 */
   }
-  const tokens = tagsJsonToSearchTokens((row.tags_json ?? {}) as Record<string, unknown>, andFields)
+  // Ignore token-join-templates when backfilling from match, to prevent strict term filters 
+  // that would drop hits (Match uses relaxed partition filters with generic_hq_road_run fallback).
+  const tokens = tagsJsonToSearchTokens((row.tags_json ?? {}) as Record<string, unknown>, [])
+  if (row.segment_text?.trim()) {
+    tokens.unshift({ text: row.segment_text.trim(), join: 'OR', type: 'keyword' })
+  }
   const snap = jobStrategySnapshot.value
   const bm25 = typeof snap?.bm25_weight === 'number' ? snap.bm25_weight : 0.3
   const vec = typeof snap?.vector_weight === 'number' ? snap.vector_weight : 0.7
@@ -410,8 +412,10 @@ async function goVideoAnalysisFromVmShot(row: VideoMatchShotDto) {
         ? { vector_weights: vw as Record<string, number> }
         : {}),
     },
+    searchStrategyName: typeof snap?.name === 'string' ? snap.name : undefined,
     searchFuzzy: true,
     autoSearch: true,
+    sourceMatchId: currentJobId.value || undefined,
   })
   router.push('/video-analysis')
 }
@@ -627,6 +631,8 @@ async function onHistoryJobChange(id: string | null | undefined) {
     jobSearchError.value = res.search_error ?? null
     applyVideoMatchJobInputsToForm(res)
     syncMatchJobContext(res)
+    // 持久化选中状态，切路由返回后自动恢复
+    try { sessionStorage.setItem('videoMatch:lastJobId:v1', sid) } catch { /* ignore */ }
     ElMessage.success('已载入历史任务')
   } catch (e) {
     ElMessage.error(e instanceof Error ? e.message : '加载失败')
@@ -816,6 +822,7 @@ async function onParse() {
     jobSearchError.value = res.search_error ?? null
     syncMatchJobContext(res)
     form.value.script = scriptClean
+    if (res.job_id) try { sessionStorage.setItem('videoMatch:lastJobId:v1', res.job_id) } catch { /* ignore */ }
     ElMessage.success(res.mock ? '转写完成（服务端返回 mock）' : '转写完成')
     await loadHistoryJobs()
     historyJobId.value = currentJobId.value
@@ -1072,7 +1079,27 @@ onMounted(async () => {
   await loadHistoryJobs()
   await fetchVmIndexFields()
   await loadTokenJoinAndFields()
+  // 还原上次选中的匹配任务（切路由返回时不用重新选，静默恢复不弹 Toast）
+  const savedJobId = sessionStorage.getItem('videoMatch:lastJobId:v1')
+  if (savedJobId && historyJobs.value.some((j) => j.id === savedJobId)) {
+    historyJobId.value = savedJobId
+    try {
+      const res = await getVideoMatchJobApi(savedJobId)
+      if (res.success) {
+        currentJobId.value = res.job_id ?? savedJobId
+        shots.value = res.shots ?? []
+        parseStatus.value = res.parse_status ?? null
+        parseError.value = res.parse_error ?? null
+        jobSearchStatus.value = res.search_status ?? null
+        searchTotalMs.value = res.search_total_ms ?? null
+        jobSearchError.value = res.search_error ?? null
+        applyVideoMatchJobInputsToForm(res)
+        syncMatchJobContext(res)
+      }
+    } catch { /* 忽略：静默恢复失败不影响使用 */ }
+  }
 })
+
 
 onUnmounted(() => {
   clearComposePoll()
