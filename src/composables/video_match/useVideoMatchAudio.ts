@@ -55,10 +55,12 @@ export function useVideoMatchAudio(matchHitRows: any) {
 
     try {
       row.is_generating_tts = true
-      const res = await generateTTS(ttsText)
-      if (res && res.audio_url) {
-        row.tts_audio_url = res.audio_url
-        playAudio(res.audio_url)
+      // synthesizeShotAudioApi takes (jobId, shotRowId) — audio URL comes back in res.shot.obs_audio_url
+      const res = await generateTTS(row.job_id, row.id)
+      if (res && res.shot && res.shot.obs_audio_url) {
+        const audioUrl = res.shot.obs_audio_url
+        row.tts_audio_url = audioUrl
+        playAudio(audioUrl)
       } else {
         ElMessage.error('TTS生成失败，未返回音频地址')
       }

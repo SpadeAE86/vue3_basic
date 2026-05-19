@@ -98,7 +98,7 @@ function getActiveFrameUrl(shot: UiShotCard): string {
   const urls = (shot.frame_urls ?? []).filter(Boolean)
   if (!urls.length) return shot.thumbnail ?? ''
   const raw = props.activeFrameIndex[String(shot.id)] ?? 0
-  return urls[Math.min(raw, urls.length - 1)]
+  return urls[Math.min(raw, urls.length - 1)] ?? ''
 }
 
 function statusType(status: string | null | undefined) {
@@ -135,11 +135,11 @@ function handleCardHover(e: MouseEvent) {
 // 解析 OpenSearch 的 Explain 树，提取分数组成
 type ScoreDetail = { description: string; value: number; isNormalized?: boolean; details?: ScoreDetail[] }
 
-function parseExplanation(explanation: any, matchedQueries: string[] = []): { items: { name: string; score: number }[]; isNormalized: boolean } {
+function parseExplanation(explanation: any, matchedQueries: string[] = []): { items: { name: string; score: number }[]; bm25Items: { name: string; score: number }[]; knnItems: { name: string; score: number }[]; bm25Sum: number; knnSum: number; isNormalized: boolean } {
   const items: { name: string; score: number }[] = []
   let isNormalized = false
 
-  if (!explanation) return { items, isNormalized }
+  if (!explanation) return { items, bm25Items: [], knnItems: [], bm25Sum: 0, knnSum: 0, isNormalized }
 
   function traverse(node: any) {
     if (!node) return
@@ -206,9 +206,9 @@ function parseExplanation(explanation: any, matchedQueries: string[] = []): { it
     items.forEach((item) => {
       if ((item.name === 'Score' || item.name === 'Sub-query Score') && mqIndex < matchedQueries.length) {
         const mq = matchedQueries[mqIndex]
-        if (mq.startsWith('knn_')) item.name = `KNN (${mq.replace('knn_', '').replace('_vector', '')})`
-        else if (mq.startsWith('bm25_')) item.name = `BM25`
-        else item.name = mq
+        if (mq && mq.startsWith('knn_')) item.name = `KNN (${mq.replace('knn_', '').replace('_vector', '')})`
+        else if (mq && mq.startsWith('bm25_')) item.name = `BM25`
+        else if (mq) item.name = mq
         mqIndex++
       }
     })
@@ -229,7 +229,7 @@ function parseExplanation(explanation: any, matchedQueries: string[] = []): { it
     }
   })
 
-  const finalItems = Object.keys(aggregated).map(k => ({ name: k, score: aggregated[k] }))
+  const finalItems = Object.keys(aggregated).map(k => ({ name: k, score: aggregated[k] ?? 0 }))
   finalItems.sort((a, b) => b.score - a.score)
 
   const bm25Items: { name: string; score: number }[] = []
@@ -237,16 +237,16 @@ function parseExplanation(explanation: any, matchedQueries: string[] = []): { it
 
   finalItems.forEach(item => {
     if (item.name.toUpperCase().includes('KNN') || item.name.toUpperCase().includes('VECTOR')) {
-      knnItems.push(item)
+      knnItems.push({ name: item.name, score: item.score })
     } else {
-      bm25Items.push(item)
+      bm25Items.push({ name: item.name, score: item.score })
     }
   })
 
   const bm25Sum = bm25Items.reduce((acc, item) => acc + item.score, 0)
   const knnSum = knnItems.reduce((acc, item) => acc + item.score, 0)
 
-  return { bm25Items, knnItems, isNormalized, bm25Sum, knnSum }
+  return { items: finalItems, bm25Items, knnItems, isNormalized, bm25Sum, knnSum }
 }
 </script>
 

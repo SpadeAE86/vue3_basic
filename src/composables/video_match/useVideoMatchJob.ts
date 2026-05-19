@@ -28,7 +28,7 @@ export function useVideoMatchJob() {
   const loadHistoryJobs = async () => {
     try {
       loading.value = true
-      const res = await listJobs(null, null)
+      const res = await listJobs()
       if (res && res.jobs) {
         historyJobs.value = res.jobs.map((j: any) => ({
           label: `[${(j.job_id || j.id || "").slice(-6)}] ${j.created_at} - ${j.status}`,
@@ -70,8 +70,11 @@ export function useVideoMatchJob() {
     loading.value = true
     try {
       const payloadData = await getJobPayload(val)
-      if (payloadData && payloadData.payload) {
-        const payload = payloadData.payload
+      if (payloadData && payloadData.success) {
+        // VideoMatchJobResponse has flat fields; cast to any for legacy fields
+        // (duration, bgm_type, etc.) that may exist at runtime on older records
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const payload = payloadData as any
         formPayload.value = {
           topic: payload.topic || '',
           duration: payload.duration || '',

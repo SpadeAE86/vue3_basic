@@ -45,15 +45,11 @@ export function useVideoMatchSearch(selectedHistory: any, formPayload: any, sear
     
     isSearching.value = true
     try {
-      const payload = {
-        task_id: selectedHistory.value,
-        tokens: searchTokens.value,
-        weights: searchStrategyWeights.value
-      }
-      
-      const res = await runJobSearch(payload)
-      if (res && res.match_result) {
-        matchHitRows.value = Array.isArray(res.match_result) ? res.match_result : []
+      const res = await runJobSearch(selectedHistory.value, {
+        strategy_name: 'default',
+      })
+      if (res && res.success && res.shots) {
+        matchHitRows.value = res.shots
         ElMessage.success('匹配搜索成功')
       } else {
         matchHitRows.value = []
@@ -84,7 +80,8 @@ export function useVideoMatchSearch(selectedHistory: any, formPayload: any, sear
       searchStrategyWeights: searchStrategyWeights.value,
       selectedHistory: selectedHistory.value,
       workspace: row.workspace || 'v1',
-      jumpTargetDocId: row.id
+      autoSearch: false,
+      sourceMatchId: row.id ? String(row.id) : undefined,
     })
     
     router.push({ name: 'VideoAnalysis' })

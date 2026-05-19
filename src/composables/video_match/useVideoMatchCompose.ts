@@ -22,8 +22,9 @@ export function useVideoMatchCompose(selectedHistory: any, loadHistoryJobs: any)
     composePollInterval.value = window.setInterval(async () => {
       try {
         const res = await checkJobStatus(jobId)
-        if (res && res.job) {
-          const st = res.job.status
+        if (res) {
+          // getMixComposeApi returns MixComposeJobDto directly (no .job wrapper)
+          const st = res.status
           if (st === 'completed') {
             clearComposePoll()
             isComposing.value = false
@@ -55,23 +56,16 @@ export function useVideoMatchCompose(selectedHistory: any, loadHistoryJobs: any)
 
     isComposing.value = true
     try {
-      const payload = {
-        task_id: selectedHistory.value,
-        config: {
-          bgm_type: bgmType,
-          output_name: outputFileName,
-          fps: 30,
-          resolution: [1920, 1080]
-        }
-      }
-      
-      const res = await createVideoComposeJob(payload)
-      if (res && res.job_id) {
+      // startMixComposeApi takes (jobId, opts?): compose_id is returned at the top level
+      const res = await createVideoComposeJob(selectedHistory.value, {
+        prefer_srt: false,
+      })
+      if (res && res.compose_id) {
         ElMessage.success('已提交混剪任务，正在后台处理')
-        startComposePoll(res.job_id)
+        startComposePoll(res.compose_id)
       } else {
         isComposing.value = false
-        ElMessage.error('提交混剪任务失败: 缺少 job_id')
+        ElMessage.error('提交混剪任务失败: 缺少 compose_id')
       }
     } catch (e: any) {
       isComposing.value = false

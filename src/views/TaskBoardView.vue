@@ -186,7 +186,7 @@ async function loadImage(silent = false, targetIds?: string[]) {
       if (targetIds?.length) {
         data.history.forEach((newItem: Record<string, unknown>) => {
           const idx = imageRows.value.findIndex((r) => r.id === newItem.id || r.taskId === newItem.taskId)
-          if (idx !== -1) Object.assign(imageRows.value[idx], newItem)
+          if (idx !== -1) Object.assign(imageRows.value[idx]!, newItem)
         })
       } else {
         imageRows.value = data.history as Record<string, unknown>[]
@@ -211,7 +211,7 @@ async function loadVideo(silent = false, targetIds?: string[]) {
       if (targetIds?.length) {
         data.history.forEach((newItem: Record<string, unknown>) => {
           const idx = videoRows.value.findIndex((r) => r.id === newItem.id || r.taskId === newItem.taskId)
-          if (idx !== -1) Object.assign(videoRows.value[idx], newItem)
+          if (idx !== -1) Object.assign(videoRows.value[idx]!, newItem)
         })
       } else {
         videoRows.value = data.history as Record<string, unknown>[]
@@ -238,7 +238,7 @@ async function loadVmJobs(silent = false, targetIds?: string[]) {
       if (targetIds?.length) {
         data.jobs.forEach((newItem: Record<string, unknown>) => {
           const idx = vmJobRows.value.findIndex((r) => r.id === newItem.id || r.taskId === newItem.taskId)
-          if (idx !== -1) Object.assign(vmJobRows.value[idx], newItem)
+          if (idx !== -1) Object.assign(vmJobRows.value[idx]!, newItem)
         })
       } else {
         vmJobRows.value = data.jobs as Record<string, unknown>[]
@@ -262,7 +262,7 @@ async function loadMaterialMatches(silent = false, targetIds?: string[]) {
       if (targetIds?.length) {
         data.matches.forEach((newItem: Record<string, unknown>) => {
           const idx = materialMatchRows.value.findIndex((r) => r.id === newItem.id || r.taskId === newItem.taskId)
-          if (idx !== -1) Object.assign(materialMatchRows.value[idx], newItem)
+          if (idx !== -1) Object.assign(materialMatchRows.value[idx]!, newItem)
         })
       } else {
         materialMatchRows.value = data.matches as Record<string, unknown>[]

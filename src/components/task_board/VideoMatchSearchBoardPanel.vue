@@ -16,6 +16,13 @@ const statusLabel = (st: string) => {
   return '未知'
 }
 
+const statusTagType = (st: string): 'success' | 'danger' | 'warning' | 'info' => {
+  if (st === 'success') return 'success'
+  if (st === 'failed') return 'danger'
+  if (st === 'running') return 'warning'
+  return 'info'
+}
+
 const shortStr = (s: unknown, n = 48) => {
   if (s == null) return '—'
   const t = String(s)
