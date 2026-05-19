@@ -208,8 +208,8 @@ export function consumeVideoAnalysisPrefillFromMatch(): VideoAnalysisPrefillFrom
 
 export const videoAnalysisSearchCache = {
   get(key: string): { cards: ShotCard[]; search_mode?: string | null } | null {
-    let data = loadSearchFile()
-    let entries = pruneExpired(data.entries)
+    const data = loadSearchFile()
+    const entries = pruneExpired(data.entries)
     const idx = entries.findIndex((e) => e.key === key)
     if (idx < 0) {
       if (entries.length !== data.entries.length) saveSearchFile({ entries })

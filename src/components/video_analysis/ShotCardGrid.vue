@@ -205,7 +205,7 @@ function parseExplanation(explanation: any, matchedQueries: string[] = []): { it
     let mqIndex = 0
     items.forEach((item) => {
       if ((item.name === 'Score' || item.name === 'Sub-query Score') && mqIndex < matchedQueries.length) {
-        let mq = matchedQueries[mqIndex]
+        const mq = matchedQueries[mqIndex]
         if (mq.startsWith('knn_')) item.name = `KNN (${mq.replace('knn_', '').replace('_vector', '')})`
         else if (mq.startsWith('bm25_')) item.name = `BM25`
         else item.name = mq
@@ -293,7 +293,7 @@ function parseExplanation(explanation: any, matchedQueries: string[] = []): { it
                   class="score-breakdown"
                 >
                 <div class="score-title">
-                  得分明细 ({{ shot.is_fallback ? '路跑兜底' : (shot._search_mode?.includes('fuzzy') ? '混合检索' : '精确检索') }})
+                  得分明细 ({{ shot.is_fallback || shot._search_mode?.includes('fuzzy') ? '路跑兜底' : '精确检索' }})
                 </div>
                 <p v-if="shot.is_fallback" class="rrf-plain" style="color: #fbbf24; margin-bottom: 6px;">
                   ⚠️ 未完全匹配硬标签，由路跑兜底召回

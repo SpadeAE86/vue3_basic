@@ -423,6 +423,15 @@ function detailLookupKey(row: Record<string, unknown>): string {
   return pid || tid
 }
 
+
+const handleRetry = (row: Record<string, unknown>) => {
+  const s = boardSection.value
+  if (s === 'image') retryImageRow(row)
+  else if (s === 'video') retryVideoRow(row)
+  else if (s === 'video_match_transcribe') retryVmJobRow(row)
+  else if (s === 'video_match_search') retryMaterialMatchRow(row)
+}
+
 async function openDetail(row: Record<string, unknown>) {
   resetDetailDialogDefaults()
   detailVisible.value = true
@@ -1067,6 +1076,10 @@ watch(storyboardVisible, (open) => {
 watch(shotTranscribeVisible, (open) => {
   if (!open) shotTranscribeRow.value = null
 })
+
+const handleViewMaterialBoard = (row: any) => { console.log('View material board', row) }
+const handleNavigateToVideoAnalysis = (row: any, workspace: string) => { console.log('Navigate to video analysis', row, workspace) }
+
 </script>
 
 <template>
@@ -1119,25 +1132,25 @@ watch(shotTranscribeVisible, (open) => {
       <!-- 图像生成 -->
       <ImageBoardPanel
         v-if="boardSection === 'image'"
-        loading="loading" :rows="pagedRows" @detail="handleOpenDetail" @retry="handleRetry"
+        :loading="loading" :rows="pagedRows" :durationTick="durationTick" @detail="openDetail" @retry="handleRetry"
       />
 
       <!-- 视频分析 -->
       <VideoAnalysisBoardPanel
         v-else-if="boardSection === 'video'"
-        loading="loading" :rows="pagedRows" @detail="handleOpenDetail" @retry="handleRetry"
+        :loading="loading" :rows="pagedRows" :durationTick="durationTick" @detail="openDetail" @retry="handleRetry"
       />
 
       <!-- 视频匹配 · 脚本转写 -->
       <VideoMatchTranscribeBoardPanel
         v-else-if="boardSection === 'video_match_transcribe'"
-        loading="loading" :rows="pagedRows" @detail="handleOpenDetail" @retry="handleRetry" @storyboard="openStoryboard"
+        :loading="loading" :rows="pagedRows" :durationTick="durationTick" @detail="openDetail" @retry="handleRetry" @storyboard="openStoryboard"
       />
 
       <!-- 视频匹配 · 素材匹配 -->
       <VideoMatchSearchBoardPanel
         v-else-if="boardSection === 'video_match_search'"
-        loading="loading" :rows="pagedRows" @detail="handleOpenDetail" @retry="handleRetry" @view-material="handleViewMaterialBoard" @navigate-analysis="(r) => handleNavigateToVideoAnalysis(r, workspaceFilter)"
+        :loading="loading" :rows="pagedRows" :durationTick="durationTick" @detail="openDetail" @retry="handleRetry" @view-material="handleViewMaterialBoard" @navigate-analysis="(r) => handleNavigateToVideoAnalysis(r, workspaceFilter)"
       />
 
       <div class="pager">

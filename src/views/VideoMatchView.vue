@@ -389,7 +389,7 @@ async function goVideoAnalysisFromVmShot(row: VideoMatchShotDto) {
   // that would drop hits (Match uses relaxed partition filters with generic_hq_road_run fallback).
   const tokens = tagsJsonToSearchTokens((row.tags_json ?? {}) as Record<string, unknown>, [])
   if (row.segment_text?.trim()) {
-    tokens.unshift({ text: row.segment_text.trim(), join: 'OR', type: 'keyword' })
+    tokens.unshift({ id: Date.now().toString(), text: row.segment_text.trim(), join: 'OR', type: 'keyword' })
   }
   const snap = jobStrategySnapshot.value
   const bm25 = typeof snap?.bm25_weight === 'number' ? snap.bm25_weight : 0.3

@@ -6,14 +6,31 @@ import {
   rowStatusNorm,
   vmParseColStatus,
   vmRowNeedsLiveDurationTick,
+  statusTagType,
+  detailLookupKey,
 } from '@/views/task_board/taskBoardRowUtils'
+import { VideoCamera } from '@element-plus/icons-vue'
+
+const statusLabel = (st: string) => {
+  if (st === 'success') return '成功'
+  if (st === 'failed') return '失败'
+  if (st === 'running') return '进行中'
+  return '未知'
+}
+
+const shortStr = (s: unknown, n = 48) => {
+  if (s == null) return '—'
+  const t = String(s)
+  return t.length > n ? `${t.slice(0, n)}…` : t
+}
 
 const props = defineProps<{
   rows: Record<string, unknown>[]
   loading: boolean
+  durationTick: number
 }>()
 
-const emit = defineEmits(['detail', 'retry'])
+const emit = defineEmits(['detail', 'retry', 'jump'])
 </script>
 
 <template>
@@ -68,13 +85,12 @@ const emit = defineEmits(['detail', 'retry'])
         <el-table-column label="操作" width="220" fixed="right" align="center">
           <template #default="{ row }">
             <div class="va-board-op">
-              <el-button type="primary" link @click="openDetail(row)">查看详情</el-button>
+              <el-button type="primary" link @click="$emit('detail', row)">查看详情</el-button>
               <el-button
                 v-if="rowStatusNorm(row, 'video') === 'failed'"
                 type="primary"
                 link
-                :loading="vaRetryingId === String(row.id ?? '').trim()"
-                @click="retryVideoRow(row)"
+                @click="$emit('retry', row)"
               >
                 重试
               </el-button>
@@ -85,7 +101,7 @@ const emit = defineEmits(['detail', 'retry'])
                   circle
                   size="small"
                   aria-label="打开视频分析"
-                  @click="goVideoAnalysisFromBoardRow(row)"
+                  @click="$emit('jump', row)"
                 />
               </el-tooltip>
             </div>

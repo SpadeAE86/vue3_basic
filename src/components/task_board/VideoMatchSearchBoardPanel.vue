@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { Position } from '@element-plus/icons-vue'
 import {
   rowCreatedAt,
   rowDurationLabel,
@@ -8,9 +9,54 @@ import {
   vmRowNeedsLiveDurationTick,
 } from '@/views/task_board/taskBoardRowUtils'
 
+const statusLabel = (st: string) => {
+  if (st === 'success') return '成功'
+  if (st === 'failed') return '失败'
+  if (st === 'running') return '进行中'
+  return '未知'
+}
+
+const shortStr = (s: unknown, n = 48) => {
+  if (s == null) return '—'
+  const t = String(s)
+  return t.length > n ? `${t.slice(0, n)}…` : t
+}
+
+const materialSourceLabel = (src: unknown) => {
+  if (src === 'video_match_shot') return '视频匹配-分镜'
+  if (src === 'video_analysis_search') return '视频分析-手工'
+  return String(src || '—')
+}
+
+const formatMaterialStrategyTemplate = (snap: unknown) => {
+  if (!snap || typeof snap !== 'object') return '—'
+  const bm25 = (snap as any).bm25_weight ?? 0.3
+  const vec = (snap as any).vector_weight ?? 0.7
+  const rrf = !!(snap as any).use_rrf
+  return `BM25(${bm25}) / 向量(${vec}) ${rrf ? '[RRF]' : ''}`
+}
+
+const canJumpVideoAnalysisFromMaterialRow = (row: Record<string, unknown>): boolean => {
+  const src = String(row.source ?? '')
+  if (src === 'video_analysis_search') {
+    if (String(row.va_context_history_id ?? '').trim()) return true
+    return !!String(row.query_preview ?? '').trim()
+  }
+  if (src === 'video_match_shot') {
+    return !!String(row.video_match_job_id ?? '').trim() && Number(row.video_match_shot_row_id ?? 0) > 0
+  }
+  return false
+}
+
+const materialMatchCanRetry = (row: Record<string, unknown>) => {
+  return String(row.source) === 'video_match_shot' && rowStatusNorm(row, 'video_match_search') === 'failed'
+}
+
+
 const props = defineProps<{
   rows: Record<string, unknown>[]
   loading: boolean
+  durationTick: number
 }>()
 
 const emit = defineEmits(['detail', 'retry', 'view-material', 'navigate-analysis'])
@@ -91,7 +137,7 @@ const emit = defineEmits(['detail', 'retry', 'view-material', 'navigate-analysis
         <el-table-column label="操作" width="240" fixed="right" align="center">
           <template #default="{ row }">
             <div class="op-links">
-              <el-button type="primary" link @click="openDetail(row)">查看详情</el-button>
+              <el-button type="primary" link @click="$emit('detail', row)">查看详情</el-button>
               <el-tooltip
                 content="回到视频分析：若当时挂在某条分析上会直接定位；全库搜索则用本行检索摘要与模板权重自动再搜（与分镜跳转一致）"
                 placement="top"
@@ -103,15 +149,15 @@ const emit = defineEmits(['detail', 'retry', 'view-material', 'navigate-analysis
                   size="small"
                   :disabled="!canJumpVideoAnalysisFromMaterialRow(row)"
                   aria-label="跳转视频分析"
-                  @click="goVideoAnalysisFromMaterialRow(row)"
+                  @click="$emit('navigate-analysis', row)"
                 />
               </el-tooltip>
               <el-button
                 v-if="materialMatchCanRetry(row)"
                 type="primary"
                 link
-                :loading="mmRetryingKey === `${String(row.video_match_job_id ?? '').trim()}:${Number(row.video_match_shot_row_id ?? 0)}`"
-                @click="retryMaterialMatchRow(row)"
+                
+                @click="$emit('retry', row)"
               >
                 重试
               </el-button>

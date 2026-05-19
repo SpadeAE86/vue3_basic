@@ -6,11 +6,22 @@ import {
   rowStatusNorm,
   vmParseColStatus,
   vmRowNeedsLiveDurationTick,
+  statusTagType,
+  imagePromptPreview,
+  detailLookupKey,
 } from '@/views/task_board/taskBoardRowUtils'
+
+const statusLabel = (st: string) => {
+  if (st === 'success') return '成功'
+  if (st === 'failed') return '失败'
+  if (st === 'running') return '进行中'
+  return '未知'
+}
 
 const props = defineProps<{
   rows: Record<string, unknown>[]
   loading: boolean
+  durationTick: number
 }>()
 
 const emit = defineEmits(['detail', 'retry'])
@@ -61,13 +72,12 @@ const emit = defineEmits(['detail', 'retry'])
         <el-table-column label="操作" width="168" fixed="right" align="center">
           <template #default="{ row }">
             <div class="op-links">
-              <el-button type="primary" link @click="openDetail(row)">查看详情</el-button>
+              <el-button type="primary" link @click="$emit('detail', row)">查看详情</el-button>
               <el-button
                 v-if="rowStatusNorm(row, 'image') === 'failed'"
                 type="primary"
                 link
-                :loading="imageRetryingId === detailLookupKey(row)"
-                @click="retryImageRow(row)"
+                @click="$emit('retry', row)"
               >
                 重试
               </el-button>

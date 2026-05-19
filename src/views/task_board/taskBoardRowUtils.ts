@@ -169,3 +169,27 @@ export function vmRowNeedsLiveDurationTick(r: Record<string, unknown>, section: 
   }
   return false
 }
+
+export function statusTagType(st: string) {
+  if (st === 'success') return 'success'
+  if (st === 'failed') return 'danger'
+  if (st === 'running') return 'warning'
+  if (st === 'pending_match') return 'info'
+  return 'info'
+}
+
+/** 列表中的提示词：前 10 字 + ...，便于区分记录 */
+export function imagePromptPreview(row: Record<string, unknown>) {
+  const p = row.prompt
+  if (p == null) return '—'
+  const t = String(p).trim()
+  if (!t) return '—'
+  return t.length > 10 ? `${t.slice(0, 10)}...` : t
+}
+
+/** 与表格「任务 ID」列一致优先用 id，兼容仅 taskId 的旧数据；两端 strip 避免隐性空白 */
+export function detailLookupKey(row: Record<string, unknown>): string {
+  const pid = row.id != null && String(row.id).trim() !== '' ? String(row.id).trim() : ''
+  const tid = row.taskId != null && String(row.taskId).trim() !== '' ? String(row.taskId).trim() : ''
+  return pid || tid
+}

@@ -15,7 +15,7 @@ const isBackendConnected = ref(false)
 const routerViewKey = ref(0)
 let statusCheckTimer: number
 let vaBadgeTimer: number
-let isFirstHealthCheck = true
+const isFirstHealthCheck = true
 /** 连续健康检查失败次数；单次超时或丢包不致立刻显示「未连接」（匹配/分析抢占用时更稳） */
 let healthFailStreak = 0
 /** 避免首屏首次连上时误触发 RouterView 重挂（会把当前页状态刷没） */

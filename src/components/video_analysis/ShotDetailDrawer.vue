@@ -165,7 +165,7 @@ const HIGHLIGHT_FIELD_LABEL: Record<string, string> = {
 
 const searchModeLabel: Record<string, string> = {
   precise: '精准匹配 (BM25关键词)',
-  fuzzy:   '模糊匹配 (BM25 + KNN语义)',
+  fuzzy:   '路跑兜底 (BM25 + 向量)',
 }
 
 const highlightEntries = computed(() => {

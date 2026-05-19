@@ -6,11 +6,31 @@ import {
   rowStatusNorm,
   vmParseColStatus,
   vmRowNeedsLiveDurationTick,
+  statusTagType,
 } from '@/views/task_board/taskBoardRowUtils'
+
+const statusLabel = (st: string) => {
+  if (st === 'success') return '成功'
+  if (st === 'failed') return '失败'
+  if (st === 'running') return '进行中'
+  return '未知'
+}
+
+const vmJobTitle = (row: Record<string, unknown>) => {
+  const t = row.title != null && String(row.title).trim() ? String(row.title).trim() : ''
+  const top = row.topic != null && String(row.topic).trim() ? String(row.topic).trim() : ''
+  if (t && top) return `${t} / ${top}`
+  return t || top || '—'
+}
+
+const vmJobCanRetryTranscribe = (row: Record<string, unknown>) => {
+  return vmParseColStatus(row) === 'failed'
+}
 
 const props = defineProps<{
   rows: Record<string, unknown>[]
   loading: boolean
+  durationTick: number
 }>()
 
 const emit = defineEmits(['detail', 'retry', 'storyboard'])
@@ -58,14 +78,13 @@ const emit = defineEmits(['detail', 'retry', 'storyboard'])
         <el-table-column label="操作" width="220" fixed="right" align="center">
           <template #default="{ row }">
             <div class="op-links">
-              <el-button type="primary" link @click="openDetail(row)">查看详情</el-button>
-              <el-button type="primary" link @click="openStoryboard(row)">查看分镜</el-button>
+              <el-button type="primary" link @click="$emit('detail', row)">查看详情</el-button>
+              <el-button type="primary" link @click="$emit('storyboard', row)">查看分镜</el-button>
               <el-button
                 v-if="vmJobCanRetryTranscribe(row)"
                 type="primary"
                 link
-                :loading="vmRetryingId === String(row.id ?? '').trim()"
-                @click="retryVmJobRow(row)"
+                @click="$emit('retry', row)"
               >
                 重试
               </el-button>
