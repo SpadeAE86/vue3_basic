@@ -31,6 +31,10 @@ import { tagsJsonToSearchTokens, DEFAULT_TOKEN_JOIN_AND_FIELDS } from '@/utils/m
 import { stashVideoAnalysisPrefillFromMatch, stashVideoAnalysisNavFromBoard } from '@/utils/videoAnalysisSessionCache'
 import { computeVideoAnalysisSearchCacheKey } from '@/utils/videoAnalysisSearchKey'
 import { type BoardSection, isVmBoard } from '@/views/task_board/taskBoardTypes'
+import ImageBoardPanel from '@/components/task_board/ImageBoardPanel.vue'
+import VideoAnalysisBoardPanel from '@/components/task_board/VideoAnalysisBoardPanel.vue'
+import VideoMatchTranscribeBoardPanel from '@/components/task_board/VideoMatchTranscribeBoardPanel.vue'
+import VideoMatchSearchBoardPanel from '@/components/task_board/VideoMatchSearchBoardPanel.vue'
 import {
   rowCreatedAt,
   rowDurationLabel,
@@ -1113,307 +1117,28 @@ watch(shotTranscribeVisible, (open) => {
       </el-form>
 
       <!-- 图像生成 -->
-      <el-table
+      <ImageBoardPanel
         v-if="boardSection === 'image'"
-        v-loading="loading"
-        :data="pagedRows"
-        stripe
-        :border="false"
-        class="admin-table"
-        header-cell-class-name="admin-th"
-        style="width: 100%"
-      >
-        <el-table-column prop="id" label="任务 ID" min-width="120" show-overflow-tooltip />
-        <el-table-column label="总状态" width="104" align="center">
-          <template #default="{ row }">
-            <el-tag
-              :type="statusTagType(rowStatusNorm(row, 'image'))"
-              effect="light"
-              size="small"
-              class="status-pill status-tag-admin"
-            >
-              {{ statusLabel(rowStatusNorm(row, 'image')) }}
-            </el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column label="提示词" min-width="140">
-          <template #default="{ row }">
-            <span class="prompt-clip" :title="row.prompt != null && String(row.prompt).trim() ? String(row.prompt) : ''">
-              {{ imagePromptPreview(row) }}
-            </span>
-          </template>
-        </el-table-column>
-        <el-table-column label="创建时间" min-width="168">
-          <template #default="{ row }">
-            {{ rowCreatedAt(row)?.toLocaleString() ?? '—' }}
-          </template>
-        </el-table-column>
-        <el-table-column label="耗时" width="120" align="center">
-          <template #default="{ row }">
-            {{ rowDurationLabel(row, 'image', durationTick) }}
-          </template>
-        </el-table-column>
-        <el-table-column prop="model" label="模型" width="130" show-overflow-tooltip />
-        <el-table-column prop="type" label="类型" width="72" />
-        <el-table-column label="操作" width="168" fixed="right" align="center">
-          <template #default="{ row }">
-            <div class="op-links">
-              <el-button type="primary" link @click="openDetail(row)">查看详情</el-button>
-              <el-button
-                v-if="rowStatusNorm(row, 'image') === 'failed'"
-                type="primary"
-                link
-                :loading="imageRetryingId === detailLookupKey(row)"
-                @click="retryImageRow(row)"
-              >
-                重试
-              </el-button>
-            </div>
-          </template>
-        </el-table-column>
-      </el-table>
+        loading="loading" :rows="pagedRows" @detail="handleOpenDetail" @retry="handleRetry"
+      />
 
       <!-- 视频分析 -->
-      <el-table
+      <VideoAnalysisBoardPanel
         v-else-if="boardSection === 'video'"
-        v-loading="loading"
-        :data="pagedRows"
-        stripe
-        :border="false"
-        class="admin-table"
-        header-cell-class-name="admin-th"
-        style="width: 100%"
-      >
-        <el-table-column prop="id" label="分析 ID" min-width="120" show-overflow-tooltip />
-        <el-table-column label="总状态" width="104" align="center">
-          <template #default="{ row }">
-            <el-tag
-              :type="statusTagType(rowStatusNorm(row, 'video'))"
-              effect="light"
-              size="small"
-              class="status-pill status-tag-admin"
-            >
-              {{ statusLabel(rowStatusNorm(row, 'video')) }}
-            </el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column label="产品名" min-width="100" show-overflow-tooltip>
-          <template #default="{ row }">
-            {{ row.car_model != null && String(row.car_model).trim() ? String(row.car_model).trim() : '—' }}
-          </template>
-        </el-table-column>
-        <el-table-column label="创建时间" min-width="168">
-          <template #default="{ row }">
-            {{ rowCreatedAt(row)?.toLocaleString() ?? '—' }}
-          </template>
-        </el-table-column>
-        <el-table-column label="耗时" width="120" align="center">
-          <template #default="{ row }">
-            {{ rowDurationLabel(row, 'video', durationTick) }}
-          </template>
-        </el-table-column>
-        <el-table-column label="视频标题" min-width="200" show-overflow-tooltip>
-          <template #default="{ row }">
-            {{ shortStr(row.name, 48) }}
-          </template>
-        </el-table-column>
-        <el-table-column prop="workspace" label="工作区" width="88" />
-        <el-table-column label="视频地址" min-width="200" show-overflow-tooltip>
-          <template #default="{ row }">
-            {{ shortStr(row.video_url, 40) }}
-          </template>
-        </el-table-column>
-        <el-table-column label="操作" width="220" fixed="right" align="center">
-          <template #default="{ row }">
-            <div class="va-board-op">
-              <el-button type="primary" link @click="openDetail(row)">查看详情</el-button>
-              <el-button
-                v-if="rowStatusNorm(row, 'video') === 'failed'"
-                type="primary"
-                link
-                :loading="vaRetryingId === String(row.id ?? '').trim()"
-                @click="retryVideoRow(row)"
-              >
-                重试
-              </el-button>
-              <el-tooltip content="在视频分析中打开此记录（已选工作区与历史）" placement="top">
-                <el-button
-                  class="va-jump-icon-btn"
-                  :icon="VideoCamera"
-                  circle
-                  size="small"
-                  aria-label="打开视频分析"
-                  @click="goVideoAnalysisFromBoardRow(row)"
-                />
-              </el-tooltip>
-            </div>
-          </template>
-        </el-table-column>
-      </el-table>
+        loading="loading" :rows="pagedRows" @detail="handleOpenDetail" @retry="handleRetry"
+      />
 
       <!-- 视频匹配 · 脚本转写 -->
-      <el-table
+      <VideoMatchTranscribeBoardPanel
         v-else-if="boardSection === 'video_match_transcribe'"
-        v-loading="loading"
-        :data="pagedRows"
-        stripe
-        :border="false"
-        class="admin-table"
-        header-cell-class-name="admin-th"
-        style="width: 100%"
-      >
-        <el-table-column prop="id" label="任务 ID" min-width="120" show-overflow-tooltip />
-        <el-table-column label="转写状态" width="104" align="center">
-          <template #default="{ row }">
-            <el-tag
-              :type="statusTagType(vmParseColStatus(row))"
-              effect="light"
-              size="small"
-              class="status-pill status-tag-admin"
-            >
-              {{ statusLabel(vmParseColStatus(row)) }}
-            </el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column label="标题/主题" min-width="160" show-overflow-tooltip>
-          <template #default="{ row }">
-            {{ vmJobTitle(row) }}
-          </template>
-        </el-table-column>
-        <el-table-column label="创建时间" min-width="168">
-          <template #default="{ row }">
-            {{ rowCreatedAt(row)?.toLocaleString() ?? '—' }}
-          </template>
-        </el-table-column>
-        <el-table-column label="耗时" width="120" align="center">
-          <template #default="{ row }">
-            {{ rowDurationLabel(row, 'video_match_transcribe', durationTick) }}
-          </template>
-        </el-table-column>
-        <el-table-column prop="workspace" label="工作区" width="88" />
-        <el-table-column label="操作" width="220" fixed="right" align="center">
-          <template #default="{ row }">
-            <div class="op-links">
-              <el-button type="primary" link @click="openDetail(row)">查看详情</el-button>
-              <el-button type="primary" link @click="openStoryboard(row)">查看分镜</el-button>
-              <el-button
-                v-if="vmJobCanRetryTranscribe(row)"
-                type="primary"
-                link
-                :loading="vmRetryingId === String(row.id ?? '').trim()"
-                @click="retryVmJobRow(row)"
-              >
-                重试
-              </el-button>
-            </div>
-          </template>
-        </el-table-column>
-      </el-table>
+        loading="loading" :rows="pagedRows" @detail="handleOpenDetail" @retry="handleRetry" @storyboard="openStoryboard"
+      />
 
       <!-- 视频匹配 · 素材匹配 -->
-      <el-table
+      <VideoMatchSearchBoardPanel
         v-else-if="boardSection === 'video_match_search'"
-        v-loading="loading"
-        :data="pagedRows"
-        stripe
-        :border="false"
-        class="admin-table"
-        header-cell-class-name="admin-th"
-        style="width: 100%"
-      >
-        <el-table-column prop="id" label="履历 ID" min-width="112" show-overflow-tooltip />
-        <el-table-column label="来源" width="120" show-overflow-tooltip>
-          <template #default="{ row }">
-            {{ materialSourceLabel(row.source) }}
-          </template>
-        </el-table-column>
-        <el-table-column label="总状态" width="104" align="center">
-          <template #default="{ row }">
-            <el-tag
-              :type="statusTagType(rowStatusNorm(row, 'video_match_search'))"
-              effect="light"
-              size="small"
-              class="status-pill status-tag-admin"
-            >
-              {{ statusLabel(rowStatusNorm(row, 'video_match_search')) }}
-            </el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column label="检索摘要" min-width="160" show-overflow-tooltip>
-          <template #default="{ row }">
-            {{ shortStr(row.query_preview, 64) }}
-          </template>
-        </el-table-column>
-        <el-table-column label="命中数" width="72" align="center">
-          <template #default="{ row }">
-            {{ row.hit_count != null ? row.hit_count : '—' }}
-          </template>
-        </el-table-column>
-        <el-table-column label="Top1 视频" min-width="140" show-overflow-tooltip>
-          <template #default="{ row }">
-            <a
-              v-if="(row.top1_obs_url || '').trim()"
-              class="match-url-link"
-              :href="(row.top1_obs_url || '').trim()"
-              target="_blank"
-              rel="noopener noreferrer"
-              >{{ shortStr(row.top1_obs_url, 36) }}</a
-            >
-            <span v-else class="muted-small">—</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="检索模板" min-width="168" show-overflow-tooltip>
-          <template #default="{ row }">
-            {{ formatMaterialStrategyTemplate(row.strategy_snapshot) }}
-          </template>
-        </el-table-column>
-        <el-table-column label="模式" width="88" show-overflow-tooltip>
-          <template #default="{ row }">
-            {{ row.search_mode || '—' }}
-          </template>
-        </el-table-column>
-        <el-table-column label="创建时间" min-width="168">
-          <template #default="{ row }">
-            {{ rowCreatedAt(row)?.toLocaleString() ?? '—' }}
-          </template>
-        </el-table-column>
-        <el-table-column label="耗时" width="120" align="center">
-          <template #default="{ row }">
-            {{ rowDurationLabel(row, 'video_match_search', durationTick) }}
-          </template>
-        </el-table-column>
-        <el-table-column prop="workspace" label="工作区" width="88" />
-        <el-table-column label="操作" width="240" fixed="right" align="center">
-          <template #default="{ row }">
-            <div class="op-links">
-              <el-button type="primary" link @click="openDetail(row)">查看详情</el-button>
-              <el-tooltip
-                content="回到视频分析：若当时挂在某条分析上会直接定位；全库搜索则用本行检索摘要与模板权重自动再搜（与分镜跳转一致）"
-                placement="top"
-              >
-                <el-button
-                  class="va-jump-icon-btn"
-                  :icon="Position"
-                  circle
-                  size="small"
-                  :disabled="!canJumpVideoAnalysisFromMaterialRow(row)"
-                  aria-label="跳转视频分析"
-                  @click="goVideoAnalysisFromMaterialRow(row)"
-                />
-              </el-tooltip>
-              <el-button
-                v-if="materialMatchCanRetry(row)"
-                type="primary"
-                link
-                :loading="mmRetryingKey === `${String(row.video_match_job_id ?? '').trim()}:${Number(row.video_match_shot_row_id ?? 0)}`"
-                @click="retryMaterialMatchRow(row)"
-              >
-                重试
-              </el-button>
-            </div>
-          </template>
-        </el-table-column>
-      </el-table>
+        loading="loading" :rows="pagedRows" @detail="handleOpenDetail" @retry="handleRetry" @view-material="handleViewMaterialBoard" @navigate-analysis="(r) => handleNavigateToVideoAnalysis(r, workspaceFilter)"
+      />
 
       <div class="pager">
         <el-pagination

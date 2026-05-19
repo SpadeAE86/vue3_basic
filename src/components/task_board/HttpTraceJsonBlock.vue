@@ -57,4 +57,27 @@ async function copyJson() {
   margin-right: 4px;
   vertical-align: middle;
 }
+
+.code-block {
+  margin: 0;
+  padding: 12px 14px;
+  background: #f5f5f5;
+  border: 1px solid #e8e8e8;
+  border-radius: 2px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  max-height: 400px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.code-block.muted {
+  color: #8c8c8c;
+}
+
+.code-block--shot-trace {
+  max-height: min(48vh, 520px);
+}
 </style>
