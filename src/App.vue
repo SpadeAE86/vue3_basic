@@ -120,6 +120,7 @@ onUnmounted(() => {
         :default-active="route.path"
         :default-openeds="defaultMenuOpeneds"
         :collapse="isCollapsed"
+        :collapse-transition="false"
         router
         class="aside-menu"
       >

@@ -88,7 +88,7 @@ export async function submitVideoAnalysisApi(
   const controller = new AbortController()
   const t = window.setTimeout(() => controller.abort(), VIDEO_ANALYSIS_SUBMIT_TIMEOUT_MS)
   try {
-    const resp = await fetch(`${API_BASE}/video-analysis`, {
+    const resp = await fetch(`${API_BASE}/video-analysis/`, {
       method: 'POST',
       body: form,
       signal: controller.signal,
@@ -176,7 +176,7 @@ export async function analyzeVideoApi(
   const controller = new AbortController()
   const postTimer = window.setTimeout(() => controller.abort(), VIDEO_ANALYSIS_POST_TIMEOUT_MS)
   try {
-    const resp = await fetch(`${API_BASE}/video-analysis`, {
+    const resp = await fetch(`${API_BASE}/video-analysis/`, {
       method: 'POST',
       body: form,
       signal: controller.signal,

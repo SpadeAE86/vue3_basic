@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import VideoAnalysisUploadPanel from '@/components/video_analysis/VideoAnalysisUploadPanel.vue'
+import VideoAnalysisRewriteDialog from '@/components/video_analysis/VideoAnalysisRewriteDialog.vue'
 import { ref, reactive, computed, onMounted, watch, onBeforeUnmount, nextTick } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { MagicStick, Setting } from '@element-plus/icons-vue'
@@ -975,42 +977,15 @@ onBeforeUnmount(() => {
         </TagSearchBar>
       </div>
 
-      <div class="va-upload-panel">
-        <div class="va-upload-actions">
-          <el-upload
-            class="compact-uploader"
-            action="#"
-            :auto-upload="false"
-            :show-file-list="false"
-            multiple
-            :limit="MAX_BATCH_VIDEOS"
-            @change="handleFileChange"
-            :on-exceed="handleUploadExceed"
-            accept="video/*"
-          >
-            <el-button type="default">
-              <el-icon class="el-icon--left"><i-ep-video-camera /></el-icon>
-              选择视频
-            </el-button>
-          </el-upload>
-
-          <span
-            v-if="selectedFiles.length > 0"
-            class="compact-file-info"
-            :title="selectedFiles.map((f) => f.name).join(', ')"
-          >
-            已选 {{ selectedFiles.length }} 个文件
-          </span>
-
-          <el-button
-            type="primary"
-            @click="openCarModelDialog"
-            :loading="isSubmittingBatch"
-            :disabled="selectedFiles.length === 0"
-          >
-            {{ isSubmittingBatch ? '提交中...' : '开始分析' }}
-          </el-button>
-        </div>
+      <div class="va-upload-panel-container">
+        <VideoAnalysisUploadPanel
+          :selected-files="selectedFiles"
+          :is-submitting-batch="isSubmittingBatch"
+          :MAX_BATCH_VIDEOS="MAX_BATCH_VIDEOS"
+          @handleFileChange="handleFileChange"
+          @handleUploadExceed="handleUploadExceed"
+          @openCarModelDialog="openCarModelDialog"
+        />
       </div>
     </el-card>
 
@@ -1032,81 +1007,15 @@ onBeforeUnmount(() => {
     <ShotDetailDrawer v-model="drawerOpen" :shot="activeShot" />
 
     <!-- 智能提取弹窗 -->
-    <el-dialog
-      v-model="rewriteTaskState.dialogVisible"
-      title="智能提取搜索条件"
-      width="500px"
-    >
-      <el-form :model="rewriteTaskState.form" label-width="80px">
-        <el-form-item label="口播脚本">
-          <el-input
-            v-model="rewriteTaskState.form.script"
-            type="textarea"
-            :rows="4"
-            placeholder="例如：智己LS6，城市道路，展示一键泊车功能..."
-          />
-        </el-form-item>
-        <el-form-item label="主题">
-          <el-input v-model="rewriteTaskState.form.topic" placeholder="选填" />
-        </el-form-item>
-        <el-form-item label="标题">
-          <el-input v-model="rewriteTaskState.form.title" placeholder="选填" />
-        </el-form-item>
-        <el-form-item label="车型">
-          <el-select
-            v-model="rewriteTaskState.form.car_model"
-            placeholder="请选择车型（影响卖点词表与拆条）"
-            clearable
-            style="width: 100%"
-          >
-            <el-option
-              v-for="opt in ZHIJI_CAR_MODEL_OPTIONS"
-              :key="opt.value"
-              :label="opt.label"
-              :value="opt.value"
-            />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="画面比例">
-          <el-select
-            v-model="rewriteTaskState.form.frame_size"
-            placeholder="选填：与素材库 frame_size 一致；是否在提取中标为 AND 由 AND 模板配置"
-            clearable
-            style="width: 100%"
-          >
-            <el-option
-              v-for="opt in rewriteFrameSizeOptions"
-              :key="`va_fs_${opt.value || 'any'}`"
-              :label="opt.label"
-              :value="opt.value"
-            />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="横竖屏">
-          <el-select
-            v-model="rewriteTaskState.form.frame_orientation"
-            placeholder="选填：仅横竖屏 keyword（frame_orientation），不定比例"
-            clearable
-            style="width: 100%"
-          >
-            <el-option
-              v-for="opt in VIDEO_FRAME_ORIENTATION_OPTIONS"
-              :key="`va_fo_${opt.value || 'any'}`"
-              :label="opt.label"
-              :value="opt.value"
-            />
-          </el-select>
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <span class="dialog-footer">
-          <el-button @click="rewriteTaskState.dialogVisible = false">取消</el-button>
-          <el-button type="primary" @click="submitRewrite" :loading="rewriteTaskState.isRewriting">
-            提取
-          </el-button>
-        </span>
-      </template>
-    </el-dialog>
+    <VideoAnalysisRewriteDialog
+      v-model:dialogVisible="rewriteTaskState.dialogVisible"
+      :form="rewriteTaskState.form"
+      :is-rewriting="rewriteTaskState.isRewriting"
+      :ZHIJI_CAR_MODEL_OPTIONS="ZHIJI_CAR_MODEL_OPTIONS"
+      :rewrite-frame-size-options="rewriteFrameSizeOptions"
+      :VIDEO_FRAME_ORIENTATION_OPTIONS="VIDEO_FRAME_ORIENTATION_OPTIONS"
+      @submitRewrite="submitRewrite"
+    />
 
     <!-- 车型输入弹窗 -->
     <el-dialog

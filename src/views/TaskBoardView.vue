@@ -6,15 +6,15 @@ import { Position, VideoCamera } from '@element-plus/icons-vue'
 import {
   fetchImageHistoryForBoard,
   fetchVideoAnalysisHistoryForBoard,
+  fetchVideoMatchJobsForBoard,
+  fetchMaterialMatchesForBoard,
   fetchImageTaskDetail,
   fetchVideoAnalysisTaskDetail,
-  fetchVideoMatchJobsForBoard,
   fetchVideoMatchJobTaskDetail,
-  fetchMaterialMatchesForBoard,
   fetchMaterialMatchTaskDetail,
   retryImageHistoryTask,
   retryVideoAnalysisHistoryTask,
-  retryVideoMatchJobTask,
+  retryVideoMatchJobTask
 } from '@/api/taskBoard'
 import {
   getVideoMatchJobApi,
@@ -31,6 +31,8 @@ import { tagsJsonToSearchTokens, DEFAULT_TOKEN_JOIN_AND_FIELDS } from '@/utils/m
 import { stashVideoAnalysisPrefillFromMatch, stashVideoAnalysisNavFromBoard } from '@/utils/videoAnalysisSessionCache'
 import { computeVideoAnalysisSearchCacheKey } from '@/utils/videoAnalysisSearchKey'
 import { type BoardSection, isVmBoard } from '@/views/task_board/taskBoardTypes'
+import { useTaskBoardPolling } from '@/composables/task_board/useTaskBoardPolling'
+import TaskBoardFilterForm from '@/components/task_board/TaskBoardFilterForm.vue'
 import ImageBoardPanel from '@/components/task_board/ImageBoardPanel.vue'
 import VideoAnalysisBoardPanel from '@/components/task_board/VideoAnalysisBoardPanel.vue'
 import VideoMatchTranscribeBoardPanel from '@/components/task_board/VideoMatchTranscribeBoardPanel.vue'
@@ -61,6 +63,125 @@ const imageRows = ref<Record<string, unknown>[]>([])
 const videoRows = ref<Record<string, unknown>[]>([])
 const vmJobRows = ref<Record<string, unknown>[]>([])
 const materialMatchRows = ref<Record<string, unknown>[]>([])
+
+async function loadImage(silent = false, targetIds?: string[]) {
+  if (!silent) loading.value = true
+  try {
+    const data = await fetchImageHistoryForBoard(targetIds?.length ? { ids: targetIds.join(',') } : undefined)
+    if (data?.success && Array.isArray(data.history)) {
+      if (targetIds?.length) {
+        data.history.forEach((newItem: Record<string, unknown>) => {
+          const idx = imageRows.value.findIndex((r) => r.id === newItem.id || r.taskId === newItem.taskId)
+          if (idx !== -1 && imageRows.value[idx]) Object.assign(imageRows.value[idx]!, newItem)
+        })
+      } else {
+        imageRows.value = data.history as Record<string, unknown>[]
+      }
+    } else if (!targetIds?.length) {
+      imageRows.value = []
+    }
+  } finally {
+    if (!silent) loading.value = false
+  }
+}
+
+async function loadVideo(silent = false, targetIds?: string[]) {
+  if (!silent) loading.value = true
+  try {
+    const params = {
+      workspace: workspaceFilter.value || undefined,
+      ids: targetIds?.length ? targetIds.join(',') : undefined
+    }
+    const data = await fetchVideoAnalysisHistoryForBoard(params)
+    if (data?.success && Array.isArray(data.history)) {
+      if (targetIds?.length) {
+        data.history.forEach((newItem: Record<string, unknown>) => {
+          const idx = videoRows.value.findIndex((r) => r.id === newItem.id || r.taskId === newItem.taskId)
+          if (idx !== -1 && videoRows.value[idx]) Object.assign(videoRows.value[idx]!, newItem)
+        })
+      } else {
+        videoRows.value = data.history as Record<string, unknown>[]
+      }
+    } else if (!targetIds?.length) {
+      videoRows.value = []
+    }
+  } finally {
+    if (!silent) loading.value = false
+  }
+}
+
+async function loadMaterialMatches(silent = false, targetIds?: string[]) {
+  if (!silent) loading.value = true
+  try {
+    const ws = workspaceFilter.value.trim() || undefined
+    const params: { limit: number; workspace?: string; ids?: string } = { limit: 100, workspace: ws }
+    if (targetIds?.length) params.ids = targetIds.join(',')
+    const data = await fetchMaterialMatchesForBoard(params)
+    if (data?.success && Array.isArray(data.matches)) {
+      if (targetIds?.length) {
+        data.matches.forEach((newItem: Record<string, unknown>) => {
+          const idx = materialMatchRows.value.findIndex((r) => r.id === newItem.id || r.taskId === newItem.taskId)
+          if (idx !== -1 && materialMatchRows.value[idx]) Object.assign(materialMatchRows.value[idx]!, newItem)
+        })
+      } else {
+        materialMatchRows.value = data.matches as Record<string, unknown>[]
+      }
+    } else if (!targetIds?.length) {
+      materialMatchRows.value = []
+    }
+  } finally {
+    if (!silent) loading.value = false
+  }
+}
+
+async function loadVmJobs(silent = false, targetIds?: string[]) {
+  if (!silent) loading.value = true
+  try {
+    const ws = workspaceFilter.value.trim() || undefined
+    const params: { workspace?: string; limit: number; ids?: string } = {
+      limit: 100,
+      workspace: ws,
+    }
+    if (targetIds?.length) params.ids = targetIds.join(',')
+    const data = await fetchVideoMatchJobsForBoard(params)
+    if (data?.success && Array.isArray(data.jobs)) {
+      if (targetIds?.length) {
+        data.jobs.forEach((newItem: Record<string, unknown>) => {
+          const idx = vmJobRows.value.findIndex((r) => r.id === newItem.id || r.taskId === newItem.taskId)
+          if (idx !== -1 && vmJobRows.value[idx]) Object.assign(vmJobRows.value[idx]!, newItem)
+        })
+      } else {
+        vmJobRows.value = data.jobs as Record<string, unknown>[]
+      }
+    } else if (!targetIds?.length) {
+      vmJobRows.value = []
+    }
+  } finally {
+    if (!silent) loading.value = false
+  }
+}
+
+const { durationTick } = useTaskBoardPolling({
+  boardSection,
+  imageRows,
+  videoRows,
+  materialMatchRows,
+  vmJobRows,
+  loadImage,
+  loadVideo,
+  loadMaterialMatches,
+  loadVmJobs,
+  rowStatusNorm
+})
+
+
+async function refresh() {
+  const s = boardSection.value
+  if (s === 'image') await loadImage()
+  else if (s === 'video') await loadVideo()
+  else if (s === 'video_match_transcribe') await loadVmJobs()
+  else if (s === 'video_match_search') await loadMaterialMatches()
+}
 
 const dateRange = ref<[Date, Date] | null>(null)
 const statusFilter = ref<string>('')
@@ -93,30 +214,7 @@ const storyboardJobStrategySnapshot = ref<Record<string, unknown> | null>(null)
 const shotRematchingId = ref<number | null>(null)
 
 /** 有进行中的生图/视频分析任务时每秒 +1，驱动「耗时」列用当前时间 - 本轮开始时间/创建时间动态展示（仅小表） */
-const durationTick = ref(0)
-let durationLiveTimer: ReturnType<typeof setInterval> | null = null
 
-function syncRunningDurationTimer() {
-  const need =
-    (boardSection.value === 'image' &&
-      imageRows.value.some((r) => rowStatusNorm(r, 'image') === 'running')) ||
-    (boardSection.value === 'video' &&
-      videoRows.value.some((r) => rowStatusNorm(r, 'video') === 'running')) ||
-    (boardSection.value === 'video_match_search' &&
-      materialMatchRows.value.some((r) => vmRowNeedsLiveDurationTick(r, 'video_match_search'))) ||
-    (boardSection.value === 'video_match_transcribe' &&
-      vmJobRows.value.some((r) => vmRowNeedsLiveDurationTick(r, 'video_match_transcribe')))
-  if (need) {
-    if (!durationLiveTimer) {
-      durationLiveTimer = setInterval(() => {
-        durationTick.value++
-      }, 1000)
-    }
-  } else if (durationLiveTimer) {
-    clearInterval(durationLiveTimer)
-    durationLiveTimer = null
-  }
-}
 
 function pickRows(): Record<string, unknown>[] {
   if (boardSection.value === 'image') return imageRows.value
@@ -174,194 +272,9 @@ const pagedRows = computed(() => {
   return filteredRows.value.slice(start, start + pageSize.value)
 })
 
-watch([boardSection, statusFilter, dateRange, workspaceFilter, idSearchFilter], () => {
-  currentPage.value = 1
-})
 
-async function loadImage(silent = false, targetIds?: string[]) {
-  if (!silent) loading.value = true
-  try {
-    const data = await fetchImageHistoryForBoard(targetIds?.length ? { ids: targetIds.join(',') } : undefined)
-    if (data?.success && Array.isArray(data.history)) {
-      if (targetIds?.length) {
-        data.history.forEach((newItem: Record<string, unknown>) => {
-          const idx = imageRows.value.findIndex((r) => r.id === newItem.id || r.taskId === newItem.taskId)
-          if (idx !== -1) Object.assign(imageRows.value[idx]!, newItem)
-        })
-      } else {
-        imageRows.value = data.history as Record<string, unknown>[]
-      }
-    } else if (!targetIds?.length) {
-      imageRows.value = []
-    }
-  } finally {
-    if (!silent) loading.value = false
-  }
-}
 
-async function loadVideo(silent = false, targetIds?: string[]) {
-  if (!silent) loading.value = true
-  try {
-    const params = {
-      workspace: workspaceFilter.value || undefined,
-      ids: targetIds?.length ? targetIds.join(',') : undefined
-    }
-    const data = await fetchVideoAnalysisHistoryForBoard(params)
-    if (data?.success && Array.isArray(data.history)) {
-      if (targetIds?.length) {
-        data.history.forEach((newItem: Record<string, unknown>) => {
-          const idx = videoRows.value.findIndex((r) => r.id === newItem.id || r.taskId === newItem.taskId)
-          if (idx !== -1) Object.assign(videoRows.value[idx]!, newItem)
-        })
-      } else {
-        videoRows.value = data.history as Record<string, unknown>[]
-      }
-    } else if (!targetIds?.length) {
-      videoRows.value = []
-    }
-  } finally {
-    if (!silent) loading.value = false
-  }
-}
 
-async function loadVmJobs(silent = false, targetIds?: string[]) {
-  if (!silent) loading.value = true
-  try {
-    const ws = workspaceFilter.value.trim() || undefined
-    const params: { workspace?: string; limit: number; ids?: string } = {
-      limit: 100,
-      workspace: ws,
-    }
-    if (targetIds?.length) params.ids = targetIds.join(',')
-    const data = await fetchVideoMatchJobsForBoard(params)
-    if (data?.success && Array.isArray(data.jobs)) {
-      if (targetIds?.length) {
-        data.jobs.forEach((newItem: Record<string, unknown>) => {
-          const idx = vmJobRows.value.findIndex((r) => r.id === newItem.id || r.taskId === newItem.taskId)
-          if (idx !== -1) Object.assign(vmJobRows.value[idx]!, newItem)
-        })
-      } else {
-        vmJobRows.value = data.jobs as Record<string, unknown>[]
-      }
-    } else if (!targetIds?.length) {
-      vmJobRows.value = []
-    }
-  } finally {
-    if (!silent) loading.value = false
-  }
-}
-
-async function loadMaterialMatches(silent = false, targetIds?: string[]) {
-  if (!silent) loading.value = true
-  try {
-    const ws = workspaceFilter.value.trim() || undefined
-    const params: { limit: number; workspace?: string; ids?: string } = { limit: 100, workspace: ws }
-    if (targetIds?.length) params.ids = targetIds.join(',')
-    const data = await fetchMaterialMatchesForBoard(params)
-    if (data?.success && Array.isArray(data.matches)) {
-      if (targetIds?.length) {
-        data.matches.forEach((newItem: Record<string, unknown>) => {
-          const idx = materialMatchRows.value.findIndex((r) => r.id === newItem.id || r.taskId === newItem.taskId)
-          if (idx !== -1) Object.assign(materialMatchRows.value[idx]!, newItem)
-        })
-      } else {
-        materialMatchRows.value = data.matches as Record<string, unknown>[]
-      }
-    } else if (!targetIds?.length) {
-      materialMatchRows.value = []
-    }
-  } finally {
-    if (!silent) loading.value = false
-  }
-}
-
-async function refresh() {
-  loading.value = true
-  try {
-    const s = boardSection.value
-    if (s === 'image') {
-      await loadImage()
-    } else if (s === 'video') {
-      await loadVideo()
-    } else if (s === 'video_match_transcribe') {
-      await loadVmJobs()
-    } else if (s === 'video_match_search') {
-      await loadMaterialMatches()
-    }
-  } finally {
-    loading.value = false
-  }
-}
-
-onMounted(refresh)
-
-watch([boardSection, imageRows, videoRows, vmJobRows, materialMatchRows], syncRunningDurationTimer, { deep: true })
-
-/** 当前看板存在「进行中」任务时定时拉取历史，避免后台已完成仍显示生成中 */
-let boardHistoryPollTimer: ReturnType<typeof setInterval> | null = null
-
-function syncBoardHistoryPoll() {
-  const section = boardSection.value
-  const imageRunning = imageRows.value.some((r) => rowStatusNorm(r, 'image') === 'running')
-  const videoRunning = videoRows.value.some((r) => rowStatusNorm(r, 'video') === 'running')
-  const materialRunning =
-    section === 'video_match_search' &&
-    materialMatchRows.value.some((r) => rowStatusNorm(r, 'video_match_search') === 'running')
-  const vmTranscribeRunning =
-    section === 'video_match_transcribe' &&
-    vmJobRows.value.some((r) => rowStatusNorm(r, 'video_match_transcribe') === 'running')
-  const needPoll =
-    (section === 'image' && imageRunning) ||
-    (section === 'video' && videoRunning) ||
-    materialRunning ||
-    vmTranscribeRunning
-
-  if (needPoll && !boardHistoryPollTimer) {
-    let isPolling = false
-    const tick = async () => {
-      if (isPolling) return
-      isPolling = true
-      const s = boardSection.value
-      try {
-        if (s === 'image') {
-          const running = imageRows.value.filter((r) => rowStatusNorm(r, 'image') === 'running')
-          if (running.length) await loadImage(true, running.map(r => String(r.id || r.taskId)))
-        } else if (s === 'video') {
-          const running = videoRows.value.filter((r) => rowStatusNorm(r, 'video') === 'running')
-          if (running.length) await loadVideo(true, running.map(r => String(r.id || r.taskId)))
-        } else if (s === 'video_match_search') {
-          const running = materialMatchRows.value.filter((r) => rowStatusNorm(r, 'video_match_search') === 'running')
-          if (running.length) await loadMaterialMatches(true, running.map(r => String(r.id || r.taskId)))
-        } else if (s === 'video_match_transcribe') {
-          const running = vmJobRows.value.filter((r) => rowStatusNorm(r, 'video_match_transcribe') === 'running')
-          if (running.length) await loadVmJobs(true, running.map(r => String(r.id || r.taskId)))
-        }
-      } catch {
-        /* 静默轮询失败不打断 */
-      } finally {
-        isPolling = false
-      }
-    }
-    void tick()
-    boardHistoryPollTimer = setInterval(tick, 3000)
-  } else if (!needPoll && boardHistoryPollTimer) {
-    clearInterval(boardHistoryPollTimer)
-    boardHistoryPollTimer = null
-  }
-}
-
-watch([boardSection, imageRows, videoRows, vmJobRows, materialMatchRows], syncBoardHistoryPoll, { deep: true })
-
-onUnmounted(() => {
-  if (durationLiveTimer) {
-    clearInterval(durationLiveTimer)
-    durationLiveTimer = null
-  }
-  if (boardHistoryPollTimer) {
-    clearInterval(boardHistoryPollTimer)
-    boardHistoryPollTimer = null
-  }
-})
 
 watch(
   () => route.path,
@@ -1090,44 +1003,15 @@ const handleNavigateToVideoAnalysis = (row: any, workspace: string) => { console
         <el-button type="primary" size="small" :loading="loading" @click="refresh">刷新</el-button>
       </div>
 
-      <el-form :inline="true" class="filter-form" @submit.prevent>
-        <el-form-item label="创建时间">
-          <el-date-picker
-            v-model="dateRange"
-            type="datetimerange"
-            range-separator="至"
-            start-placeholder="开始时间"
-            end-placeholder="结束时间"
-            style="width: 340px"
-          />
-        </el-form-item>
-        <el-form-item label="总状态">
-          <el-select v-model="statusFilter" clearable placeholder="请选择状态" style="width: 160px">
-            <el-option label="成功" value="success" />
-            <el-option label="失败" value="failed" />
-            <el-option label="进行中" value="running" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="记录 ID">
-          <el-input
-            v-model="idSearchFilter"
-            clearable
-            placeholder="子串匹配：履历 ID、视频匹配任务/分镜、VA 上下文等"
-            style="width: 260px"
-            @keyup.enter="currentPage = 1"
-          />
-        </el-form-item>
-        <el-form-item v-if="boardSection === 'video' || isVmBoard(boardSection)" label="工作区">
-          <el-select v-model="workspaceFilter" clearable placeholder="全部" style="width: 120px">
-            <el-option label="v1" value="v1" />
-            <el-option label="v2" value="v2" />
-          </el-select>
-        </el-form-item>
-        <el-form-item>
-          <el-button type="primary" @click="currentPage = 1">查询</el-button>
-          <el-button @click="resetFilters">重置</el-button>
-        </el-form-item>
-      </el-form>
+            <TaskBoardFilterForm
+        v-model:dateRange="dateRange"
+        v-model:statusFilter="statusFilter"
+        v-model:idSearchFilter="idSearchFilter"
+        v-model:workspaceFilter="workspaceFilter"
+        :board-section="boardSection"
+        @search="currentPage = 1"
+        @reset="resetFilters"
+      />
 
       <!-- 图像生成 -->
       <ImageBoardPanel
