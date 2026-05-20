@@ -238,10 +238,11 @@ export async function searchVideoAnalysisCardsApi(
   },
   opts?: { signal?: AbortSignal },
 ) {
+  const reqPayload = { ...payload, fuzzy: false }
   const resp = await fetch(`${API_BASE}/video-analysis/search`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
+    body: JSON.stringify(reqPayload),
     signal: opts?.signal,
   })
   return resp.json()

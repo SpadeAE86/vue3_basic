@@ -4,11 +4,12 @@ import { tagType, tagEffect, getTagStyle } from '@/composables/search/useSearchT
 
 const props = withDefaults(
   defineProps<{
-    tokens: SearchToken[]
+    tokens?: SearchToken[]
     maxPreviewChars?: number
     radius?: string
   }>(),
   {
+    tokens: () => [],
     maxPreviewChars: 24,
     radius: '999px',
   },

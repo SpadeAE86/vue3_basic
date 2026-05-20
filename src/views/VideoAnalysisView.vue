@@ -217,7 +217,10 @@ function formatTime(seconds: number) {
 }
 
 function toUiCards(cards: ShotCard[]) {
-  return (cards || []).map((c) => ({
+  return (cards || [])
+    // 过滤掉因为“无可用帧”等导致分析失败的“无效占位卡片”
+    .filter((c) => !c.error && c.frame_urls && c.frame_urls.length > 0)
+    .map((c) => ({
     ...c,
     // 复合 ID 防止跨 history 的 scene_id 冲突（frame hover bug 根因）
     id: `${c.history_id || (c as any).video_id || ''}_${c.scene_id}`,
@@ -545,7 +548,7 @@ function doKickRemoteSearch() {
     })
     .catch((e: any) => {
       if (e?.name === 'AbortError') return
-      // eslint-disable-next-line no-console
+       
       console.warn('video-analysis remote search failed', e)
     })
     .finally(() => {
@@ -896,6 +899,7 @@ onBeforeUnmount(() => {
               v-model="selectedHistory"
               placeholder="选择历史分析记录"
               clearable
+              filterable
               class="history-select"
               @change="handleHistoryChange"
             >

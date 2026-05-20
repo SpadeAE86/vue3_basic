@@ -2,6 +2,7 @@
 export const ZHIJI_CAR_MODEL_OPTIONS = [
   { value: 'LS6', label: '智己 LS6' },
   { value: 'LS9', label: '智己 LS9' },
+  { value: 'L6', label: '智己 L6' },
 ] as const
 
 export type ZhijiCarModelValue = (typeof ZHIJI_CAR_MODEL_OPTIONS)[number]['value']
@@ -12,6 +13,7 @@ export function normalizeZhijiCarSelectValue(raw: string | null | undefined): st
   if (!u) return ''
   if (u.includes('LS9')) return 'LS9'
   if (u.includes('LS6')) return 'LS6'
+  if (u.includes('L6')) return 'L6'
   return ''
 }
 

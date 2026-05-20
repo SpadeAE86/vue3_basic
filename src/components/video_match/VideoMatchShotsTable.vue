@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { shotStatusLabel, shotSearchStatusNorm, shotStatusTagType, shotTop1VideoUrl, top1UrlDisplay, shotMatchFailedVm, canJumpVideoAnalysisFromVmShot } from '@/utils/videoMatchHelpers'
-import { Headset, Microphone, Position, RefreshRight, VideoPlay } from '@element-plus/icons-vue'
+import { ElMessage } from 'element-plus'
+import { shotStatusLabel, shotSearchStatusNorm, shotExtractStatusNorm, shotStatusTagType, shotTop1VideoUrl, top1UrlDisplay, shotMatchFailedVm, canJumpVideoAnalysisFromVmShot } from '@/utils/videoMatchHelpers'
+import { Headset, Microphone, Position, RefreshRight, VideoPlay, Document, View, Search, DocumentCopy } from '@element-plus/icons-vue'
 
 const props = defineProps<{
   shots: any[]
@@ -8,14 +9,25 @@ const props = defineProps<{
   waveHeights: number[]
   playingRowKey: string | null
   audioProgressPct: number
-  vmShotRematchingId: string | null
+  vmShotRematchingId: string | number | null
 
   rowIsActivelyPlaying: (row: any) => boolean
   rowAudioKey: (row: any) => string
 
-  rowClassName: () => string
+  rowClassName: string
+  currentJobId?: string | null
 }>()
 
+
+async function copyTop1Url(url: string | null) {
+  if (!url) return
+  try {
+    await navigator.clipboard.writeText(url)
+    ElMessage.success('已复制链接')
+  } catch (e) {
+    ElMessage.error('复制失败')
+  }
+}
 const emit = defineEmits<{
   (e: 'togglePlayObs', row: any): void
   (e: 'onSynthesizeAudio', row: any): void
@@ -37,8 +49,20 @@ const emit = defineEmits<{
         :row-class-name="rowClassName"
       >
         <el-table-column prop="shot_order" label="#" width="56" />
-        <el-table-column prop="segment_text" label="鍙ｆ挱鏂囨" min-width="200" show-overflow-tooltip />
-        <el-table-column label="鍖归厤鐘舵€? width="96" align="center">
+        <el-table-column prop="segment_text" label="口播文案" min-width="260" show-overflow-tooltip />
+        <el-table-column label="提取状态" width="96" align="center">
+          <template #default="{ row }">
+            <el-tag
+              :type="shotStatusTagType(shotExtractStatusNorm(row))"
+              effect="light"
+              size="small"
+              class="status-pill status-tag-admin"
+            >
+              {{ shotStatusLabel(shotExtractStatusNorm(row)) }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="匹配状态" width="96" align="center">
           <template #default="{ row }">
             <el-tag
               :type="shotStatusTagType(shotSearchStatusNorm(row))"
@@ -50,8 +74,7 @@ const emit = defineEmits<{
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="duration_sec" label="鏃堕暱(s)" width="88" />
-        <el-table-column label="鍙ｆ挱闊抽 (OBS)" min-width="220">
+        <el-table-column label="音频" min-width="120">
           <template #default="{ row }">
             <div class="audio-cell">
               <div class="audio-actions">
@@ -76,23 +99,8 @@ const emit = defineEmits<{
                   @click="emit('onSynthesizeAudio', row)"
                 >
                   <el-icon class="btn-inline-icon"><Microphone /></el-icon>
-                  鐢熸垚鏈楄
+                  生成朗读
                 </el-button>
-                <el-tooltip
-                  v-if="(row.obs_audio_url || '').trim() && row.id != null"
-                  content="閲嶆柊鐢熸垚鏈楄"
-                  placement="top"
-                >
-                  <el-button
-                    size="small"
-                    circle
-                    type="info"
-                    :loading="row.id != null && !!synthBusyByShotId[row.id]"
-                    @click="emit('onSynthesizeAudio', row)"
-                  >
-                    <el-icon><RefreshRight /></el-icon>
-                  </el-button>
-                </el-tooltip>
               </div>
               <div v-if="(row.obs_audio_url || '').trim()" class="wave-block">
                 <div class="wave-bars" aria-hidden="true">
@@ -112,72 +120,201 @@ const emit = defineEmits<{
             </div>
           </template>
         </el-table-column>
-        <el-table-column prop="description" label="鐢婚潰鎻忚堪" min-width="160" show-overflow-tooltip />
-        <el-table-column width="96" align="right">
-          <template #header>
-            <el-tooltip content="鏈垎闀滄绱㈤摼璺€楁椂锛堟绉掞紝鍚帓闃燂級" placement="top">
-              <span>鑰楁椂</span>
-            </el-tooltip>
-          </template>
-          <template #default="{ row }">
-            <span v-if="row.match_elapsed_ms != null">{{ Number(row.match_elapsed_ms).toFixed(0) }}</span>
-            <span v-else class="muted">鈥?/span>
-          </template>
-        </el-table-column>
-        <el-table-column label="Top1 瑙嗛" min-width="160">
-          <template #default="{ row }">
-            <div v-if="shotTop1VideoUrl(row)" class="match-topn-cell">
-              <a
-                class="match-url-link"
-                :href="shotTop1VideoUrl(row)"
-                target="_blank"
-                rel="noopener noreferrer"
-                :title="shotTop1VideoUrl(row)"
-                >{{ top1UrlDisplay(shotTop1VideoUrl(row)) }}</a
-              >
-              <div v-if="row.match_hit_count != null" class="muted-small match-hit-meta">
-                鍛戒腑 {{ row.match_hit_count }} 鏉?              </div>
-            </div>
-            <span v-else class="muted">鈥?/span>
-          </template>
-        </el-table-column>
-        <el-table-column label="杞啓鎿嶄綔" width="108" fixed="right" align="center">
-          <template #default="{ row }">
-            <el-button type="primary" link :disabled="row.id == null" @click="emit('openShotTranscribe', row)">
-              鏌ョ湅杞啓
-            </el-button>
-          </template>
-        </el-table-column>
-        <el-table-column label="鍖归厤鎿嶄綔" width="248" fixed="right" align="center">
+        <el-table-column label="操作" width="160" fixed="right" align="center">
           <template #default="{ row }">
             <div class="shot-op-cell">
-              <el-button type="primary" link :disabled="row.id == null" @click="emit('openMatchDetail', row)">
-                鏌ョ湅鍖归厤
-              </el-button>
-              <el-button
-                v-if="shotMatchFailedVm(row)"
-                type="primary"
-                link
-                :disabled="row.id == null"
-                :loading="vmShotRematchingId === row.id"
-                @click="emit('rematchVmShot', row)"
-              >
-                閲嶈瘯
-              </el-button>
-              <el-tooltip content="鐢ㄦ湰鍒嗛暅鏍囩涓庡綋鏃跺尮閰嶇瓥鐣ユ墦寮€瑙嗛鍒嗘瀽锛屽苟鑷姩鍏ㄥ簱鎼滅储" placement="top">
+              <el-tooltip content="查看提取标签" placement="top">
+                <el-button type="primary" link :disabled="row.id == null" @click="emit('openShotTranscribe', row)">
+                  <el-icon size="16"><Document /></el-icon>
+                </el-button>
+              </el-tooltip>
+              
+              <el-tooltip content="用本分镜标签打开视频分析，并全库搜索" placement="top">
+                <el-button type="primary" link :disabled="!canJumpVideoAnalysisFromVmShot(row)" @click="emit('goVideoAnalysisFromVmShot', row)">
+                  <el-icon size="16"><Position /></el-icon>
+                </el-button>
+              </el-tooltip>
+
+              <el-tooltip content="查看匹配结果" placement="top">
+                <el-button type="primary" link :disabled="row.id == null" @click="emit('openMatchDetail', row)">
+                  <el-icon size="16"><View /></el-icon>
+                </el-button>
+              </el-tooltip>
+              
+              <el-tooltip v-if="shotMatchFailedVm(row)" content="重试匹配" placement="top">
                 <el-button
-                  class="va-jump-icon-btn"
-                  :icon="Position"
-                  circle
-                  size="small"
-                  :disabled="!canJumpVideoAnalysisFromVmShot(row)"
-                  aria-label="璺宠浆瑙嗛鍒嗘瀽"
-                  @click="emit('goVideoAnalysisFromVmShot', row)"
-                />
+                  type="primary"
+                  link
+                  :disabled="row.id == null"
+                  :loading="vmShotRematchingId === row.id"
+                  @click="emit('rematchVmShot', row)"
+                >
+                  <el-icon size="16"><RefreshRight /></el-icon>
+                </el-button>
               </el-tooltip>
             </div>
           </template>
         </el-table-column>
+        <el-table-column prop="duration_sec" label="时长(s)" width="88" />
+
+        <el-table-column prop="description" label="画面描述" min-width="160" show-overflow-tooltip />
+        <el-table-column width="96" align="right">
+          <template #header>
+            <el-tooltip content="本分镜检索链路耗时（毫秒，含排队）" placement="top">
+              <span>耗时</span>
+            </el-tooltip>
+          </template>
+          <template #default="{ row }">
+            <span v-if="row.match_elapsed_ms != null">{{ Number(row.match_elapsed_ms).toFixed(0) }}</span>
+            <span v-else class="muted">—</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="Top1 视频" min-width="160">
+          <template #default="{ row }">
+            <div v-if="shotTop1VideoUrl(row)" class="match-topn-cell">
+                <div style="display: flex; align-items: center; gap: 4px;">
+                  <a
+                    class="match-url-link"
+                    :href="shotTop1VideoUrl(row) ?? undefined"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    :title="shotTop1VideoUrl(row) ?? undefined"
+                    >{{ top1UrlDisplay(shotTop1VideoUrl(row) ?? null) }}</a
+                  >
+                  <el-button type="info" link @click="copyTop1Url(shotTop1VideoUrl(row))">
+                    <el-icon><DocumentCopy /></el-icon>
+                  </el-button>
+                </div>
+              <div v-if="row.match_hit_count != null" class="muted-small match-hit-meta">
+                命中 {{ row.match_hit_count }} 条              </div>
+            </div>
+            <span v-else class="muted">—</span>
+          </template>
+        </el-table-column>
+
       </el-table>
 </div>
 </template>
+<style scoped>
+.text-panel {
+  padding: 12px 14px;
+  background: #fafafa;
+  border: 1px solid #f0f0f0;
+  border-radius: 2px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: rgba(0, 0, 0, 0.85);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 200px;
+  overflow-y: auto;
+}
+.match-url-link {
+  color: var(--el-color-primary);
+  word-break: break-all;
+}
+.match-url-link:hover {
+  text-decoration: underline;
+}
+.match-topn-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: flex-start;
+}
+.match-hit-meta {
+  margin-top: 2px;
+}
+.shot-op-cell {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 4px 6px;
+}
+.va-jump-icon-btn {
+  flex-shrink: 0;
+}
+.sr-audio {
+  position: absolute;
+  width: 0;
+  height: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+.audio-cell {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 8px;
+  min-width: 0;
+}
+.status-pill {
+  border: none;
+  flex-shrink: 0;
+}
+.audio-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.audio-btn-icon {
+  font-size: 18px;
+}
+.btn-inline-icon {
+  margin-right: 4px;
+  vertical-align: middle;
+}
+.icon-pulse {
+  animation: audio-pulse 0.9s ease-in-out infinite;
+}
+@keyframes audio-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.12);
+    opacity: 0.85;
+  }
+}
+.wave-block {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-end;
+  flex-shrink: 0;
+}
+.wave-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 22px;
+  padding: 0 2px;
+}
+.wave-bar {
+  width: 3px;
+  min-height: 3px;
+  border-radius: 1px;
+  background: #e4e7ed;
+  transition: background 0.15s ease;
+}
+.wave-bar--hot {
+  background: linear-gradient(180deg, #f89898 0%, #f56c6c 100%);
+}
+:deep(.video-match-table-row .cell) {
+  padding-top: 14px;
+  padding-bottom: 14px;
+  line-height: 1.55;
+}
+.muted-small {
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.45);
+}
+.muted {
+  color: #9ca3af;
+  font-size: 12px;
+}
+</style>

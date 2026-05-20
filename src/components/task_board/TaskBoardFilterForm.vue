@@ -47,7 +47,7 @@ const emit = defineEmits<{
             @keyup.enter="emit('search')"
           />
         </el-form-item>
-        <el-form-item v-if="boardSection === 'video' || isVmBoard(boardSection)" label="工作区">
+        <el-form-item v-if="boardSection === 'video' || isVmBoard(boardSection as any)" label="工作区">
           <el-select :model-value="props.workspaceFilter" @update:model-value="emit('update:workspaceFilter', $event)" clearable placeholder="全部" style="width: 120px">
             <el-option label="v1" value="v1" />
             <el-option label="v2" value="v2" />

@@ -55,6 +55,12 @@ const router = createRouter({
       redirect: { name: 'task-board-video-match-transcribe' },
     },
     {
+      path: '/task-board/video-match-tag',
+      name: 'task-board-video-match-tag',
+      component: () => import('../views/TaskBoardView.vue'),
+      meta: { title: '抽标签任务', boardSection: 'video_match_tag' },
+    },
+    {
       path: '/task-board/video-match-transcribe',
       name: 'task-board-video-match-transcribe',
       component: () => import('../views/TaskBoardView.vue'),

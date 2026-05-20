@@ -1,7 +1,7 @@
 import { ref, computed, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { createVideoMatchJobApi, getVideoMatchJobApi, getVideoMatchShotDetailApi, listVideoMatchJobsApi, rematchVideoMatchShotApi, searchVideoMatchJobApi, type VideoMatchJobResponse, type VideoMatchJobSummary, type VideoMatchShotDto } from '@/api/video_match'
+import { createVideoMatchJobApi, getVideoMatchJobApi, getVideoMatchShotDetailApi, listVideoMatchJobsApi, rematchVideoMatchShotApi, searchVideoMatchJobApi, extractTagsVideoMatchJobApi, type VideoMatchJobResponse, type VideoMatchJobSummary, type VideoMatchShotDto } from '@/api/video_match'
 import { getVideoAnalysisWorkspacesApi } from '@/api/video_analysis'
 import type { WorkspaceOption } from '@/types/videoAnalysis'
 import { tagsJsonToSearchTokens, DEFAULT_TOKEN_JOIN_AND_FIELDS } from '@/utils/matchTagsFromSegment'
@@ -20,6 +20,8 @@ const parseError = ref<string | null>(null)
 const searchTotalMs = ref<number | null>(null)
 const jobSearchStatus = ref<string | null>(null)
 const jobSearchError = ref<string | null>(null)
+const extractStatus = ref<string | null>(null)
+const extractError = ref<string | null>(null)
 /** 与任务看板一致：跳转视频分析时带入工作区与策略权重 */
 const matchJobWorkspace = ref('v1')
 const jobStrategySnapshot = ref<Record<string, unknown> | null>(null)
@@ -129,18 +131,8 @@ function canJumpVideoAnalysisFromVmShot(row: VideoMatchShotDto): boolean {
 async function goVideoAnalysisFromVmShot(row: VideoMatchShotDto) {
   if (!canJumpVideoAnalysisFromVmShot(row)) return
   const ws = matchJobWorkspace.value || form.value.workspace.trim() || 'v1'
-  let andFields = [...DEFAULT_TOKEN_JOIN_AND_FIELDS]
-  try {
-    const r = await getTokenJoinDefaultFieldsApi(ws)
-    if (r.success && r.and_segment_fields?.length) {
-      andFields = r.and_segment_fields
-    }
-  } catch {
-    /* 使用内置默认 */
-  }
-  // Ignore token-join-templates when backfilling from match, to prevent strict term filters 
-  // that would drop hits (Match uses relaxed partition filters with generic_hq_road_run fallback).
-  const tokens = tagsJsonToSearchTokens((row.tags_json ?? {}) as Record<string, unknown>, [])
+  const andFields = [...DEFAULT_TOKEN_JOIN_AND_FIELDS]
+  const tokens = tagsJsonToSearchTokens((row.tags_json ?? {}) as Record<string, unknown>, andFields)
   if (row.segment_text?.trim()) {
     tokens.unshift({ id: Date.now().toString(), text: row.segment_text.trim(), join: 'OR', type: 'keyword' })
   }
@@ -335,6 +327,15 @@ async function loadHistoryJobs() {
     })
     if (res?.success && Array.isArray(res.jobs)) {
       historyJobs.value = res.jobs
+      
+      // Restore the selected job from sessionStorage if it exists in the fetched list
+      try {
+        const lastJobId = sessionStorage.getItem('videoMatch:lastJobId:v1')
+        if (lastJobId && res.jobs.some((j: VideoMatchJobSummary) => j.id === lastJobId)) {
+          historyJobId.value = lastJobId
+          void onHistoryJobChange(lastJobId)
+        }
+      } catch { /* ignore */ }
     }
   } catch {
     historyJobs.value = []
@@ -343,11 +344,12 @@ async function loadHistoryJobs() {
 
 function historyJobLabel(j: VideoMatchJobSummary) {
   const tail = j.id.length > 10 ? j.id.slice(0, 8) + '…' : j.id
+  const sn = j.serial_no ? `#${j.serial_no} ` : ''
   const t = (j.title || j.topic || '未命名').trim()
   const ts = j.created_at ? j.created_at.replace('T', ' ').slice(0, 19) : ''
   const ws = (j.workspace ?? '').trim()
   const wsTag = ws ? `[${ws}] ` : ''
-  return ts ? `${wsTag}${ts} · ${t} · ${tail}` : `${wsTag}${t} · ${tail}`
+  return ts ? `${sn}${wsTag}${ts} · ${t} · ${tail}` : `${sn}${wsTag}${t} · ${tail}`
 }
 
 async function onHistoryJobChange(id: string | null | undefined) {
@@ -431,6 +433,8 @@ async function onParse() {
     jobSearchStatus.value = res.search_status ?? null
     searchTotalMs.value = res.search_total_ms ?? null
     jobSearchError.value = res.search_error ?? null
+    extractStatus.value = res.extract_status ?? null
+    extractError.value = res.extract_error ?? null
     syncMatchJobContext(res)
     form.value.script = scriptClean
     if (res.job_id) try { sessionStorage.setItem('videoMatch:lastJobId:v1', res.job_id) } catch { /* ignore */ }
@@ -443,6 +447,25 @@ async function onParse() {
     ElMessage.error(msg)
   } finally {
     parsing.value = false
+  }
+}
+
+const isExtracting = ref(false)
+const onExtract = async () => {
+  if (!currentJobId.value) return
+  isExtracting.value = true
+  try {
+    const res = await extractTagsVideoMatchJobApi(currentJobId.value)
+    if (res.success) {
+      ElMessage.success('已触发一键抽取标签，后台处理中')
+      setTimeout(refreshJob, 500)
+    } else {
+      ElMessage.error(res.error || '抽取标签触发失败')
+    }
+  } catch (e: any) {
+    ElMessage.error(e.message || '抽取标签请求出错')
+  } finally {
+    isExtracting.value = false
   }
 }
 
@@ -526,9 +549,11 @@ async function refreshJob() {
     jobSearchStatus.value = res.search_status ?? null
     searchTotalMs.value = res.search_total_ms ?? null
     jobSearchError.value = res.search_error ?? null
+    extractStatus.value = res.extract_status ?? null
+    extractError.value = res.extract_error ?? null
     syncMatchJobContext(res)
   }
 }
 
-  return { parsing, matching, composing, currentJobId, shots, parseStatus, parseError, searchTotalMs, jobSearchStatus, jobSearchError, matchJobWorkspace, jobStrategySnapshot, historyJobs, historyJobId, matchDetailVisible, matchDetailLoading, matchDetailPayload, matchDetailRow, matchDetailLocalOnly, matchDetailHitRows, shotTranscribeVisible, shotTranscribeRow, vmShotRematchingId, hasShots, canMatch, canMixCompose, mixComposeDisabledHint, formatMatchDetailJson, normalizeMatchHitRows, syncMatchJobContext, openShotTranscribe, rematchVmShot, goVideoAnalysisFromVmShot, openMatchDetail, normalizeVideoMatchScriptInbound, applyVideoMatchJobInputsToForm, shortJobIdForDisplay, pipelineStatusZh, loadHistoryJobs, historyJobLabel, onHistoryJobChange, fetchWorkspaces, onParse, onMatch, refreshJob }
+  return { parsing, matching, composing, currentJobId, shots, parseStatus, parseError, searchTotalMs, jobSearchStatus, jobSearchError, extractStatus, extractError, matchJobWorkspace, jobStrategySnapshot, historyJobs, historyJobId, matchDetailVisible, matchDetailLoading, matchDetailPayload, matchDetailRow, matchDetailLocalOnly, matchDetailHitRows, shotTranscribeVisible, shotTranscribeRow, vmShotRematchingId, hasShots, canMatch, canMixCompose, mixComposeDisabledHint, formatMatchDetailJson, normalizeMatchHitRows, syncMatchJobContext, openShotTranscribe, rematchVmShot, goVideoAnalysisFromVmShot, openMatchDetail, normalizeVideoMatchScriptInbound, applyVideoMatchJobInputsToForm, shortJobIdForDisplay, pipelineStatusZh, loadHistoryJobs, historyJobLabel, onHistoryJobChange, fetchWorkspaces, onParse, onMatch, refreshJob, onExtract, isExtracting }
 }

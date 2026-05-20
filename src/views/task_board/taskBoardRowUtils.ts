@@ -1,6 +1,15 @@
 import type { BoardSection } from './taskBoardTypes'
 
 /** 主表「转写」列（与 rowStatusNorm/video_match_transcribe 口径一致，供模板单独上色） */
+
+export function vmExtractColStatus(r: Record<string, unknown>): string {
+  const ps = String(r.extract_status ?? '').toLowerCase()
+  if (ps === 'failed') return 'failed'
+  if (ps === 'done') return 'success'
+  if (ps === 'running' || ps === 'extracting') return 'running'
+  return ps || 'unknown'
+}
+
 export function vmParseColStatus(r: Record<string, unknown>): string {
   const ps = String(r.parse_status ?? '').toLowerCase()
   if (ps === 'failed') return 'failed'

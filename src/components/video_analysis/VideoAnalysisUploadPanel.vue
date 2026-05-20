@@ -7,7 +7,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: 'update:selectedFiles', files: File[]): void
-  (e: 'handleFileChange', evt: any): void
+  (e: 'handleFileChange', file: any, fileList: any[]): void
   (e: 'handleUploadExceed', files: any): void
   (e: 'openCarModelDialog'): void
 }>()
@@ -23,7 +23,7 @@ const emit = defineEmits<{
             :show-file-list="false"
             multiple
             :limit="props.MAX_BATCH_VIDEOS"
-            @change="emit('handleFileChange', $event)"
+            @change="(file: any, fileList: any[]) => emit('handleFileChange', file, fileList)"
             :on-exceed="(files: any) => emit('handleUploadExceed', files)"
             accept="video/*"
           >

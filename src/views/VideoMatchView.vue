@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { videoFrameSizeOptionsForOrientation } from '@/constants/zhijiCarModels'
 import type { WorkspaceOption } from '@/types/videoAnalysis'
@@ -8,6 +8,7 @@ import VideoMatchControlPanel from '@/components/video_match/VideoMatchControlPa
 import VideoMatchShotsTable from '@/components/video_match/VideoMatchShotsTable.vue'
 import VideoMatchDetailDialog from '@/components/video_match/VideoMatchDetailDialog.vue'
 import VideoMatchTranscribeDialog from '@/components/video_match/VideoMatchTranscribeDialog.vue'
+import TokenJoinTemplateDialog from '@/components/video_analysis/TokenJoinTemplateDialog.vue'
 
 import { useVideoMatchSearch } from '@/composables/video_match/useVideoMatchSearch'
 import { useVideoMatchJobPoller } from '@/composables/video_match/useVideoMatchJobPoller'
@@ -57,13 +58,13 @@ const {
 } = useVideoMatchSearch(form, matchDetailRowProxy, shotTranscribeRowProxy)
 
 const {
-  parsing, matching, composing: pollerComposing, currentJobId, shots, parseStatus, parseError, searchTotalMs, jobSearchStatus, jobSearchError,
+  parsing, matching, composing: pollerComposing, currentJobId, shots, parseStatus, parseError, searchTotalMs, jobSearchStatus, jobSearchError, extractStatus, extractError,
   matchJobWorkspace, jobStrategySnapshot, historyJobs, historyJobId,
   matchDetailVisible, matchDetailLoading, matchDetailPayload, matchDetailRow, matchDetailLocalOnly, matchDetailHitRows,
   shotTranscribeVisible, shotTranscribeRow, vmShotRematchingId,
   hasShots, canMatch, canMixCompose, mixComposeDisabledHint,
   formatMatchDetailJson, normalizeMatchHitRows, syncMatchJobContext, openShotTranscribe, rematchVmShot, goVideoAnalysisFromVmShot, openMatchDetail,
-  normalizeVideoMatchScriptInbound, applyVideoMatchJobInputsToForm, shortJobIdForDisplay, pipelineStatusZh, loadHistoryJobs, historyJobLabel, onHistoryJobChange, fetchWorkspaces, onParse, onMatch, refreshJob
+  normalizeVideoMatchScriptInbound, applyVideoMatchJobInputsToForm, shortJobIdForDisplay, pipelineStatusZh, loadHistoryJobs, historyJobLabel, onHistoryJobChange, fetchWorkspaces, onParse, onMatch, refreshJob, onExtract, isExtracting
 } = useVideoMatchJobPoller(form, workspaceOptions, selectedStrategy, router, strategies)
 
 watch(() => matchDetailRow, (val) => { matchDetailRowProxy.value = val?.value }, { deep: true })
@@ -83,6 +84,10 @@ const {
   clearComposePoll, isAbsoluteHttpUrl, mixComposeResultHref, copyMixOutputPath, downloadMixSrtFile, onMixCompose
 } = useVideoMatchMixCompose(pollerComposing, currentJobId, shots, canMixCompose, mixComposeDisabledHint)
 
+onMounted(() => {
+  fetchWorkspaces()
+  loadHistoryJobs()
+})
 </script>
 
 <template>
@@ -92,13 +97,15 @@ const {
       :workspaceOptions="workspaceOptions"
       :videoMatchFrameSizeOptions="videoMatchFrameSizeOptions"
       :parsing="parsing"
+      :parseStatus="parseStatus"
       :parseError="parseError"
-      :tokenJoinDialogVisible="tokenJoinDialogVisible"
+      v-model:tokenJoinDialogVisible="tokenJoinDialogVisible"
       :matching="matching"
       :composing="pollerComposing"
       :hasShots="hasShots"
       :canMatch="canMatch"
       :canMixCompose="canMixCompose"
+      :isExtracting="isExtracting"
       :mixComposeDisabledHint="mixComposeDisabledHint"
       :historyJobs="historyJobs"
       :historyJobId="historyJobId"
@@ -106,20 +113,34 @@ const {
       :strategies="strategies"
       :selectedStrategy="selectedStrategy"
       :pipelineStatusZh="pipelineStatusZh"
-      @update:historyJobId="historyJobId = $event"
-      @update:selectedStrategy="selectedStrategy = $event"
+      :currentJobId="currentJobId"
+      :jobSearchStatus="jobSearchStatus"
+      :jobSearchError="jobSearchError"
+      :extractStatus="extractStatus"
+      :extractError="extractError"
+      :lastMixCompose="lastMixCompose"
+      :mixComposeResultHref="mixComposeResultHref"
+      v-model:mixPreferSrt="mixPreferSrt"
+      @update:historyJobId="historyJobId = ($event as any)"
+      @update:selectedStrategy="selectedStrategy = ($event as any)"
       @parse="onParse"
+      @extract="onExtract"
       @match="onMatch"
       @mix-compose="onMixCompose"
       @history-change="onHistoryJobChange"
       @strategy-delete="handleVmStrategySave"
       @open-strategy-create="openVmStrategyCreateDialog"
       @open-strategy-edit="openVmStrategyEditDialog"
+      @refreshJob="refreshJob"
+      @loadStrategies="loadStrategies"
+      @copyMixOutputPath="copyMixOutputPath"
+      @downloadMixSrtFile="downloadMixSrtFile"
     />
 
     <div v-if="hasShots" class="results-area">
       <VideoMatchShotsTable
         :shots="shots"
+        :currentJobId="currentJobId"
         :synthBusyByShotId="synthBusyByShotId"
         :waveHeights="[]"
         :playingRowKey="playingRowKey"
@@ -132,8 +153,9 @@ const {
         @goVideoAnalysisFromVmShot="goVideoAnalysisFromVmShot"
         @togglePlayObs="togglePlayObs"
         @synthesizeAudio="onSynthesizeAudio"
-        @detail="openMatchDetail"
-        @transcribe="openShotTranscribe"
+        @openMatchDetail="openMatchDetail"
+        @openShotTranscribe="openShotTranscribe"
+        @rematchVmShot="rematchVmShot"
       />
     </div>
 
@@ -143,6 +165,7 @@ const {
       :payload="matchDetailPayload"
       :row="matchDetailRow"
       :hitRows="matchDetailHitRows"
+      :tokens="matchDetailTokens"
       :formatMatchDetailJson="formatMatchDetailJson"
       @refresh="refreshJob"
     />
@@ -153,6 +176,8 @@ const {
       :tokens="shotTranscribeTokens"
       @saved="refreshJob"
     />
+
+    <TokenJoinTemplateDialog v-model="tokenJoinDialogVisible" :workspace="form.workspace" />
   </div>
 </template>
 

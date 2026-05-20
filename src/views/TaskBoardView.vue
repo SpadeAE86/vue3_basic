@@ -35,8 +35,11 @@ import { useTaskBoardPolling } from '@/composables/task_board/useTaskBoardPollin
 import TaskBoardFilterForm from '@/components/task_board/TaskBoardFilterForm.vue'
 import ImageBoardPanel from '@/components/task_board/ImageBoardPanel.vue'
 import VideoAnalysisBoardPanel from '@/components/task_board/VideoAnalysisBoardPanel.vue'
+import VideoMatchTagBoardPanel from '@/components/task_board/VideoMatchTagBoardPanel.vue'
 import VideoMatchTranscribeBoardPanel from '@/components/task_board/VideoMatchTranscribeBoardPanel.vue'
 import VideoMatchSearchBoardPanel from '@/components/task_board/VideoMatchSearchBoardPanel.vue'
+import TaskBoardDetailDialog from '@/components/task_board/TaskBoardDetailDialog.vue'
+import TaskBoardStoryboardDialog from '@/components/task_board/TaskBoardStoryboardDialog.vue'
 import {
   rowCreatedAt,
   rowDurationLabel,
@@ -51,7 +54,9 @@ const router = useRouter()
 const boardSection = computed<BoardSection>(() => {
   const s = route.meta.boardSection
   if (s === 'video') return 'video'
+  if (s === 'video_match_tag') return 'video_match_tag'
   if (s === 'video_match_transcribe') return 'video_match_transcribe'
+
   if (s === 'video_match_search') return 'video_match_search'
   return 'image'
 })
@@ -179,7 +184,7 @@ async function refresh() {
   const s = boardSection.value
   if (s === 'image') await loadImage()
   else if (s === 'video') await loadVideo()
-  else if (s === 'video_match_transcribe') await loadVmJobs()
+  else if (s === 'video_match_transcribe' || s === 'video_match_tag') await loadVmJobs()
   else if (s === 'video_match_search') await loadMaterialMatches()
 }
 
@@ -286,7 +291,7 @@ watch(
 watch(workspaceFilter, async () => {
   const s = boardSection.value
   if (s === 'video') await loadVideo()
-  else if (s === 'video_match_transcribe') await loadVmJobs()
+  else if (s === 'video_match_transcribe' || s === 'video_match_tag') await loadVmJobs()
   else if (s === 'video_match_search') await loadMaterialMatches()
 })
 
@@ -953,7 +958,7 @@ function statusTagType(st: string) {
 }
 
 const isImageGenDetail = computed(
-  () => detailPayload.value && detailPayload.value.businessType === 'IMAGE_GEN',
+  () => !!(detailPayload.value && detailPayload.value.businessType === 'IMAGE_GEN'),
 )
 
 const detailPrompt = computed(() => {
@@ -1026,7 +1031,18 @@ const handleNavigateToVideoAnalysis = (row: any, workspace: string) => { console
       />
 
       <!-- 视频匹配 · 脚本转写 -->
-      <VideoMatchTranscribeBoardPanel
+  
+    <VideoMatchTagBoardPanel
+      v-else-if="boardSection === 'video_match_tag'"
+      :rows="vmJobRows"
+      :loading="loading"
+      :duration-tick="durationTick"
+      @detail="openDetail"
+      @storyboard="openStoryboard"
+      @retry="handleRetry"
+    />
+    <VideoMatchTranscribeBoardPanel
+
         v-else-if="boardSection === 'video_match_transcribe'"
         :loading="loading" :rows="pagedRows" :durationTick="durationTick" @detail="openDetail" @retry="handleRetry" @storyboard="openStoryboard"
       />
@@ -1049,342 +1065,32 @@ const handleNavigateToVideoAnalysis = (row: any, workspace: string) => { console
       </div>
     </div>
 
-    <el-dialog
+    <TaskBoardStoryboardDialog
       v-model="storyboardVisible"
-      title="分镜列表"
-      width="1080px"
-      top="5vh"
-      class="storyboard-dialog admin-dialog"
-      align-center
-      destroy-on-close
-    >
-      <div v-loading="storyboardLoading" class="storyboard-dialog-body">
-        <p v-if="storyboardJobId" class="story-job-id muted-small">任务 ID：{{ storyboardJobId }}</p>
-        <el-alert
-          v-if="storyboardJobParseFailed && !storyboardShots.length && !storyboardLoading"
-          type="warning"
-          show-icon
-          :closable="false"
-          class="storyboard-parse-alert"
-        >
-          <template #title>口播转写失败，暂无分镜</template>
-          <div v-if="storyboardParentRow" class="storyboard-alert-actions">
-            <el-button
-              v-if="storyboardParentRow && vmJobCanRetryTranscribe(storyboardParentRow)"
-              type="primary"
-              size="small"
-              :loading="vmRetryingId === String(storyboardParentRow.id ?? '').trim()"
-              @click="retryVmJobRow(storyboardParentRow)"
-            >
-              重试转写
-            </el-button>
-          </div>
-        </el-alert>
-        <el-table
-          v-if="storyboardShots.length"
-          :data="storyboardShots"
-          stripe
-          border
-          size="small"
-          style="width: 100%"
-        >
-          <el-table-column prop="shot_order" label="#" width="52" />
-          <el-table-column prop="segment_text" label="口播" min-width="140" show-overflow-tooltip />
-          <el-table-column prop="description" label="画面描述" min-width="120" show-overflow-tooltip />
-          <el-table-column
-            v-if="boardSection === 'video_match_transcribe'"
-            label="match_id"
-            min-width="120"
-            show-overflow-tooltip
-          >
-            <template #default="{ row }">
-              {{ (row.match_id && String(row.match_id).trim()) || '—' }}
-            </template>
-          </el-table-column>
-          <el-table-column
-            v-if="boardSection === 'video_match_search'"
-            label="匹配状态"
-            width="96"
-            align="center"
-          >
-            <template #default="{ row }">
-              <el-tag
-                :type="shotStatusTagTypeBoard(shotSearchStatusNormBoard(row))"
-                effect="light"
-                size="small"
-                class="status-pill status-tag-admin"
-              >
-                {{ shotStatusLabelBoard(shotSearchStatusNormBoard(row)) }}
-              </el-tag>
-            </template>
-          </el-table-column>
-          <el-table-column
-            v-if="boardSection === 'video_match_search'"
-            label="本镜耗时(ms)"
-            width="104"
-            align="center"
-          >
-            <template #default="{ row }">
-              {{
-                row.match_elapsed_ms != null && Number.isFinite(Number(row.match_elapsed_ms))
-                  ? Number(row.match_elapsed_ms).toFixed(0)
-                  : '—'
-              }}
-            </template>
-          </el-table-column>
-          <el-table-column v-if="boardSection === 'video_match_search'" label="Top1 视频" min-width="168">
-            <template #default="{ row }">
-              <a
-                v-if="(row.top1_obs_url || '').trim()"
-                class="match-url-link"
-                :href="(row.top1_obs_url || '').trim()"
-                target="_blank"
-                rel="noopener noreferrer"
-                >{{ top1UrlDisplayBoard((row.top1_obs_url || '').trim()) }}</a
-              >
-              <span v-else class="muted-small">—</span>
-            </template>
-          </el-table-column>
-          <el-table-column
-            v-if="boardSection === 'video_match_transcribe'"
-            label="转写操作"
-            width="108"
-            fixed="right"
-            align="center"
-          >
-            <template #default="{ row }">
-              <el-button type="primary" link :disabled="row.id == null" @click="openShotTranscribe(row)">
-                查看转写
-              </el-button>
-            </template>
-          </el-table-column>
-          <el-table-column
-            v-if="boardSection === 'video_match_search'"
-            label="匹配操作"
-            width="248"
-            fixed="right"
-            align="center"
-          >
-            <template #default="{ row }">
-              <div class="shot-op-cell">
-                <el-button type="primary" link :disabled="row.id == null" @click="openShotMatch(row)">
-                  查看匹配
-                </el-button>
-                <el-button
-                  v-if="shotMatchFailed(row)"
-                  type="primary"
-                  link
-                  :disabled="row.id == null"
-                  :loading="shotRematchingId === row.id"
-                  @click="rematchStoryboardShot(row)"
-                >
-                  重试
-                </el-button>
-                <el-tooltip content="用本分镜标签与当时匹配策略打开视频分析，并自动全库搜索" placement="top">
-                  <el-button
-                    class="va-jump-icon-btn"
-                    :icon="Position"
-                    circle
-                    size="small"
-                    :disabled="!canJumpVideoAnalysisFromShot(row)"
-                    aria-label="跳转视频分析"
-                    @click="goVideoAnalysisFromShot(row)"
-                  />
-                </el-tooltip>
-              </div>
-            </template>
-          </el-table-column>
-        </el-table>
-        <el-empty v-else-if="!storyboardLoading" description="暂无分镜数据" />
-      </div>
-    </el-dialog>
+      :board-section="boardSection"
+      :storyboard-loading="storyboardLoading"
+      :storyboard-job-id="storyboardJobId"
+      :storyboard-job-parse-failed="storyboardJobParseFailed"
+      :storyboard-parent-row="storyboardParentRow"
+      :vm-retrying-id="vmRetryingId"
+      :storyboard-shots="storyboardShots"
+      :shot-rematching-id="shotRematchingId"
+      @retry-job="retryVmJobRow"
+      @open-match="openShotMatch"
+      @rematch-shot="rematchStoryboardShot"
+      @go-video-analysis="goVideoAnalysisFromShot"
+    />
 
-    <el-dialog
-      v-model="shotTranscribeVisible"
-      title="分镜 · 转写与标签"
-      width="560px"
-      top="8vh"
-      class="admin-dialog"
-      align-center
-      destroy-on-close
-    >
-      <template v-if="shotTranscribeRow">
-        <div v-if="shotTranscribeRow.match_id" class="field-label">match_id（素材匹配履历）</div>
-        <div v-if="shotTranscribeRow.match_id" class="text-panel">{{ shotTranscribeRow.match_id }}</div>
-        <div class="field-label">口播</div>
-        <div class="text-panel">{{ shotTranscribeRow.segment_text || '—' }}</div>
-        <div class="field-label">画面描述</div>
-        <div class="text-panel">{{ shotTranscribeRow.description || '—' }}</div>
-        <div class="field-label">结构化标签</div>
-        <TokenChipsReadonly :tokens="shotTranscribeTokens" />
-      </template>
-    </el-dialog>
-
-    <el-dialog
+    <TaskBoardDetailDialog
       v-model="detailVisible"
-      :title="detailDialogTitle"
-      :width="detailIsShotMatch ? 'min(1080px, 96vw)' : '900px'"
-      top="4vh"
-      class="detail-dialog admin-dialog"
-      align-center
-      destroy-on-close
-    >
-      <div v-loading="detailLoading" class="detail-body">
-        <template v-if="detailPayload && !detailPayload.error">
-          <el-descriptions :column="2" border size="small" class="desc-grid">
-            <el-descriptions-item label="任务 ID">{{ detailPayload.id }}</el-descriptions-item>
-            <el-descriptions-item label="Task ID">{{ detailPayload.taskId ?? '—' }}</el-descriptions-item>
-            <el-descriptions-item v-if="detailPayload.requestRid" label="请求记录 rid">{{ detailPayload.requestRid }}</el-descriptions-item>
-            <el-descriptions-item v-if="detailPayload.processId != null" label="进程 ID">{{ detailPayload.processId }}</el-descriptions-item>
-            <el-descriptions-item v-if="detailPayload.upstreamTaskId" label="上游 Task ID">{{ detailPayload.upstreamTaskId }}</el-descriptions-item>
-            <el-descriptions-item v-if="detailPayload.traceId" label="Trace ID">{{ detailPayload.traceId }}</el-descriptions-item>
-            <el-descriptions-item v-if="detailPayload.parentTraceId" label="父 Trace ID">{{ detailPayload.parentTraceId }}</el-descriptions-item>
-            <el-descriptions-item v-if="detailPayload.callSequence != null" label="调用序号">{{ detailPayload.callSequence }}</el-descriptions-item>
-            <el-descriptions-item v-if="detailPayload.businessId" label="业务 ID">{{ detailPayload.businessId }}</el-descriptions-item>
-            <el-descriptions-item label="服务">{{ detailPayload.serviceName }}</el-descriptions-item>
-            <el-descriptions-item label="方法">{{ detailPayload.methodName }}</el-descriptions-item>
-            <el-descriptions-item label="HTTP">{{ detailPayload.httpMethod }}</el-descriptions-item>
-            <el-descriptions-item label="业务类型">{{ detailPayload.businessType }}</el-descriptions-item>
-            <el-descriptions-item label="状态码">{{ detailPayload.statusCode }}</el-descriptions-item>
-            <el-descriptions-item label="耗时">{{ detailPayload.durationMs != null ? `${detailPayload.durationMs} ms` : '—' }}</el-descriptions-item>
-            <el-descriptions-item label="业务状态">
-              <el-tag
-                :type="
-                  detailPayload.businessSuccess === true
-                    ? 'success'
-                    : detailPayload.businessSuccess === false
-                      ? 'danger'
-                      : 'info'
-                "
-                effect="light"
-                size="small"
-                class="status-tag-admin"
-              >
-                {{ detailPayload.businessStatusLabel ?? '—' }}
-              </el-tag>
-            </el-descriptions-item>
-            <el-descriptions-item label="错误信息">{{ (detailPayload.errorMessage as string) || '—' }}</el-descriptions-item>
-            <el-descriptions-item label="创建时间">{{ detailPayload.createdAt ?? '—' }}</el-descriptions-item>
-            <el-descriptions-item label="更新时间">{{ detailPayload.updatedAt ?? '—' }}</el-descriptions-item>
-            <el-descriptions-item v-if="detailPayload.httpTraceCreatedAt" label="HTTP 记录创建">{{ detailPayload.httpTraceCreatedAt }}</el-descriptions-item>
-            <el-descriptions-item v-if="detailPayload.httpTraceUpdatedAt" label="HTTP 记录更新">{{ detailPayload.httpTraceUpdatedAt }}</el-descriptions-item>
-          </el-descriptions>
-
-          <div class="field-label">Request URL</div>
-          <pre class="code-block">{{ detailPayload.requestUrl }}</pre>
-
-          <div class="field-label">Request Headers</div>
-          <pre class="code-block muted">{{ formatJson(detailPayload.requestHeaders) }}</pre>
-
-          <HttpTraceJsonBlock
-            label="Request Body"
-            :model-value="detailPayload.requestBody"
-            :pre-extra-class="detailIsShotMatch ? 'code-block--shot-trace' : undefined"
-          >
-            <template v-if="detailIsShotMatch" #before-body>
-              <p class="hint trace-body-hint">
-                以下内容仅作审计对照：检索请求里的<strong>长向量</strong>入库前会替换为
-                <code>_omitted: numeric_vector</code>
-                占位；若整体仍超长则会再出现
-                <code>_truncated</code>
-                。<strong>重试匹配</strong>由服务端根据当前分镜的
-                <code>tags_json</code>
-                重新调用检索逻辑，<strong>不会</strong>也不应依赖本条 Request Body 回放。
-              </p>
-            </template>
-          </HttpTraceJsonBlock>
-
-          <div class="field-label">Response Headers</div>
-          <pre class="code-block muted">{{ formatJson(detailPayload.responseHeaders) }}</pre>
-
-          <HttpTraceJsonBlock label="Response Body" :model-value="detailPayload.responseBody" />
-
-          <template v-if="detailIsShotMatch">
-            <div class="field-label">Top 命中（OpenSearch _score，与分镜检索结果一致）</div>
-            <p v-if="!detailMatchHitRows.length" class="hint">暂无命中记录（尚未匹配或 trace 未落库时可仍可从上方 Response 查看摘要）</p>
-            <el-table
-              v-else
-              :data="detailMatchHitRows"
-              border
-              stripe
-              size="small"
-              class="hit-rank-table"
-              max-height="280"
-            >
-              <el-table-column prop="rank" label="#" width="44" align="center" />
-              <el-table-column prop="score" label="_score" width="96" align="right">
-                <template #default="{ row: hr }">
-                  {{ Number.isFinite(hr.score) ? hr.score.toFixed(4) : hr.score }}
-                </template>
-              </el-table-column>
-              <el-table-column prop="history_id" label="history_id" min-width="110" show-overflow-tooltip />
-              <el-table-column label="video_url" min-width="200" show-overflow-tooltip>
-                <template #default="{ row: hr }">
-                  <a
-                    v-if="hr.video_path"
-                    class="match-url-link"
-                    :href="hr.video_path"
-                    :title="hr.video_path"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    >{{ hr.video_path }}</a
-                  >
-                  <span v-else class="muted-small">—</span>
-                </template>
-              </el-table-column>
-            </el-table>
-            <p v-if="detailIsShotMatch && detailMatchHitRows.some((r) => !r.video_path)" class="hint">
-              表格中
-              <code>video_url</code>
-              为「—」表示服务端未解析到成片地址：该
-              <code>history_id</code>
-              在
-              <code>video_analysis_history</code>
-              无记录、或
-              <code>video_url</code>
-              为空且 v2 分镜里也暂无
-              <code>obs_video_url</code>
-              ，与界面截断无关。可直接点
-              <code>history_id</code>
-              同一行的其它列或到视频分析里核对该条历史。
-            </p>
-          </template>
-
-          <p v-if="detailPayload.note" class="hint">{{ detailPayload.note }}</p>
-
-          <template v-if="isImageGenDetail">
-            <div class="detail-image-tail">
-              <div class="field-label">提示词</div>
-              <div class="text-panel">{{ detailPrompt || '—' }}</div>
-              <div class="field-label">生成结果</div>
-              <div
-                v-if="detailResultImageUrl"
-                class="result-img-wrap detail-result-img-wrap detail-result-img-open"
-                role="button"
-                tabindex="0"
-                title="点击查看大图（可缩放拖动）"
-                @click="detailImageViewerVisible = true"
-                @keydown.enter.prevent="detailImageViewerVisible = true"
-              >
-                <el-image
-                  :src="detailResultImageUrl"
-                  fit="contain"
-                  class="detail-result-el-image"
-                  preview-disabled
-                />
-              </div>
-              <div v-else class="text-panel muted">暂无图片 URL（可能仍在生成或失败）</div>
-            </div>
-          </template>
-        </template>
-        <el-alert v-else-if="detailPayload?.error" type="error" :title="String(detailPayload.error)" show-icon :closable="false" />
-      </div>
-    </el-dialog>
-
-    <ElImageViewer
-      v-if="detailImageViewerVisible && detailResultImageUrl"
-      :url-list="[detailResultImageUrl]"
-      @close="detailImageViewerVisible = false"
+      :detail-dialog-title="detailDialogTitle"
+      :detail-is-shot-match="detailIsShotMatch"
+      :detail-loading="detailLoading"
+      :detail-payload="detailPayload"
+      :detail-match-hit-rows="detailMatchHitRows"
+      :is-image-gen-detail="isImageGenDetail"
+      :detail-prompt="detailPrompt"
+      :detail-result-image-url="detailResultImageUrl"
     />
   </div>
 </template>

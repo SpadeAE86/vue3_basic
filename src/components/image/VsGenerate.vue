@@ -90,7 +90,7 @@ const generating = ref(false)
 
 // 监听模板列表加载
 watch(() => templates.value, (newTemplates) => {
-  if (newTemplates.length > 0) {
+  if (newTemplates && newTemplates.length > 0) {
     if (!templateA.value) templateA.value = newTemplates[0].name
     if (!templateB.value) templateB.value = newTemplates[0].name
   }
@@ -98,7 +98,7 @@ watch(() => templates.value, (newTemplates) => {
 
 // 监听模型列表加载
 watch(() => currentModels.value, (models) => {
-  if (models.length > 0) {
+  if (models && models.length > 0) {
     if (!modelA.value || !models.find(m => m.value === modelA.value)) modelA.value = models[0].value
     if (!modelB.value || !models.find(m => m.value === modelB.value)) modelB.value = models[0].value
   }
@@ -115,10 +115,10 @@ const activeModels = computed(() => {
 
 const computedAvailableLevels = computed(() => {
   if (activeModels.value.length === 0) return ['2K']
-  let intersection = IMAGE_MODEL_LEVEL_OPTIONS[activeModels.value[0]] || []
+  let intersection = IMAGE_MODEL_LEVEL_OPTIONS[activeModels.value[0] as keyof typeof IMAGE_MODEL_LEVEL_OPTIONS] || []
   for (let i = 1; i < activeModels.value.length; i++) {
-    const opts = IMAGE_MODEL_LEVEL_OPTIONS[activeModels.value[i]] || []
-    intersection = intersection.filter(x => opts.includes(x))
+    const opts = IMAGE_MODEL_LEVEL_OPTIONS[activeModels.value[i] as keyof typeof IMAGE_MODEL_LEVEL_OPTIONS] || []
+    intersection = intersection.filter((x: string) => opts.includes(x))
   }
   return intersection.length > 0 ? intersection : ['2K']
 })
@@ -146,7 +146,7 @@ watch(computedAvailableLevels, (levels) => {
 })
 
 watch(computedAvailableVideoResolutions, (resolutions) => {
-  if (props.currentMode === 'video' && !resolutions.find(r => r.value === sharedForm.videoResolution)) {
+  if (props.currentMode === 'video' && resolutions && resolutions.length > 0 && !resolutions.find(r => r.value === sharedForm.videoResolution)) {
     sharedForm.videoResolution = resolutions[0].value
   }
 })
@@ -251,8 +251,8 @@ async function handleGenerateBoth() {
     // 兜底逻辑：如果上面的精确查找失败（比如 prompt 和 model 完全一样），按顺序取最新的两个
     if (generatedImages.value.length >= initialLength + 2) {
       if (!lastGeneratedIdA.value || !lastGeneratedIdB.value) {
-        lastGeneratedIdA.value = generatedImages.value[1].id
-        lastGeneratedIdB.value = generatedImages.value[0].id
+        lastGeneratedIdA.value = generatedImages.value[1]?.id ?? ''
+        lastGeneratedIdB.value = generatedImages.value[0]?.id ?? ''
       }
     }
 
@@ -297,8 +297,8 @@ async function handleGenerateImagesStage2() {
     // 兜底逻辑：如果上面的精确查找失败（比如 prompt 和 model 完全一样），按顺序取最新的两个
     if (generatedImages.value.length >= initialLength + 2) {
       if (!lastGeneratedIdA.value || !lastGeneratedIdB.value) {
-        lastGeneratedIdA.value = generatedImages.value[1].id
-        lastGeneratedIdB.value = generatedImages.value[0].id
+        lastGeneratedIdA.value = generatedImages.value[1]?.id ?? ''
+        lastGeneratedIdB.value = generatedImages.value[0]?.id ?? ''
       }
     }
   } catch (e) {

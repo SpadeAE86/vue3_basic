@@ -4,7 +4,7 @@ import {
   rowCreatedAt,
   rowDurationLabel,
   rowStatusNorm,
-  vmParseColStatus,
+  vmExtractColStatus,
   vmRowNeedsLiveDurationTick,
   statusTagType,
 } from '@/views/task_board/taskBoardRowUtils'
@@ -23,9 +23,7 @@ const vmJobTitle = (row: Record<string, unknown>) => {
   return t || top || '—'
 }
 
-const vmJobCanRetryTranscribe = (row: Record<string, unknown>) => {
-  return vmParseColStatus(row) === 'failed' || (row.search_status || '').toString().toLowerCase() === 'failed'
-}
+const vmJobCanRetryExtract = (row: Record<string, unknown>) => { return vmExtractColStatus(row) === 'failed' }
 
 const props = defineProps<{
   rows: Record<string, unknown>[]
@@ -47,15 +45,15 @@ const emit = defineEmits(['detail', 'retry', 'storyboard'])
         style="width: 100%"
       >
         <el-table-column prop="id" label="任务 ID" min-width="120" show-overflow-tooltip />
-        <el-table-column label="转写状态" width="104" align="center">
+        <el-table-column label="提取状态" width="104" align="center">
           <template #default="{ row }">
             <el-tag
-              :type="statusTagType(vmParseColStatus(row))"
+              :type="statusTagType(vmExtractColStatus(row))"
               effect="light"
               size="small"
               class="status-pill status-tag-admin"
             >
-              {{ statusLabel(vmParseColStatus(row)) }}
+              {{ statusLabel(vmExtractColStatus(row)) }}
             </el-tag>
           </template>
         </el-table-column>
@@ -83,7 +81,7 @@ const emit = defineEmits(['detail', 'retry', 'storyboard'])
         </el-table-column>
         <el-table-column label="耗时" width="120" align="center">
           <template #default="{ row }">
-            {{ rowDurationLabel(row, 'video_match_transcribe', durationTick) }}
+            {{ rowDurationLabel(row, 'video_match_tag', durationTick) }}
           </template>
         </el-table-column>
         <el-table-column prop="workspace" label="工作区" width="88" />
@@ -93,7 +91,7 @@ const emit = defineEmits(['detail', 'retry', 'storyboard'])
               <el-button type="primary" link @click="$emit('detail', row)">查看详情</el-button>
               <el-button type="primary" link @click="$emit('storyboard', row)">查看分镜</el-button>
               <el-button
-                v-if="vmJobCanRetryTranscribe(row)"
+                v-if="vmJobCanRetryExtract(row)"
                 type="primary"
                 link
                 @click="$emit('retry', row)"

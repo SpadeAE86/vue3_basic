@@ -10,7 +10,7 @@
     >
       <div v-loading="loading" class="match-detail-body">
         <div class="field-label">结构化标签（与视频分析搜索条语义一致）</div>
-        <TokenChipsReadonly :tokens="tokens" :max-preview-chars="36" />
+        <TokenChipsReadonly :tokens="tokens || []" :max-preview-chars="36" />
 
         <el-alert
           v-if="localOnly"
@@ -155,7 +155,94 @@ const props = defineProps<{
   payload: any,
   row: any,
   hitRows: any,
-  formatMatchDetailJson: (v: any) => string
+  formatMatchDetailJson: (v: any) => string,
+  tokens?: any[],
+  localOnly?: boolean
 }>()
 const emit = defineEmits(['update:modelValue'])
-</script>
+</script><style scoped>
+.match-detail-body {
+  min-height: 100px;
+}
+.match-detail-dialog.admin-dialog :deep(.el-dialog__body) {
+  max-height: calc(100vh - 132px);
+  overflow-y: auto;
+  padding-right: 4px;
+}
+.match-detail-alert {
+  margin-top: 12px;
+}
+.desc-grid {
+  margin-bottom: 16px;
+  margin-top: 16px;
+}
+.field-label {
+  font-size: 13px;
+  color: rgba(0, 0, 0, 0.45);
+  margin: 12px 0 6px;
+  font-weight: 500;
+}
+.code-block {
+  margin: 0;
+  padding: 12px 14px;
+  background: #f5f5f5;
+  border: 1px solid #e8e8e8;
+  border-radius: 2px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  overflow-x: auto;
+  max-height: 260px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.code-block.muted {
+  color: #8c8c8c;
+}
+.code-block--shot-trace {
+  max-height: min(48vh, 520px);
+}
+.trace-body-hint {
+  margin: 0 0 8px;
+}
+.hint {
+  margin-top: 12px;
+  font-size: 12px;
+  color: #8c8c8c;
+}
+.status-tag-admin.el-tag--success {
+  --el-tag-bg-color: #f6ffed;
+  --el-tag-border-color: #b7eb8f;
+  --el-tag-text-color: #389e0d;
+}
+.status-tag-admin.el-tag--danger {
+  --el-tag-bg-color: #fff2f0;
+  --el-tag-border-color: #ffccc7;
+  --el-tag-text-color: #cf1322;
+}
+.status-tag-admin.el-tag--info {
+  --el-tag-bg-color: #f0f5ff;
+  --el-tag-border-color: #adc6ff;
+  --el-tag-text-color: #2f54eb;
+}
+.status-tag-admin.el-tag--warning {
+  --el-tag-bg-color: #fffbe6;
+  --el-tag-border-color: #ffe58f;
+  --el-tag-text-color: #d48806;
+}
+.hit-rank-table {
+  margin-bottom: 12px;
+}
+.match-url-link {
+  color: var(--el-color-primary);
+  word-break: break-all;
+}
+.match-url-link:hover {
+  text-decoration: underline;
+}
+.muted-small {
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.45);
+}
+</style>

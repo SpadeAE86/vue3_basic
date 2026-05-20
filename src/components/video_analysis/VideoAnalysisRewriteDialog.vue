@@ -3,9 +3,9 @@ const props = defineProps<{
   dialogVisible: boolean
   form: any
   isRewriting: boolean
-  ZHIJI_CAR_MODEL_OPTIONS: any[]
-  rewriteFrameSizeOptions: any[]
-  VIDEO_FRAME_ORIENTATION_OPTIONS: any[]
+  ZHIJI_CAR_MODEL_OPTIONS: readonly any[]
+  rewriteFrameSizeOptions: readonly any[]
+  VIDEO_FRAME_ORIENTATION_OPTIONS: readonly any[]
 }>()
 
 const emit = defineEmits<{
@@ -20,7 +20,7 @@ const emit = defineEmits<{
       title="智能提取搜索条件"
       width="500px"
     >
-      <el-form :model="rewriteTaskState.form" label-width="80px">
+      <el-form :model="props.form" label-width="80px">
         <el-form-item label="口播脚本">
           <el-input
             v-model="props.form.script"

@@ -13,7 +13,20 @@ const clusterMode = ref<'clique' | 'center'>('clique')
 // ============================================================
 // 原始数据 —— Agent 生成的 JSON 格式
 // ============================================================
-const graphData = {
+interface GraphNode {
+  id: string
+  data: { label: string; group: string; _isCenter?: boolean }
+  [key: string]: any
+}
+
+interface GraphEdge {
+  source: string
+  target: string
+  data: { label: string; _cluster?: boolean }
+  [key: string]: any
+}
+
+const graphData: { nodes: GraphNode[], edges: GraphEdge[] } = {
   nodes: [
     { id: 'vue3', data: { label: 'Vue 3', group: 'framework' } },
     { id: 'router', data: { label: 'Vue Router', group: 'framework' } },
@@ -66,8 +79,8 @@ function enrichClique(data: typeof graphData) {
         )
         if (!exists) {
           clusterEdges.push({
-            source: ids[i],
-            target: ids[j],
+            source: ids[i] as string,
+            target: ids[j] as string,
             data: { label: '', _cluster: true },
           })
         }

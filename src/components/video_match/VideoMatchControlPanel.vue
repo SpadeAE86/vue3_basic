@@ -46,17 +46,24 @@
             <el-tag v-if="jobSearchStatus" size="small" effect="plain" :type="pipelineStatusZh(jobSearchStatus).tag">
               素材匹配 · {{ pipelineStatusZh(jobSearchStatus).label }}
             </el-tag>
+            <el-tag v-if="extractStatus" size="small" effect="plain" :type="pipelineStatusZh(extractStatus).tag">
+              抽取标签 · {{ pipelineStatusZh(extractStatus).label }}
+            </el-tag>
+            <el-button size="small" type="primary" plain @click="onExtract" :disabled="!currentJobId || extractStatus === 'running'" :loading="isExtracting">
+              一键抽取
+            </el-button>
             <el-button size="small" @click="refreshJob">刷新任务</el-button>
           </div>
           <div class="vm-pipeline-actions">
             <div class="vm-action-group">
               <SearchStrategySelect
-                v-model="selectedStrategy"
+                :model-value="selectedStrategy ?? ''"
                 :strategies="strategies"
                 placeholder="选择搜索策略"
                 @refresh="loadStrategies"
                 @delete="onStrategyDelete"
                 @create="openVmStrategyCreateDialog"
+                @update:model-value="(v) => selectedStrategy = (v ?? null)"
               />
               <el-button
                 circle
@@ -68,6 +75,12 @@
               >
                 <el-icon><Setting /></el-icon>
               </el-button>
+              <el-switch
+                v-model="enableRoadRunFallback"
+                active-text="路跑兜底"
+                size="small"
+                style="margin-right: 12px"
+              />
               <el-button type="success" :disabled="!canMatch || matching" :loading="matching" @click="onMatch">
                 匹配
               </el-button>
@@ -97,14 +110,14 @@
         </div>
       </div>
 
-      <div class="vm-parse-block">
+      <div class="vm-parse-block" @dragover.prevent @drop.prevent="onDropJson">
         <el-form class="parse-form" label-width="72px" @submit.prevent="onParse">
           <el-form-item label="口播脚本" required>
             <el-input
               v-model="form.script"
               type="textarea"
               :rows="3"
-              placeholder="例如：智己LS6，城市道路，展示一键泊车功能..."
+              placeholder="例如：智己LS6... 也可以直接将包含 主题/标题/中段混剪/车型的 JSON 文件拖拽到此处填充表单"
             />
           </el-form-item>
           <div class="vm-extra-fields">
@@ -199,6 +212,16 @@
       </el-alert>
 
       <el-alert
+        v-if="extractError"
+        type="warning"
+        :closable="false"
+        show-icon
+        class="parse-alert vm-search-error-alert"
+      >
+        {{ extractError }}
+      </el-alert>
+
+      <el-alert
         v-if="lastMixCompose"
         class="mix-compose-status"
         :type="
@@ -285,28 +308,290 @@ const props = defineProps<{
   workspaceOptions: any,
   videoMatchFrameSizeOptions: any,
   parsing: boolean,
+  parseStatus?: string | null,
+  parseError?: string | null,
   matching: boolean,
   composing: boolean,
+  isExtracting: boolean,
+  extractStatus?: string | null,
+  extractError?: string | null,
   hasShots: boolean,
   canMatch: boolean,
   canMixCompose: boolean,
   mixComposeDisabledHint: string,
   historyJobs: any,
-  historyJobId: any,
   historyJobLabel: any,
   lastMixCompose: any,
-  jobSearchError: any,
+  currentJobId?: string | null,
+  jobSearchStatus?: string | null,
+  jobSearchError?: string | null,
   mixComposeResultHref: any,
-  copyMixOutputPath: any,
-  downloadMixSrtFile: any,
   strategies: any,
-  selectedStrategy: any,
-  pipelineStatusZh: string
+  pipelineStatusZh: (status: any) => { label: string, tag: string }
 }>()
 
-const emit = defineEmits(['parse', 'match', 'mix-compose', 'update:historyJobId', 'update:selectedStrategy', 'history-change', 'strategy-delete', 'open-strategy-create', 'open-strategy-edit'])
+const tokenJoinDialogVisible = defineModel<boolean>('tokenJoinDialogVisible')
+const historyJobId = defineModel<string | null>('historyJobId')
+const selectedStrategy = defineModel<string | null>('selectedStrategy')
+const mixPreferSrt = defineModel<boolean>('mixPreferSrt')
+
+const emit = defineEmits([
+  'parse', 'match', 'extract', 'mix-compose', 'history-change', 'strategy-delete',
+  'open-strategy-create', 'open-strategy-edit', 'refreshJob', 'loadStrategies',
+  'copyMixOutputPath', 'downloadMixSrtFile'
+])
 
 function onHistoryJobChange(v: any) { emit('history-change', v) }
-function dismissMixComposeAlert() { emit('update:historyJobId', null) }
+function dismissMixComposeAlert() { historyJobId.value = null }
 function onStrategyDelete(name: any) { emit('strategy-delete', name) }
-</script>
+function onParse() { emit('parse') }
+function onExtract() { emit('extract') }
+function onMatch() { emit('match') }
+function onMixCompose() { emit('mix-compose') }
+function refreshJob() { emit('refreshJob') }
+function loadStrategies() { emit('loadStrategies') }
+function openVmStrategyCreateDialog() { emit('open-strategy-create') }
+function openVmStrategyEditDialog() { emit('open-strategy-edit') }
+function copyMixOutputPath(path: string) { emit('copyMixOutputPath', path) }
+function downloadMixSrtFile(path: string, id: string) { emit('downloadMixSrtFile', path, id) }
+function shortJobIdForDisplay(id: string) {
+  if (!id) return ''
+  return id.length > 8 ? id.substring(0, 8) : id
+}
+
+async function onDropJson(event: DragEvent) {
+  const file = event.dataTransfer?.files[0]
+  if (!file || !file.name.endsWith('.json')) {
+    ElMessage.warning('请拖拽有效的 JSON 文件')
+    return
+  }
+  try {
+    const text = await file.text()
+    const data = JSON.parse(text)
+    
+    if (data.topic || data['主题']) props.form.topic = data.topic || data['主题'] || ''
+    if (data.title || data['标题']) props.form.title = data.title || data['标题'] || ''
+    const script = data.script || data.mid_mix || data['中段混剪'] || ''
+    if (script) props.form.script = script
+    
+    const carModelRaw = data.car_model || data['车型'] || ''
+    if (carModelRaw) {
+      const norm = normalizeZhijiCarSelectValue(carModelRaw)
+      if (norm) {
+        props.form.car_model = norm
+      } else {
+        // Fallback default
+        props.form.car_model = 'LS6'
+      }
+    } else {
+      props.form.car_model = 'LS6'
+    }
+
+    ElMessage.success('已自动填充 JSON 字段')
+  } catch (e: any) {
+    ElMessage.error('解析 JSON 文件失败: ' + e.message)
+  }
+}
+</script><style scoped>
+.control-panel {
+  border-radius: 8px;
+  border: 1px solid #ebeef5;
+  flex-shrink: 0;
+}
+.header-controls {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.vm-header-unified {
+  padding-bottom: 10px;
+}
+.left-controls {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.vm-context-row {
+  align-items: center;
+}
+.vm-inline-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: nowrap;
+}
+.vm-header-right {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  max-width: 100%;
+}
+.vm-pipeline-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+}
+.vm-action-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.vm-compose-inline {
+  padding-left: 8px;
+  border-left: 1px solid var(--el-border-color-lighter);
+}
+.vm-parse-block {
+  margin-top: 12px;
+}
+.parse-actions-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.vm-search-error-alert {
+  margin-top: 10px;
+}
+.job-status-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.vm-group-label {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  white-space: nowrap;
+}
+.vm-extra-fields {
+  margin-bottom: 4px;
+}
+.template-gear-btn .el-icon {
+  font-size: 20px;
+}
+.section-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: #303133;
+  margin: 0;
+  padding-left: 8px;
+  border-left: 4px solid #409eff;
+}
+.workspace-select {
+  width: 180px;
+}
+.history-job-select {
+  min-width: 260px;
+  max-width: 360px;
+}
+.strategy-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.mix-result-path {
+  margin-top: 6px;
+}
+.mix-result-path .path-text {
+  margin: 4px 0;
+  word-break: break-all;
+  font-size: 12px;
+}
+.mix-result-path .small {
+  font-size: 12px;
+}
+.inline-btn-wrap {
+  display: inline-flex;
+}
+.mix-compose-actions {
+  align-items: center;
+  gap: 8px;
+}
+.mix-srt-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-right: 4px;
+}
+.mix-srt-label {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  white-space: nowrap;
+}
+.mix-srt-block {
+  margin-top: 8px;
+}
+.mix-compose-status {
+  margin-top: 12px;
+  max-width: none;
+}
+.mix-compose-status-body {
+  font-size: 13px;
+  line-height: 1.5;
+}
+.mix-compose-status-body .mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  word-break: break-all;
+}
+.mix-compose-status-body .lbl {
+  color: #909399;
+  margin-right: 6px;
+}
+.mix-compose-status-body .result-link {
+  margin-top: 6px;
+}
+.mix-compose-status-body .mix-err {
+  color: #f56c6c;
+  margin-top: 6px;
+}
+.right-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.job-status-bar .job-ref {
+  font-size: 13px;
+  color: #606266;
+  cursor: default;
+  margin-right: 4px;
+}
+.parse-form {
+  margin-top: 0;
+  max-width: 960px;
+}
+.form-row-inline {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px 16px;
+}
+.vm-frame-constraints-row {
+  grid-template-columns: 1fr 1fr;
+}
+@media (max-width: 900px) {
+  .form-row-inline {
+    grid-template-columns: 1fr;
+  }
+}
+.parse-alert {
+  margin-top: 8px;
+}
+.muted {
+  color: #9ca3af;
+  font-size: 12px;
+}
+.subtle {
+  color: #9ca3af;
+  font-size: 12px;
+}
+</style>

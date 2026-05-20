@@ -2,8 +2,16 @@ import type { VideoMatchShotDto } from '@/api/video_match'
 
 export function shotRankedVideoUrls(row: VideoMatchShotDto): string[] {
   try {
-    if (!row.match_result || !row.match_result.ranked_results) return []
-    return row.match_result.ranked_results.map((r: any) => r.video_url || '').filter(Boolean)
+    if (row.top5_video_urls && row.top5_video_urls.length > 0) {
+      return row.top5_video_urls.filter(Boolean)
+    }
+    if (row.match_top_hits_json && row.match_top_hits_json.length > 0) {
+      return row.match_top_hits_json.map((r) => r.video_path || '').filter(Boolean)
+    }
+    if (row.top1_obs_url) {
+      return [row.top1_obs_url]
+    }
+    return []
   } catch {
     return []
   }
@@ -11,7 +19,7 @@ export function shotRankedVideoUrls(row: VideoMatchShotDto): string[] {
 
 export function shotTop1VideoUrl(row: VideoMatchShotDto): string | null {
   const arr = shotRankedVideoUrls(row)
-  return arr.length > 0 ? arr[0] : null
+  return arr.length > 0 ? (arr[0] ?? null) : null
 }
 
 export function top1UrlDisplay(url: string | null): string {
@@ -30,6 +38,14 @@ export function shotSearchStatusNorm(row: VideoMatchShotDto): string {
   if (s === 'processing' || s === 'running') return 'running'
   if (s === 'pending') return 'pending'
   return s
+}
+
+export function shotExtractStatusNorm(row: VideoMatchShotDto): string {
+  const s = (row.extract_status || '').toLowerCase()
+  if (s === 'failed') return 'failed'
+  if (s === 'done') return 'success'
+  if (s === 'running' || s === 'extracting') return 'running'
+  return 'pending'
 }
 
 export function shotStatusLabel(st: string): string {

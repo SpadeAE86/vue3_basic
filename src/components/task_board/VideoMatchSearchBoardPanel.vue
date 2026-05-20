@@ -37,6 +37,8 @@ const materialSourceLabel = (src: unknown) => {
 
 const formatMaterialStrategyTemplate = (snap: unknown) => {
   if (!snap || typeof snap !== 'object') return '—'
+  const name = (snap as any).name
+  if (name) return String(name)
   const bm25 = (snap as any).bm25_weight ?? 0.3
   const vec = (snap as any).vector_weight ?? 0.7
   const rrf = !!(snap as any).use_rrf
@@ -125,9 +127,17 @@ const emit = defineEmits(['detail', 'retry', 'view-material', 'navigate-analysis
             {{ formatMaterialStrategyTemplate(row.strategy_snapshot) }}
           </template>
         </el-table-column>
-        <el-table-column label="模式" width="88" show-overflow-tooltip>
+        <el-table-column label="路跑兜底" width="88" align="center">
           <template #default="{ row }">
-            {{ row.search_mode || '—' }}
+            <el-tag
+              v-if="row.enable_road_run_fallback != null"
+              :type="row.enable_road_run_fallback ? 'success' : 'info'"
+              effect="light"
+              size="small"
+            >
+              {{ row.enable_road_run_fallback ? '是' : '否' }}
+            </el-tag>
+            <span v-else class="muted-small">—</span>
           </template>
         </el-table-column>
         <el-table-column label="创建时间" min-width="168">

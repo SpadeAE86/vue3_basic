@@ -197,6 +197,10 @@ onUnmounted(() => {
               </span>
             </template>
           </el-menu-item>
+          <el-menu-item index="/task-board/video-match-tag">
+            <el-icon><i-ep-price-tag /></el-icon>
+            <template #title>抽标签记录</template>
+          </el-menu-item>
           <el-menu-item index="/task-board/video-match-transcribe">
             <el-icon><i-ep-magic-stick /></el-icon>
             <template #title>脚本转写</template>

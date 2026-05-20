@@ -51,18 +51,20 @@ async function streamText(
   pushEvent({ event_type: eventType, content: '' })
 
   const evt = events.value[events.value.length - 1]
-  evt.streaming = true
+  if (evt) {
+    evt.streaming = true
 
-  let cursor = 0
-  while (cursor < fullText.length) {
-    const end = Math.min(cursor + chunkSize, fullText.length)
-    evt.content += fullText.slice(cursor, end)
-    cursor = end
-    await new Promise(r => setTimeout(r, chunkMs))
+    let cursor = 0
+    while (cursor < fullText.length) {
+      const end = Math.min(cursor + chunkSize, fullText.length)
+      evt.content += fullText.slice(cursor, end)
+      cursor = end
+      await new Promise(r => setTimeout(r, chunkMs))
+    }
+
+    evt.streaming = false
   }
-
-  evt.streaming = false
-  return evt
+  return evt as ChatEvent
 }
 
 /** SSE 用: 往最后一个同类型事件追加文本 */
@@ -75,7 +77,8 @@ function appendToLast(type: ChatEvent['type'], delta: string) {
       event_type: type === 'assistant' ? 'text_chunk' : 'agent_thought',
       content: delta,
     })
-    events.value[events.value.length - 1].streaming = true
+    const newLast = events.value[events.value.length - 1]
+    if (newLast) newLast.streaming = true
   }
 }
 

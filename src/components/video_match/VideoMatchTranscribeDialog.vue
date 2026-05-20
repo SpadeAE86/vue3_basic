@@ -14,7 +14,7 @@
         <div class="field-label">画面描述</div>
         <div class="text-panel">{{ row.description || '—' }}</div>
         <div class="field-label">结构化标签</div>
-        <TokenChipsReadonly :tokens="tokens" />
+        <TokenChipsReadonly :tokens="tokens || []" />
       </template>
     </el-dialog>
 </template>

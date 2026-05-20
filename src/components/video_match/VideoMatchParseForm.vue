@@ -29,7 +29,7 @@ const emit = defineEmits<{
     <el-form-item label="口播脚本" required>
       <el-input
         :model-value="modelValue.script"
-        @update:model-value="v => emit('update:modelValue', { ...modelValue, script: v })"
+        @update:model-value="(v: string) => emit('update:modelValue', { ...modelValue, script: v })"
         type="textarea"
         :rows="3"
         placeholder="例如：智己LS6，城市道路，展示一键泊车功能..."
@@ -40,21 +40,21 @@ const emit = defineEmits<{
         <el-form-item label="主题">
           <el-input
             :model-value="modelValue.topic"
-            @update:model-value="v => emit('update:modelValue', { ...modelValue, topic: v })"
+            @update:model-value="(v: string) => emit('update:modelValue', { ...modelValue, topic: v })"
             placeholder="选填"
           />
         </el-form-item>
         <el-form-item label="标题">
           <el-input
             :model-value="modelValue.title"
-            @update:model-value="v => emit('update:modelValue', { ...modelValue, title: v })"
+            @update:model-value="(v: string) => emit('update:modelValue', { ...modelValue, title: v })"
             placeholder="选填"
           />
         </el-form-item>
         <el-form-item label="车型">
           <el-select
             :model-value="modelValue.car_model"
-            @update:model-value="v => emit('update:modelValue', { ...modelValue, car_model: v })"
+            @update:model-value="(v: string) => emit('update:modelValue', { ...modelValue, car_model: v })"
             placeholder="请选择车型"
             clearable
             style="width: 100%"
@@ -72,7 +72,7 @@ const emit = defineEmits<{
         <el-form-item label="画面比例">
           <el-select
             :model-value="modelValue.frame_size"
-            @update:model-value="v => emit('update:modelValue', { ...modelValue, frame_size: v })"
+            @update:model-value="(v: string) => emit('update:modelValue', { ...modelValue, frame_size: v })"
             placeholder="选填：与索引 frame_size 一致"
             clearable
             class="frame-size-select"
@@ -88,7 +88,7 @@ const emit = defineEmits<{
         <el-form-item label="横竖屏">
           <el-select
             :model-value="modelValue.frame_orientation"
-            @update:model-value="v => emit('update:modelValue', { ...modelValue, frame_orientation: v })"
+            @update:model-value="(v: string) => emit('update:modelValue', { ...modelValue, frame_orientation: v })"
             placeholder="选填：仅定横竖屏"
             clearable
             class="frame-orientation-select"

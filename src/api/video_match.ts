@@ -16,6 +16,7 @@ export interface VideoMatchShotDto {
   description: string
   tags_summary: string
   tags_json: Record<string, unknown>
+  extract_status: string
   search_status: string
   top1_obs_url: string | null
   top5_video_urls?: string[]
@@ -29,8 +30,10 @@ export interface VideoMatchShotDto {
 
 export interface VideoMatchJobSummary {
   id: string
+  serial_no?: number | null
   workspace?: string | null
   parse_status?: string
+  extract_status?: string | null
   search_status?: string | null
   title?: string | null
   topic?: string | null
@@ -52,6 +55,7 @@ export interface VideoMatchJobResponse {
   success: boolean
   mock?: boolean
   job_id?: string
+  serial_no?: number | null
   request_id?: string | null
   /** 创建任务时的口播与元数据（历史载入时回填表单） */
   script?: string
@@ -116,7 +120,7 @@ export async function getVideoMatchJobApi(jobId: string): Promise<VideoMatchJobR
 
 export async function searchVideoMatchJobApi(
   jobId: string,
-  body: { strategy_name: string; mode?: string; top_k?: number },
+  body: { strategy_name: string; mode?: string; top_k?: number; enable_road_run_fallback?: boolean },
 ): Promise<VideoMatchJobResponse> {
   const resp = await fetch(`${API_BASE}/video-match/jobs/${encodeURIComponent(jobId)}/search`, {
     method: 'POST',
@@ -125,9 +129,20 @@ export async function searchVideoMatchJobApi(
       strategy_name: body.strategy_name,
       mode: body.mode ?? 'field_aligned_hybrid',
       top_k: body.top_k ?? 5,
+      enable_road_run_fallback: body.enable_road_run_fallback ?? true,
     }),
   })
   return resp.json() as Promise<VideoMatchJobResponse>
+}
+
+export async function extractTagsVideoMatchJobApi(jobId: string) {
+  const resp = await fetch(`${API_BASE}/video-match/jobs/${encodeURIComponent(jobId)}/extract`, {
+    method: 'POST',
+  })
+  if (!resp.ok) {
+    throw new Error(`HTTP ${resp.status}`)
+  }
+  return resp.json() as Promise<{ success: boolean; message?: string; error?: string }>
 }
 
 export interface VideoMatchShotDetailResponse {
