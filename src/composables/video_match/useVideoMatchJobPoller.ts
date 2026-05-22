@@ -1,7 +1,7 @@
 import { ref, computed, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { createVideoMatchJobApi, getVideoMatchJobApi, getVideoMatchShotDetailApi, listVideoMatchJobsApi, rematchVideoMatchShotApi, searchVideoMatchJobApi, extractTagsVideoMatchJobApi, type VideoMatchJobResponse, type VideoMatchJobSummary, type VideoMatchShotDto } from '@/api/video_match'
+import { createVideoMatchJobApi, getVideoMatchJobApi, getVideoMatchShotDetailApi, listVideoMatchJobsApi, rematchVideoMatchShotApi, searchVideoMatchJobApi, extractTagsVideoMatchJobApi, synthesizeShotAudioApi, type VideoMatchJobResponse, type VideoMatchJobSummary, type VideoMatchShotDto } from '@/api/video_match'
 import { getVideoAnalysisWorkspacesApi } from '@/api/video_analysis'
 import type { WorkspaceOption } from '@/types/videoAnalysis'
 import { tagsJsonToSearchTokens, DEFAULT_TOKEN_JOIN_AND_FIELDS } from '@/utils/matchTagsFromSegment'
@@ -9,7 +9,7 @@ import { stashVideoAnalysisPrefillFromMatch } from '@/utils/videoAnalysisSession
 import { VIDEO_FRAME_SIZE_OPTIONS, VIDEO_FRAME_ORIENTATION_OPTIONS, videoFrameSizeOptionsForOrientation, normalizeZhijiCarSelectValue } from '@/constants/zhijiCarModels'
 import { shotStatusLabel, shotSearchStatusNorm, shotStatusTagType, shotTop1VideoUrl, top1UrlDisplay, shotMatchFailedVm, canJumpVideoAnalysisFromVmShot, shotRankedVideoUrls } from '@/utils/videoMatchHelpers'
 
-export function useVideoMatchJobPoller(form: import('vue').Ref<any>, workspaceOptions: import('vue').Ref<WorkspaceOption[]>, selectedStrategy: import('vue').Ref<string>, router: import('vue-router').Router, strategies: import('vue').Ref<any[]>) {
+export function useVideoMatchJobPoller(form: import('vue').Ref<any>, workspaceOptions: import('vue').Ref<WorkspaceOption[]>, selectedStrategy: import('vue').Ref<string>, router: import('vue-router').Router, strategies: import('vue').Ref<any[]>, tokenJoinAndFields: import('vue').Ref<string[]>) {
 const parsing = ref(false)
 const matching = ref(false)
 const composing = ref(false)
@@ -22,6 +22,7 @@ const jobSearchStatus = ref<string | null>(null)
 const jobSearchError = ref<string | null>(null)
 const extractStatus = ref<string | null>(null)
 const extractError = ref<string | null>(null)
+const enableRoadRunFallback = ref(false)
 /** 与任务看板一致：跳转视频分析时带入工作区与策略权重 */
 const matchJobWorkspace = ref('v1')
 const jobStrategySnapshot = ref<Record<string, unknown> | null>(null)
@@ -131,7 +132,7 @@ function canJumpVideoAnalysisFromVmShot(row: VideoMatchShotDto): boolean {
 async function goVideoAnalysisFromVmShot(row: VideoMatchShotDto) {
   if (!canJumpVideoAnalysisFromVmShot(row)) return
   const ws = matchJobWorkspace.value || form.value.workspace.trim() || 'v1'
-  const andFields = [...DEFAULT_TOKEN_JOIN_AND_FIELDS]
+  const andFields = [...tokenJoinAndFields.value]
   const tokens = tagsJsonToSearchTokens((row.tags_json ?? {}) as Record<string, unknown>, andFields)
   if (row.segment_text?.trim()) {
     tokens.unshift({ id: Date.now().toString(), text: row.segment_text.trim(), join: 'OR', type: 'keyword' })
@@ -159,6 +160,7 @@ async function goVideoAnalysisFromVmShot(row: VideoMatchShotDto) {
     },
     searchStrategyName: typeof snap?.name === 'string' ? snap.name : undefined,
     searchFuzzy: true,
+    enableRoadRunFallback: enableRoadRunFallback.value,
     autoSearch: true,
     sourceMatchId: currentJobId.value || undefined,
   })
@@ -304,8 +306,8 @@ function applyVideoMatchJobInputsToForm(res: VideoMatchJobResponse) {
   }
 }
 
-function shortJobIdForDisplay(id: string) {
-  const t = (id || '').trim()
+function shortJobIdForDisplay(id: string | number) {
+  const t = String(id || '').trim()
   if (t.length <= 14) return t
   return `${t.slice(0, 8)}…${t.slice(-4)}`
 }
@@ -326,12 +328,12 @@ async function loadHistoryJobs() {
       limit: 80,
     })
     if (res?.success && Array.isArray(res.jobs)) {
-      historyJobs.value = res.jobs
+      historyJobs.value = res.jobs.map((j: any) => ({ ...j, id: String(j.id) }))
       
       // Restore the selected job from sessionStorage if it exists in the fetched list
       try {
         const lastJobId = sessionStorage.getItem('videoMatch:lastJobId:v1')
-        if (lastJobId && res.jobs.some((j: VideoMatchJobSummary) => j.id === lastJobId)) {
+        if (lastJobId && historyJobs.value.some((j: VideoMatchJobSummary) => String(j.id) === lastJobId)) {
           historyJobId.value = lastJobId
           void onHistoryJobChange(lastJobId)
         }
@@ -343,13 +345,12 @@ async function loadHistoryJobs() {
 }
 
 function historyJobLabel(j: VideoMatchJobSummary) {
-  const tail = j.id.length > 10 ? j.id.slice(0, 8) + '…' : j.id
-  const sn = j.serial_no ? `#${j.serial_no} ` : ''
+  const sn = `#${j.id} `
   const t = (j.title || j.topic || '未命名').trim()
   const ts = j.created_at ? j.created_at.replace('T', ' ').slice(0, 19) : ''
   const ws = (j.workspace ?? '').trim()
   const wsTag = ws ? `[${ws}] ` : ''
-  return ts ? `${sn}${wsTag}${ts} · ${t} · ${tail}` : `${sn}${wsTag}${t} · ${tail}`
+  return ts ? `${sn}${wsTag}${ts} · ${t}` : `${sn}${wsTag}${t}`
 }
 
 async function onHistoryJobChange(id: string | null | undefined) {
@@ -439,6 +440,25 @@ async function onParse() {
     form.value.script = scriptClean
     if (res.job_id) try { sessionStorage.setItem('videoMatch:lastJobId:v1', res.job_id) } catch { /* ignore */ }
     ElMessage.success(res.mock ? '转写完成（服务端返回 mock）' : '转写完成')
+
+    // Automatically generate audio after parsing
+    if (shots.value && shots.value.length > 0) {
+      ElMessage.info('正在自动生成分镜音频...')
+      const audioPromises = shots.value.map(async (shot) => {
+        if (shot.id != null && !(shot.obs_audio_url || '').trim()) {
+          try {
+            const audioRes = await synthesizeShotAudioApi(currentJobId.value!, shot.id)
+            if (audioRes.success && audioRes.shot) {
+              Object.assign(shot, audioRes.shot)
+            }
+          } catch (e) {
+            console.error('Shot audio generation failed:', e)
+          }
+        }
+      })
+      await Promise.all(audioPromises)
+    }
+
     await loadHistoryJobs()
     historyJobId.value = currentJobId.value
   } catch (e) {
@@ -458,16 +478,96 @@ const onExtract = async () => {
     const res = await extractTagsVideoMatchJobApi(currentJobId.value)
     if (res.success) {
       ElMessage.success('已触发一键抽取标签，后台处理中')
-      setTimeout(refreshJob, 500)
+      // 自动轮询直到所有分镜 extract_status 不再是 running/extracting
+      const jid = currentJobId.value
+      const poll = setInterval(async () => {
+        try {
+          const snap = await getVideoMatchJobApi(jid)
+          if (snap.success && snap.shots) {
+            shots.value = snap.shots
+            extractStatus.value = snap.extract_status ?? null
+            extractError.value = snap.extract_error ?? null
+            const allDone = snap.shots.every((s: any) => {
+              const x = (s.extract_status || '').toLowerCase()
+              return x === 'done' || x === 'failed' || x === '' || x === 'pending' || !x
+            })
+            // 只要没有 running/extracting 就停止轮询
+            const anyRunning = snap.shots.some((s: any) => {
+              const x = (s.extract_status || '').toLowerCase()
+              return x === 'running' || x === 'extracting'
+            })
+            if (!anyRunning) {
+              clearInterval(poll)
+              isExtracting.value = false
+            }
+          }
+        } catch { /* polling best-effort */ }
+      }, 1500)
+      // 最长轮询 2 分钟
+      setTimeout(() => { clearInterval(poll); isExtracting.value = false }, 120_000)
     } else {
       ElMessage.error(res.error || '抽取标签触发失败')
+      isExtracting.value = false
     }
   } catch (e: any) {
     ElMessage.error(e.message || '抽取标签请求出错')
-  } finally {
     isExtracting.value = false
   }
 }
+
+/** 一键全流程：解析 → 抽取标签 → 匹配 */
+const isFullPipeline = ref(false)
+const onFullPipeline = async () => {
+  if (isFullPipeline.value) return
+  const scriptClean = (typeof form.value.script === 'string' ? form.value.script : '').trim()
+  if (!scriptClean) {
+    ElMessage.warning('口播脚本不能为空')
+    return
+  }
+  if (!selectedStrategy.value.trim()) {
+    ElMessage.warning('请先选择搜索策略')
+    return
+  }
+  isFullPipeline.value = true
+  try {
+    // Step 1: 解析/转写
+    ElMessage.info('全流程 1/4：解析转写中...')
+    await onParse()
+    if (!currentJobId.value || parseStatus.value !== 'done') {
+      ElMessage.error('解析失败，全流程中止')
+      return
+    }
+    // Step 2: 生成朗读 (Auto-generate Audio)
+    ElMessage.info('全流程 2/4：生成音频中...')
+    if (shots.value && shots.value.length > 0) {
+      const audioPromises = shots.value.map(async (shot) => {
+        if (shot.id != null && !(shot.obs_audio_url || '').trim()) {
+          try {
+            const res = await synthesizeShotAudioApi(currentJobId.value!, shot.id)
+            if (res.success && res.shot) {
+              Object.assign(shot, res.shot)
+            }
+          } catch (e) {
+            console.error('Shot audio generation failed:', e)
+          }
+        }
+      })
+      await Promise.all(audioPromises)
+    }
+    // Step 3: 抽取标签
+    ElMessage.info('全流程 3/4：抽取标签中...')
+    await onExtract()
+    // Step 3: 匹配
+    ElMessage.info('全流程 4/4：视频匹配中...')
+    await onMatch()
+    ElMessage.success('全流程完成！')
+  } catch (e) {
+    ElMessage.error(e instanceof Error ? e.message : '全流程中断')
+  } finally {
+    isFullPipeline.value = false
+  }
+}
+
 
 async function onMatch() {
   if (!canMatch.value) {
@@ -510,6 +610,7 @@ async function onMatch() {
       strategy_name: selectedStrategy.value.trim(),
       mode: 'field_aligned_hybrid',
       top_k: 5,
+      enable_road_run_fallback: enableRoadRunFallback.value,
     })
 
     if (!res.success) {
@@ -555,5 +656,5 @@ async function refreshJob() {
   }
 }
 
-  return { parsing, matching, composing, currentJobId, shots, parseStatus, parseError, searchTotalMs, jobSearchStatus, jobSearchError, extractStatus, extractError, matchJobWorkspace, jobStrategySnapshot, historyJobs, historyJobId, matchDetailVisible, matchDetailLoading, matchDetailPayload, matchDetailRow, matchDetailLocalOnly, matchDetailHitRows, shotTranscribeVisible, shotTranscribeRow, vmShotRematchingId, hasShots, canMatch, canMixCompose, mixComposeDisabledHint, formatMatchDetailJson, normalizeMatchHitRows, syncMatchJobContext, openShotTranscribe, rematchVmShot, goVideoAnalysisFromVmShot, openMatchDetail, normalizeVideoMatchScriptInbound, applyVideoMatchJobInputsToForm, shortJobIdForDisplay, pipelineStatusZh, loadHistoryJobs, historyJobLabel, onHistoryJobChange, fetchWorkspaces, onParse, onMatch, refreshJob, onExtract, isExtracting }
+  return { parsing, matching, composing, currentJobId, shots, parseStatus, parseError, searchTotalMs, jobSearchStatus, jobSearchError, extractStatus, extractError, matchJobWorkspace, jobStrategySnapshot, historyJobs, historyJobId, matchDetailVisible, matchDetailLoading, matchDetailPayload, matchDetailRow, matchDetailLocalOnly, matchDetailHitRows, shotTranscribeVisible, shotTranscribeRow, vmShotRematchingId, hasShots, canMatch, canMixCompose, mixComposeDisabledHint, formatMatchDetailJson, normalizeMatchHitRows, syncMatchJobContext, openShotTranscribe, rematchVmShot, goVideoAnalysisFromVmShot, openMatchDetail, normalizeVideoMatchScriptInbound, applyVideoMatchJobInputsToForm, shortJobIdForDisplay, pipelineStatusZh, loadHistoryJobs, historyJobLabel, onHistoryJobChange, fetchWorkspaces, onParse, onMatch, refreshJob, onExtract, isExtracting, isFullPipeline, onFullPipeline, enableRoadRunFallback }
 }

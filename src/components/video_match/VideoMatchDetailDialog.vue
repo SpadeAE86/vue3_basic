@@ -117,9 +117,10 @@
                   v-if="hr.video_path"
                   class="match-url-link"
                   :href="hr.video_path"
+                  :title="hr.video_path"
                   target="_blank"
                   rel="noopener noreferrer"
-                  >{{ hr.video_path }}</a
+                  >{{ hr.video_path.split('/').pop() || hr.video_path }}</a
                 >
                 <span v-else class="muted-small">—</span>
               </template>

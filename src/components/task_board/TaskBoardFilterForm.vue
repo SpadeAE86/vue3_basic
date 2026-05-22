@@ -38,11 +38,11 @@ const emit = defineEmits<{
             <el-option label="进行中" value="running" />
           </el-select>
         </el-form-item>
-        <el-form-item label="记录 ID">
+        <el-form-item label="ID 搜索">
           <el-input
             :model-value="props.idSearchFilter" @update:model-value="emit('update:idSearchFilter', $event)"
             clearable
-            placeholder="子串匹配：履历 ID、视频匹配任务/分镜、VA 上下文等"
+            placeholder="子串匹配：ID、VA 上下文等"
             style="width: 260px"
             @keyup.enter="emit('search')"
           />

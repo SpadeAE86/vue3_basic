@@ -25,9 +25,18 @@ watch(() => props.modelValue, (val) => {
 })
 watch(visible, (val) => {
   emit('update:modelValue', val)
+  if (!val) hitRowsExpanded.value = false
 })
 
 const detailImageViewerVisible = ref(false)
+const hitRowsExpanded = ref(false)
+
+const slicedHitRows = computed(() => {
+  if (!props.detailMatchHitRows?.length) return []
+  return hitRowsExpanded.value
+    ? props.detailMatchHitRows.slice(0, 20)
+    : props.detailMatchHitRows.slice(0, 5)
+})
 
 function formatJson(val: any) {
   if (!val) return '—'
@@ -91,6 +100,55 @@ function formatJson(val: any) {
           <el-descriptions-item v-if="detailPayload.httpTraceUpdatedAt" label="HTTP 记录更新">{{ detailPayload.httpTraceUpdatedAt }}</el-descriptions-item>
         </el-descriptions>
 
+        <template v-if="detailIsShotMatch">
+          <div class="field-label" style="margin-bottom: 6px;">
+            Top 命中
+            <span v-if="detailMatchHitRows.length" class="hit-count-badge">{{ detailMatchHitRows.length }} 条</span>
+          </div>
+          <p v-if="!detailMatchHitRows.length" class="hint">暂无命中记录（尚未匹配或 trace 未落库时可从下方 Response 查看摘要）</p>
+          <template v-else>
+            <el-table
+              :data="slicedHitRows"
+              border
+              stripe
+              size="small"
+              class="hit-rank-table"
+              max-height="360"
+            >
+              <el-table-column prop="rank" label="#" width="44" align="center" />
+              <el-table-column prop="score" label="_score" width="96" align="right">
+                <template #default="{ row: hr }">
+                  {{ Number.isFinite(hr.score) ? hr.score.toFixed(4) : (hr.score ?? '—') }}
+                </template>
+              </el-table-column>
+              <el-table-column prop="history_id" label="history_id" min-width="110" show-overflow-tooltip />
+              <el-table-column label="video_url" min-width="200" show-overflow-tooltip>
+                <template #default="{ row: hr }">
+                  <a
+                    v-if="hr.video_path"
+                    class="match-url-link"
+                    :href="hr.video_path"
+                    :title="hr.video_path"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    >{{ hr.video_path.split('/').pop() || hr.video_path }}</a>
+                  <span v-else class="muted-small">—</span>
+                </template>
+              </el-table-column>
+            </el-table>
+            <div v-if="detailMatchHitRows.length > 5" class="hit-expand-row">
+              <el-button
+                type="primary"
+                link
+                size="small"
+                @click="hitRowsExpanded = !hitRowsExpanded"
+              >
+                {{ hitRowsExpanded ? '收起' : `展开全部 ${Math.min(detailMatchHitRows.length, 20)} 条` }}
+              </el-button>
+            </div>
+          </template>
+        </template>
+
         <div class="field-label">Request URL</div>
         <pre class="code-block">{{ detailPayload.requestUrl }}</pre>
 
@@ -119,56 +177,6 @@ function formatJson(val: any) {
         <pre class="code-block muted">{{ formatJson(detailPayload.responseHeaders) }}</pre>
 
         <HttpTraceJsonBlock label="Response Body" :model-value="detailPayload.responseBody" />
-
-        <template v-if="detailIsShotMatch">
-          <div class="field-label">Top 命中（OpenSearch _score，与分镜检索结果一致）</div>
-          <p v-if="!detailMatchHitRows.length" class="hint">暂无命中记录（尚未匹配或 trace 未落库时可仍可从上方 Response 查看摘要）</p>
-          <el-table
-            v-else
-            :data="detailMatchHitRows"
-            border
-            stripe
-            size="small"
-            class="hit-rank-table"
-            max-height="280"
-          >
-            <el-table-column prop="rank" label="#" width="44" align="center" />
-            <el-table-column prop="score" label="_score" width="96" align="right">
-              <template #default="{ row: hr }">
-                {{ Number.isFinite(hr.score) ? hr.score.toFixed(4) : hr.score }}
-              </template>
-            </el-table-column>
-            <el-table-column prop="history_id" label="history_id" min-width="110" show-overflow-tooltip />
-            <el-table-column label="video_url" min-width="200" show-overflow-tooltip>
-              <template #default="{ row: hr }">
-                <a
-                  v-if="hr.video_path"
-                  class="match-url-link"
-                  :href="hr.video_path"
-                  :title="hr.video_path"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  >{{ hr.video_path }}</a>
-                <span v-else class="muted-small">—</span>
-              </template>
-            </el-table-column>
-          </el-table>
-          <p v-if="detailIsShotMatch && detailMatchHitRows.some((r) => !r.video_path)" class="hint">
-            表格中
-            <code>video_url</code>
-            为「—」表示服务端未解析到成片地址：该
-            <code>history_id</code>
-            在
-            <code>video_analysis_history</code>
-            无记录、或
-            <code>video_url</code>
-            为空且 v2 分镜里也暂无
-            <code>obs_video_url</code>
-            ，与界面截断无关。可直接点
-            <code>history_id</code>
-            同一行的其它列或到视频分析里核对该条历史。
-          </p>
-        </template>
 
         <p v-if="detailPayload.note" class="hint">{{ detailPayload.note }}</p>
 
@@ -258,15 +266,56 @@ function formatJson(val: any) {
   line-height: 1.5;
 }
 .hit-rank-table {
-  margin-bottom: 12px;
+  margin-bottom: 4px;
+}
+.hit-expand-row {
+  padding: 4px 0 12px;
+  text-align: left;
+}
+.hit-count-badge {
+  display: inline-block;
+  margin-left: 6px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--el-color-primary);
+  background: var(--el-color-primary-light-9);
+  border-radius: 10px;
+  padding: 1px 7px;
+  vertical-align: middle;
 }
 .match-url-link {
   color: var(--el-color-primary);
   text-decoration: none;
   font-size: 13px;
+  word-break: break-all;
 }
 .match-url-link:hover {
   text-decoration: underline;
+}
+.top5-url-list {
+  background: #f8f9fa;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 4px;
+  padding: 8px 12px;
+  margin-bottom: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.top5-url-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.top5-rank {
+  min-width: 18px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--el-color-primary);
+  text-align: right;
+  flex-shrink: 0;
 }
 .muted-small {
   color: var(--el-text-color-placeholder);

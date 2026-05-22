@@ -1,7 +1,8 @@
 <script setup lang="ts">
+import { ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { shotStatusLabel, shotSearchStatusNorm, shotExtractStatusNorm, shotStatusTagType, shotTop1VideoUrl, top1UrlDisplay, shotMatchFailedVm, canJumpVideoAnalysisFromVmShot } from '@/utils/videoMatchHelpers'
-import { Headset, Microphone, Position, RefreshRight, VideoPlay, Document, View, Search, DocumentCopy } from '@element-plus/icons-vue'
+import { shotStatusLabel, shotExtractStatusLabel, shotSearchStatusNorm, shotExtractStatusNorm, shotStatusTagType, shotTop1VideoUrl, top1UrlDisplay, shotMatchFailedVm, canJumpVideoAnalysisFromVmShot } from '@/utils/videoMatchHelpers'
+import { Headset, Microphone, Position, RefreshRight, VideoPlay, Document, View, Search, DocumentCopy, Loading, MoreFilled, Refresh } from '@element-plus/icons-vue'
 
 const props = defineProps<{
   shots: any[]
@@ -28,14 +29,44 @@ async function copyTop1Url(url: string | null) {
     ElMessage.error('复制失败')
   }
 }
+async function copyExtractId(row: any) {
+  if (!row.id) return
+  try {
+    await navigator.clipboard.writeText(String(row.id))
+    ElMessage.success(`已复制分镜/抽取ID=${row.id}`)
+  } catch (e) {
+    ElMessage.error('复制失败')
+  }
+}
+
+async function copyMatchId(row: any) {
+  if (!row.match_id) {
+    ElMessage.warning('该分镜尚无匹配记录ID')
+    return
+  }
+  try {
+    await navigator.clipboard.writeText(String(row.match_id))
+    ElMessage.success(`已复制匹配看板ID=${row.match_id}`)
+  } catch (e) {
+    ElMessage.error('复制失败')
+  }
+}
+
 const emit = defineEmits<{
   (e: 'togglePlayObs', row: any): void
-  (e: 'onSynthesizeAudio', row: any): void
+  (e: 'synthesizeAudio', row: any): void
   (e: 'openShotTranscribe', row: any): void
   (e: 'openMatchDetail', row: any): void
   (e: 'rematchVmShot', row: any): void
+  (e: 'extractSingleShot', row: any): void
   (e: 'goVideoAnalysisFromVmShot', row: any): void
 }>()
+
+function handleMoreCmd(cmd: string, row: any) {
+  if (cmd === 'detail') emit('openMatchDetail', row)
+  else if (cmd === 'rematch') emit('rematchVmShot', row)
+  else if (cmd === 'extract') emit('extractSingleShot', row)
+}
 </script>
 
 <template>
@@ -50,28 +81,50 @@ const emit = defineEmits<{
       >
         <el-table-column prop="shot_order" label="#" width="56" />
         <el-table-column prop="segment_text" label="口播文案" min-width="260" show-overflow-tooltip />
-        <el-table-column label="提取状态" width="96" align="center">
+        <el-table-column label="提取状态" width="104" align="center">
           <template #default="{ row }">
-            <el-tag
-              :type="shotStatusTagType(shotExtractStatusNorm(row))"
-              effect="light"
-              size="small"
-              class="status-pill status-tag-admin"
-            >
-              {{ shotStatusLabel(shotExtractStatusNorm(row)) }}
-            </el-tag>
+            <div class="status-cell">
+              <button
+                class="status-tag-btn"
+                :class="{ 'is-clickable': shotExtractStatusNorm(row) === 'success' }"
+                :title="shotExtractStatusNorm(row) === 'success' ? '点击复制抽取ID' : undefined"
+                @click="shotExtractStatusNorm(row) === 'success' ? copyExtractId(row) : undefined"
+              >
+                <el-tag
+                  :type="shotStatusTagType(shotExtractStatusNorm(row))"
+                  effect="light"
+                  size="small"
+                  class="status-pill"
+                  style="pointer-events: none;"
+                >
+                  <span>{{ shotExtractStatusLabel(shotExtractStatusNorm(row)) }}</span>
+                </el-tag>
+              </button>
+              <el-icon v-if="shotExtractStatusNorm(row) === 'running'" class="status-spin"><Loading /></el-icon>
+            </div>
           </template>
         </el-table-column>
-        <el-table-column label="匹配状态" width="96" align="center">
+        <el-table-column label="匹配状态" width="104" align="center">
           <template #default="{ row }">
-            <el-tag
-              :type="shotStatusTagType(shotSearchStatusNorm(row))"
-              effect="light"
-              size="small"
-              class="status-pill status-tag-admin"
-            >
-              {{ shotStatusLabel(shotSearchStatusNorm(row)) }}
-            </el-tag>
+            <div class="status-cell">
+              <button
+                class="status-tag-btn"
+                :class="{ 'is-clickable': shotSearchStatusNorm(row) === 'success' }"
+                :title="shotSearchStatusNorm(row) === 'success' ? '点击复制匹配ID' : undefined"
+                @click="shotSearchStatusNorm(row) === 'success' ? copyMatchId(row) : undefined"
+              >
+                <el-tag
+                  :type="shotStatusTagType(shotSearchStatusNorm(row))"
+                  effect="light"
+                  size="small"
+                  class="status-pill"
+                  style="pointer-events: none;"
+                >
+                  <span>{{ shotStatusLabel(shotSearchStatusNorm(row)) }}</span>
+                </el-tag>
+              </button>
+              <el-icon v-if="shotSearchStatusNorm(row) === 'running'" class="status-spin"><Loading /></el-icon>
+            </div>
           </template>
         </el-table-column>
         <el-table-column label="音频" min-width="120">
@@ -96,7 +149,7 @@ const emit = defineEmits<{
                   size="small"
                   :disabled="row.id == null"
                   :loading="row.id != null && !!synthBusyByShotId[row.id]"
-                  @click="emit('onSynthesizeAudio', row)"
+                  @click="emit('synthesizeAudio', row)"
                 >
                   <el-icon class="btn-inline-icon"><Microphone /></el-icon>
                   生成朗读
@@ -120,38 +173,46 @@ const emit = defineEmits<{
             </div>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="160" fixed="right" align="center">
+        <el-table-column label="操作" width="128" fixed="right" align="center">
           <template #default="{ row }">
             <div class="shot-op-cell">
-              <el-tooltip content="查看提取标签" placement="top">
+              <el-tooltip content="查看 / 编辑提取标签" placement="top">
                 <el-button type="primary" link :disabled="row.id == null" @click="emit('openShotTranscribe', row)">
                   <el-icon size="16"><Document /></el-icon>
                 </el-button>
               </el-tooltip>
-              
+
               <el-tooltip content="用本分镜标签打开视频分析，并全库搜索" placement="top">
                 <el-button type="primary" link :disabled="!canJumpVideoAnalysisFromVmShot(row)" @click="emit('goVideoAnalysisFromVmShot', row)">
                   <el-icon size="16"><Position /></el-icon>
                 </el-button>
               </el-tooltip>
 
-              <el-tooltip content="查看匹配结果" placement="top">
-                <el-button type="primary" link :disabled="row.id == null" @click="emit('openMatchDetail', row)">
-                  <el-icon size="16"><View /></el-icon>
+              <!-- 更多操作下拉 -->
+              <el-dropdown trigger="click" size="small" placement="top" @command="(cmd: string) => handleMoreCmd(cmd, row)">
+                <el-button type="primary" link>
+                  <el-icon size="16"><MoreFilled /></el-icon>
                 </el-button>
-              </el-tooltip>
-              
-              <el-tooltip v-if="shotMatchFailedVm(row)" content="重试匹配" placement="top">
-                <el-button
-                  type="primary"
-                  link
-                  :disabled="row.id == null"
-                  :loading="vmShotRematchingId === row.id"
-                  @click="emit('rematchVmShot', row)"
-                >
-                  <el-icon size="16"><RefreshRight /></el-icon>
-                </el-button>
-              </el-tooltip>
+                <template #dropdown>
+                  <el-dropdown-menu>
+                    <el-dropdown-item command="detail" :disabled="row.id == null">
+                      <div class="drop-item">
+                        <el-icon><View /></el-icon><span>查看匹配结果</span>
+                      </div>
+                    </el-dropdown-item>
+                    <el-dropdown-item command="extract" :disabled="row.id == null">
+                      <div class="drop-item">
+                        <el-icon><Refresh /></el-icon><span>重新抽取标签</span>
+                      </div>
+                    </el-dropdown-item>
+                    <el-dropdown-item command="rematch" :disabled="row.id == null">
+                      <div class="drop-item">
+                        <el-icon><RefreshRight /></el-icon><span>重新匹配素材</span>
+                      </div>
+                    </el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
             </div>
           </template>
         </el-table-column>
@@ -254,6 +315,40 @@ const emit = defineEmits<{
   border: none;
   flex-shrink: 0;
 }
+/* 状态 tag 的 wrapper button — 重置浏览器默认 button 样式 */
+.status-tag-btn {
+  all: unset;
+  display: inline-flex;
+  cursor: default;
+}
+.status-tag-btn.is-clickable {
+  cursor: pointer;
+}
+.status-tag-btn.is-clickable:hover .el-tag {
+  opacity: 0.8;
+}
+/* 下拉菜单项：图标 + 文字对齐 */
+.drop-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.status-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  justify-content: center;
+}
+.status-spin {
+  animation: spin-icon 1s linear infinite;
+  color: #e6a23c;
+  font-size: 13px;
+  flex-shrink: 0;
+}
+@keyframes spin-icon {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
 .audio-actions {
   display: flex;
   align-items: center;
@@ -316,5 +411,11 @@ const emit = defineEmits<{
 .muted {
   color: #9ca3af;
   font-size: 12px;
+}
+.shot-op-cell {
+  display: flex;
+  align-items: center;
+  justify-content: space-evenly;
+  width: 100%;
 }
 </style>

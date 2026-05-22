@@ -48,6 +48,7 @@ export function shotExtractStatusNorm(row: VideoMatchShotDto): string {
   return 'pending'
 }
 
+/** 匹配状态文字（只用于"匹配状态"列） */
 export function shotStatusLabel(st: string): string {
   if (st === 'success') return '成功'
   if (st === 'failed') return '失败'
@@ -56,6 +57,16 @@ export function shotStatusLabel(st: string): string {
   if (st === 'unknown') return '未知'
   return st
 }
+
+/** 提取状态文字（只用于"提取状态"列） */
+export function shotExtractStatusLabel(st: string): string {
+  if (st === 'success') return '已抽取'
+  if (st === 'failed') return '抽取失败'
+  if (st === 'running') return '抽取中'
+  if (st === 'pending') return '待抽取'
+  return st
+}
+
 
 export function shotStatusTagType(st: string): 'success' | 'danger' | 'warning' | 'info' {
   if (st === 'success') return 'success'

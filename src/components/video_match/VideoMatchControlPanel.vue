@@ -38,15 +38,15 @@
         <div class="vm-header-right">
           <div v-if="currentJobId" class="job-status-bar">
             <el-tooltip placement="bottom" :content="'完整任务编号：' + currentJobId">
-              <span class="job-ref subtle">任务 {{ shortJobIdForDisplay(currentJobId) }}</span>
+              <span class="job-ref subtle">匹配 #{{ currentJobId }}</span>
             </el-tooltip>
-            <el-tag v-if="parseStatus" size="small" effect="plain" :type="pipelineStatusZh(parseStatus).tag">
+            <el-tag v-if="parseStatus" size="small" effect="plain" :type="pipelineStatusZh(parseStatus).tag" style="cursor: pointer" @click="copyJobId(currentJobId)">
               口播转写 · {{ pipelineStatusZh(parseStatus).label }}
             </el-tag>
-            <el-tag v-if="jobSearchStatus" size="small" effect="plain" :type="pipelineStatusZh(jobSearchStatus).tag">
+            <el-tag v-if="jobSearchStatus" size="small" effect="plain" :type="pipelineStatusZh(jobSearchStatus).tag" style="cursor: pointer" @click="copyJobId(currentJobId)">
               素材匹配 · {{ pipelineStatusZh(jobSearchStatus).label }}
             </el-tag>
-            <el-tag v-if="extractStatus" size="small" effect="plain" :type="pipelineStatusZh(extractStatus).tag">
+            <el-tag v-if="extractStatus" size="small" effect="plain" :type="pipelineStatusZh(extractStatus).tag" style="cursor: pointer" @click="copyJobId(currentJobId)">
               抽取标签 · {{ pipelineStatusZh(extractStatus).label }}
             </el-tag>
             <el-button size="small" type="primary" plain @click="onExtract" :disabled="!currentJobId || extractStatus === 'running'" :loading="isExtracting">
@@ -179,8 +179,11 @@
           </div>
           <el-form-item>
             <div class="parse-actions-row">
-              <el-button type="primary" :loading="parsing" @click="onParse">
+              <el-button type="primary" :loading="parsing" @click="onParse" :disabled="isFullPipeline">
                 {{ parsing ? '转写中...' : '解析 / 转写' }}
+              </el-button>
+              <el-button type="success" :loading="isFullPipeline" @click="$emit('full-pipeline')" :disabled="parsing">
+                {{ isFullPipeline ? '全流程执行中...' : '一键全流程' }}
               </el-button>
               <el-tooltip content="AND 命中模板（转写 MUST / v2 term filter）" placement="bottom">
                 <el-button
@@ -300,6 +303,7 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import { Headset, Microphone, RefreshRight, Setting, VideoPlay } from '@element-plus/icons-vue'
+import { ElMessage } from 'element-plus'
 import { ZHIJI_CAR_MODEL_OPTIONS, VIDEO_FRAME_SIZE_OPTIONS, VIDEO_FRAME_ORIENTATION_OPTIONS, videoFrameSizeOptionsForOrientation, normalizeZhijiCarSelectValue } from '@/constants/zhijiCarModels'
 import SearchStrategySelect from '@/components/video_analysis/SearchStrategySelect.vue'
 
@@ -313,6 +317,7 @@ const props = defineProps<{
   matching: boolean,
   composing: boolean,
   isExtracting: boolean,
+  isFullPipeline: boolean,
   extractStatus?: string | null,
   extractError?: string | null,
   hasShots: boolean,
@@ -322,7 +327,7 @@ const props = defineProps<{
   historyJobs: any,
   historyJobLabel: any,
   lastMixCompose: any,
-  currentJobId?: string | null,
+  currentJobId?: string | number | null,
   jobSearchStatus?: string | null,
   jobSearchError?: string | null,
   mixComposeResultHref: any,
@@ -334,9 +339,20 @@ const tokenJoinDialogVisible = defineModel<boolean>('tokenJoinDialogVisible')
 const historyJobId = defineModel<string | null>('historyJobId')
 const selectedStrategy = defineModel<string | null>('selectedStrategy')
 const mixPreferSrt = defineModel<boolean>('mixPreferSrt')
+const enableRoadRunFallback = defineModel<boolean>('enableRoadRunFallback')
+
+const copyJobId = async (id: string | number | null | undefined) => {
+  if (!id) return
+  try {
+    await navigator.clipboard.writeText(String(id))
+    ElMessage.success(`已复制任务看板ID=${id}`)
+  } catch (e) {
+    ElMessage.error('复制失败')
+  }
+}
 
 const emit = defineEmits([
-  'parse', 'match', 'extract', 'mix-compose', 'history-change', 'strategy-delete',
+  'parse', 'match', 'extract', 'full-pipeline', 'mix-compose', 'history-change', 'strategy-delete',
   'open-strategy-create', 'open-strategy-edit', 'refreshJob', 'loadStrategies',
   'copyMixOutputPath', 'downloadMixSrtFile'
 ])
@@ -354,9 +370,10 @@ function openVmStrategyCreateDialog() { emit('open-strategy-create') }
 function openVmStrategyEditDialog() { emit('open-strategy-edit') }
 function copyMixOutputPath(path: string) { emit('copyMixOutputPath', path) }
 function downloadMixSrtFile(path: string, id: string) { emit('downloadMixSrtFile', path, id) }
-function shortJobIdForDisplay(id: string) {
+function shortJobIdForDisplay(id: string | number) {
   if (!id) return ''
-  return id.length > 8 ? id.substring(0, 8) : id
+  const t = String(id)
+  return t.length > 8 ? t.substring(0, 8) : t
 }
 
 async function onDropJson(event: DragEvent) {

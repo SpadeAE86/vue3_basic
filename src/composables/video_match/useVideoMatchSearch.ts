@@ -44,19 +44,25 @@ async function loadTokenJoinAndFields() {
 }
 
 
-const matchDetailTokens = computed(() =>
-  tagsJsonToSearchTokens(
+const matchDetailTokens = computed(() => {
+  if (matchDetailRow.value?.search_tokens_json && Array.isArray(matchDetailRow.value.search_tokens_json)) {
+    return matchDetailRow.value.search_tokens_json
+  }
+  return tagsJsonToSearchTokens(
     (matchDetailRow.value?.tags_json ?? {}) as Record<string, unknown>,
     tokenJoinAndFields.value,
-  ),
-)
+  )
+})
 
-const shotTranscribeTokens = computed(() =>
-  tagsJsonToSearchTokens(
+const shotTranscribeTokens = computed(() => {
+  if (shotTranscribeRow.value?.search_tokens_json && Array.isArray(shotTranscribeRow.value.search_tokens_json)) {
+    return shotTranscribeRow.value.search_tokens_json
+  }
+  return tagsJsonToSearchTokens(
     (shotTranscribeRow.value?.tags_json ?? {}) as Record<string, unknown>,
     tokenJoinAndFields.value,
-  ),
-)
+  )
+})
 
 
 async function loadStrategies() {

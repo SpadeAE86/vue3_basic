@@ -16,6 +16,7 @@ export interface VideoMatchShotDto {
   description: string
   tags_summary: string
   tags_json: Record<string, unknown>
+  search_tokens_json?: any[] | null
   extract_status: string
   search_status: string
   top1_obs_url: string | null
@@ -25,7 +26,7 @@ export interface VideoMatchShotDto {
   match_elapsed_ms?: number | null
   match_hit_count?: number
   search_request_id?: string | null
-  match_id?: string | null
+  match_id?: number | string | null
 }
 
 export interface VideoMatchJobSummary {
@@ -71,6 +72,8 @@ export interface VideoMatchJobResponse {
   search_total_ms?: number | null
   search_error?: string | null
   search_strategy_snapshot?: Record<string, unknown> | null
+  extract_status?: string | null
+  extract_error?: string | null
   shots?: VideoMatchShotDto[]
   error?: string
 }
@@ -145,6 +148,17 @@ export async function extractTagsVideoMatchJobApi(jobId: string) {
   return resp.json() as Promise<{ success: boolean; message?: string; error?: string }>
 }
 
+export async function extractTagsVideoMatchShotApi(jobId: string, shotRowId: number) {
+  const resp = await fetch(
+    `${API_BASE}/video-match/jobs/${encodeURIComponent(jobId)}/shots/${shotRowId}/extract`,
+    { method: 'POST' },
+  )
+  if (!resp.ok) {
+    throw new Error(`HTTP ${resp.status}`)
+  }
+  return resp.json() as Promise<{ success: boolean; message?: string; error?: string }>
+}
+
 export interface VideoMatchShotDetailResponse {
   success: boolean
   detail?: Record<string, unknown>
@@ -194,6 +208,26 @@ export async function synthesizeShotAudioApi(
   )
   return resp.json() as Promise<{ success: boolean; shot?: VideoMatchShotDto; error?: string }>
 }
+
+export async function updateVideoMatchShotTokensApi(
+  jobId: string,
+  shotRowId: number,
+  tokens: any[],
+): Promise<{ success: boolean; error?: string }> {
+  const resp = await fetch(
+    `${API_BASE}/video-match/jobs/${encodeURIComponent(jobId)}/shots/${shotRowId}/tokens`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tokens }),
+    },
+  )
+  if (!resp.ok) {
+    return { success: false, error: `HTTP ${resp.status}` }
+  }
+  return resp.json() as Promise<{ success: boolean; error?: string }>
+}
+
 
 /** 启动混剪合成（异步流水线：转码 → 拼请求体 → 下发/ mock → 轮询） */
 export async function startMixComposeApi(

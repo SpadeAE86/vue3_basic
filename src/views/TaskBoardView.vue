@@ -286,6 +286,7 @@ watch(
   () => {
     refresh()
   },
+  { immediate: true }
 )
 
 watch(workspaceFilter, async () => {
@@ -373,6 +374,14 @@ async function openDetail(row: Record<string, unknown>) {
             : await fetchMaterialMatchTaskDetail(id)
     if (res?.success && res.detail) {
       detailPayload.value = res.detail as Record<string, unknown>
+      // 素材匹配看板：从 top_hits_for_board 里提取 Top 命中行
+      if (section === 'video_match_search') {
+        detailIsShotMatch.value = true
+        const topHits = (res.detail as Record<string, unknown>).top_hits_for_board
+        if (Array.isArray(topHits) && topHits.length) {
+          detailMatchHitRows.value = normalizeMatchHitRows(topHits)
+        }
+      }
     } else {
       detailPayload.value = { error: res?.detail || res?.error || '加载失败' }
     }
@@ -457,7 +466,8 @@ async function goVideoAnalysisFromMaterialRow(row: Record<string, unknown>) {
       router.push({ name: 'video-analysis' })
       return
     }
-    const snap = row.strategy_snapshot as Record<string, unknown> | null | undefined
+    const snap = row.strategy_snapshot
+    const stratName = typeof (snap as any)?.name === 'string' ? (snap as any).name : undefined
     const fromSnap = searchTokensFromMaterialSnapshot(row)
     const preview = String(row.query_preview ?? '').trim()
     const tokList = fromSnap.length > 0 ? fromSnap : tokensFromMaterialQueryPreview(preview)
@@ -465,12 +475,12 @@ async function goVideoAnalysisFromMaterialRow(row: Record<string, unknown>) {
       ElMessage.warning('该条履历缺少检索标签，无法回填到视频分析')
       return
     }
-    const bm25 = typeof snap?.bm25_weight === 'number' ? (snap.bm25_weight as number) : 0.3
-    const vec = typeof snap?.vector_weight === 'number' ? (snap.vector_weight as number) : 0.7
-    const rrf = !!snap?.use_rrf
-    const fuzzy = typeof snap?.fuzzy === 'boolean' ? (snap.fuzzy as boolean) : true
-    const tw = snap?.text_weights as Record<string, number> | undefined
-    const vw = snap?.vector_weights as Record<string, number> | undefined
+    const bm25 = typeof (snap as any)?.bm25_weight === 'number' ? (snap as any).bm25_weight : 0.3
+    const vec = typeof (snap as any)?.vector_weight === 'number' ? (snap as any).vector_weight : 0.7
+    const rrf = !!(snap as any)?.use_rrf
+    const fuzzy = typeof (snap as any)?.fuzzy === 'boolean' ? ((snap as any).fuzzy as boolean) : true
+    const tw = (snap as any)?.text_weights as Record<string, number> | undefined
+    const vw = (snap as any)?.vector_weights as Record<string, number> | undefined
     const preferredSearchCacheKey = computeVideoAnalysisSearchCacheKey({
       workspace: ws,
       fuzzy,
@@ -494,8 +504,10 @@ async function goVideoAnalysisFromMaterialRow(row: Record<string, unknown>) {
         ...(tw && typeof tw === 'object' && !Array.isArray(tw) ? { text_weights: tw } : {}),
         ...(vw && typeof vw === 'object' && !Array.isArray(vw) ? { vector_weights: vw } : {}),
       },
+      searchStrategyName: stratName,
       searchFuzzy: fuzzy,
-      autoSearch: false,
+      enableRoadRunFallback: !!(row as any).enable_road_run_fallback,
+      autoSearch: true,
       preferredSearchCacheKey,
     })
     router.push({ name: 'video-analysis' })
@@ -529,15 +541,18 @@ async function goVideoAnalysisFromMaterialRow(row: Record<string, unknown>) {
       } catch {
         /* 内置默认 */
       }
+      if (!andFields.includes('frame_orientation')) andFields.push('frame_orientation')
+      if (!andFields.includes('frame_size')) andFields.push('frame_size')
       const tokens = tagsJsonToSearchTokens(shot.tags_json as Record<string, unknown>, andFields)
       const snap = res.search_strategy_snapshot
+      const stratName = typeof (snap as any)?.name === 'string' ? (snap as any).name : undefined
       const bm25 =
-        typeof snap?.bm25_weight === 'number' ? (snap.bm25_weight as number) : 0.3
+        typeof (snap as any)?.bm25_weight === 'number' ? ((snap as any).bm25_weight as number) : 0.3
       const vec =
-        typeof snap?.vector_weight === 'number' ? (snap.vector_weight as number) : 0.7
-      const rrf = !!snap?.use_rrf
-      const tw = snap?.text_weights as Record<string, number> | undefined
-      const vw = snap?.vector_weights as Record<string, number> | undefined
+        typeof (snap as any)?.vector_weight === 'number' ? ((snap as any).vector_weight as number) : 0.7
+      const rrf = !!(snap as any)?.use_rrf
+      const tw = (snap as any)?.text_weights as Record<string, number> | undefined
+      const vw = (snap as any)?.vector_weights as Record<string, number> | undefined
       stashVideoAnalysisPrefillFromMatch({
         workspace: jobWs,
         selectedHistory: '__all__',
@@ -549,10 +564,12 @@ async function goVideoAnalysisFromMaterialRow(row: Record<string, unknown>) {
           ...(tw && typeof tw === 'object' && !Array.isArray(tw) ? { text_weights: tw } : {}),
           ...(vw && typeof vw === 'object' && !Array.isArray(vw) ? { vector_weights: vw } : {}),
         },
+        searchStrategyName: stratName,
         searchFuzzy: true,
+        enableRoadRunFallback: !!(row as any).enable_road_run_fallback,
         autoSearch: true,
       })
-      router.push('/video-analysis')
+      router.push({ name: 'video-analysis' })
     } catch (e: unknown) {
       ElMessage.error((e as Error)?.message || '请求失败')
     }
@@ -636,9 +653,12 @@ function shotStatusTagTypeBoard(st: string): 'success' | 'danger' | 'warning' | 
 const shotTranscribeVisible = ref(false)
 const shotTranscribeRow = ref<VideoMatchShotDto | null>(null)
 
-const shotTranscribeTokens = computed(() =>
-  tagsJsonToSearchTokens((shotTranscribeRow.value?.tags_json ?? {}) as Record<string, unknown>),
-)
+const shotTranscribeTokens = computed(() => {
+  if (shotTranscribeRow.value?.search_tokens_json && Array.isArray(shotTranscribeRow.value.search_tokens_json)) {
+    return shotTranscribeRow.value.search_tokens_json
+  }
+  return tagsJsonToSearchTokens((shotTranscribeRow.value?.tags_json ?? {}) as Record<string, unknown>)
+})
 
 const storyboardJobParseFailed = computed(
   () => String(storyboardParentRow.value?.parse_status ?? '').toLowerCase() === 'failed',
@@ -787,12 +807,12 @@ async function goVideoAnalysisFromShot(row: VideoMatchShotDto) {
     searchFuzzy: true,
     autoSearch: true,
   })
-  router.push('/video-analysis')
+  router.push({ name: 'video-analysis' })
 }
 
 /** 任务看板：进入视频分析页并选中该条历史与工作区 */
 function goVideoAnalysisFromBoardRow(row: Record<string, unknown>) {
-  const id = String(row.id ?? '').trim()
+  const id = String(row.va_context_history_id || row.id || '').trim()
   const ws = String(row.workspace ?? 'v1').trim() || 'v1'
   if (!id) {
     ElMessage.warning('缺少分析 ID')
@@ -996,7 +1016,13 @@ watch(shotTranscribeVisible, (open) => {
 })
 
 const handleViewMaterialBoard = (row: any) => { console.log('View material board', row) }
-const handleNavigateToVideoAnalysis = (row: any, workspace: string) => { console.log('Navigate to video analysis', row, workspace) }
+const handleNavigateToVideoAnalysis = (row: any, workspace: string) => { 
+  if (boardSection.value === 'video_match_search') {
+    goVideoAnalysisFromMaterialRow(row)
+  } else {
+    goVideoAnalysisFromBoardRow(row)
+  }
+}
 
 </script>
 

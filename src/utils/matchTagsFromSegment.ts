@@ -62,29 +62,33 @@ export function tagsJsonToSearchTokens(
   addToken('weather', seg.weather, false, 'keyword')
   addToken('time', seg.time, false, 'keyword')
 
-  const orKeywordArrays = [
-    ...((seg.object as unknown[]) ?? []),
-    ...((seg.scene_location as unknown[]) ?? []),
-    ...((seg.design_selling_points as unknown[]) ?? []),
-    ...((seg.function_selling_points as unknown[]) ?? []),
-    ...((seg.design_adjectives as unknown[]) ?? []),
-    ...((seg.function_adjectives as unknown[]) ?? []),
-    ...((seg.scenario_a as unknown[]) ?? []),
-    ...((seg.scenario_b as unknown[]) ?? []),
-    ...((seg.marketing_tags as unknown[]) ?? []),
-    ...((seg.appealing_audience as unknown[]) ?? []),
-    ...((seg.extra_tags as unknown[]) ?? []),
+  const orKeywordFields = [
+    'object', 'scene_location', 'design_selling_points', 'function_selling_points',
+    'design_adjectives', 'function_adjectives', 'scenario_a', 'scenario_b',
+    'marketing_tags', 'appealing_audience', 'extra_tags'
   ]
-  for (const x of orKeywordArrays) {
-    addToken(null, x, false, 'keyword')
+  for (const field of orKeywordFields) {
+    const arr = (seg[field] as unknown[]) ?? []
+    for (const x of arr) {
+      let mappedField = field
+      if (field === 'extra_tags') {
+        mappedField = ''
+      } else if (field === 'marketing_tags') {
+        mappedField = 'marketing_phrases'
+      }
+      addToken(mappedField, x, false, 'keyword')
+    }
   }
 
   addToken('description', seg.description, false, 'text')
-  addToken('segment_text', seg.segment_text, false, 'text')
+  addToken('', seg.segment_text, false, 'text')
 
-  const orTextArrays = [...((seg.marketing_phrases as unknown[]) ?? []), ...((seg.text as unknown[]) ?? [])]
-  for (const x of orTextArrays) {
-    addToken(null, x, false, 'text')
+  const orTextFields = ['marketing_phrases', 'text']
+  for (const field of orTextFields) {
+    const arr = (seg[field] as unknown[]) ?? []
+    for (const x of arr) {
+      addToken(field, x, false, 'text')
+    }
   }
 
   const firstTok = newTokens[0]

@@ -43,7 +43,7 @@ const isLoadingHistory = ref(false)
 /** 仅在选择文件→提交任务 HTTP 阶段为 true；服务端异步跑豆包时不占此状态 */
 const isSubmittingBatch = ref(false)
 const selectedFiles = ref<File[]>([])
-const selectedHistory = ref('')
+const selectedHistory = ref('__all__')
 const searchTokens = ref<SearchToken[]>([])
 const searchStrategyName = ref('')
 const searchStrategyWeights = ref<SearchStrategyWeightsState>({
@@ -133,7 +133,10 @@ async function fetchWorkspaces() {
 const historyItems = ref<VideoAnalysisHistoryItem[]>([])
 const historyOptions = computed(() =>
   [
-    { value: '__all__', label: 'All（全部卡片）' },
+    {
+      value: '__all__',
+      label: `All（全部卡片）（共 ${historyItems.value.length} 条视频）`,
+    },
     ...historyItems.value.map((it) => ({
       value: String((it as { id?: unknown }).id ?? ''),
       label: `${it.time} ${it.name}`,
@@ -304,7 +307,18 @@ const handleHistoryChange = async (val: string) => {
         analysisResults.value = []
         return
       }
-      analysisResults.value = toUiCards(res.cards || [])
+      // 老数据 os_index_status 可能没更新（默认 PENDING）
+      // 如果卡片有完整分析内容（有 subject 或 description），推断为已入库
+      const normalized = (res.cards as any[]).map((c) => ({
+        ...c,
+        os_index_status:
+          c.os_index_status === 'OK'
+            ? 'OK'
+            : (c.subject || c.description)
+              ? 'OK'
+              : (c.os_index_status ?? 'PENDING'),
+      }))
+      analysisResults.value = toUiCards(normalized)
     } finally {
       isLoadingHistory.value = false
     }
@@ -362,51 +376,38 @@ function matchTag(tags: string[], token: string) {
   })
 }
 
-// effectiveResults 状态分离设计：
-//   有搜索 token → 优先显示 remoteSearchCards；尚未返回时用 analysisResults 做本地过滤垫底
-//   无搜索 token → 始终显示历史卡片 analysisResults（搜索结果不混入）
+// effectiveResults: no tokens → history cards; tokens → remote results
 const effectiveResults = computed(() => {
   const hasTokens = (searchTokens.value ?? []).some(t => t.text?.trim())
   if (!hasTokens) {
     return analysisResults.value.length > 0 ? analysisResults.value : _cachedResults
   }
-  // 有 token 且已有后端响应（包括空结果）→ 以远程结果为准，不再 fallback
   if (remoteSearchDone.value) return remoteSearchCards.value
-  // 搜索中尚未返回：临时用历史卡片垫底避免空屏
   return remoteSearchCards.value.length > 0 ? remoteSearchCards.value : analysisResults.value
 })
 
-const filteredResults = computed(() => {
-  const tokens = (searchTokens.value ?? []).filter((t) => t.text && t.text.trim())
-  if (!tokens.length) return effectiveResults.value
+// 不做本地过滤——有 token 时等待后端结果；token 清空时直接展示历史卡片
+const filteredResults = computed(() => effectiveResults.value)
 
-  // 若 remoteSearchCards 已返回，这些卡片是后端已精确排好序的结果，直接展示不再过滤
-  if (remoteSearchCards.value.length > 0) return remoteSearchCards.value
+// ─── 分页：每次20条，滚到底追加 ─────────────────────────────────────
+const PAGE_SIZE = 20
+const visibleCount = ref(PAGE_SIZE)
 
-  // 远程结果尚未回来时：用本地集合过滤 analysisResults 立即呈现
-  return effectiveResults.value.filter((shot) => {
-    const tags = buildBag(shot)
-    const hay = `${shot.subject ?? ''} ${shot.description ?? ''} ${tags.join(' ')}`.toLowerCase()
+// 结果集变化时重置到首页
+watch(filteredResults, () => {
+  visibleCount.value = PAGE_SIZE
+}, { flush: 'sync' })
 
-    let acc = true
-    for (let i = 0; i < tokens.length; i++) {
-      const t = tokens[i]
-      if (!t) continue
-      const join = (t.join ?? 'AND').toUpperCase() as 'AND' | 'OR'
-      const not = !!t.not
+const displayedResults = computed(() =>
+  filteredResults.value.slice(0, visibleCount.value)
+)
 
-      let ok = true
-      if (t.type === 'text') ok = hay.includes(t.text.toLowerCase())
-      else ok = matchTag(tags, t.text)
-      if (not) ok = !ok
-
-      if (i === 0) acc = ok
-      else if (join === 'OR') acc = acc || ok
-      else acc = acc && ok
-    }
-    return acc
-  })
-})
+function loadMoreCards() {
+  const total = filteredResults.value.length
+  if (visibleCount.value < total) {
+    visibleCount.value = Math.min(visibleCount.value + PAGE_SIZE, total)
+  }
+}
 
 const hasBadCards = computed(() =>
   (filteredResults.value ?? []).some((s) => (s.os_index_status ?? 'PENDING') !== 'OK')
@@ -428,7 +429,8 @@ function applySearchHit(
   cards: ShotCard[],
   search_mode: 'precise' | 'fuzzy' | 'fuzzy_rrf' | null,
 ) {
-  const rawCards = cards.map((c) => ({ ...c, _search_mode: search_mode }))
+  // OpenSearch 已返回这些卡片，说明它们肯定在索引里；强制标为 OK 避免误显"待入库"
+  const rawCards = cards.map((c) => ({ ...c, _search_mode: search_mode, os_index_status: 'OK' }))
   const fresh = toUiCards(rawCards)
   _cachedResults = fresh
   remoteSearchCards.value = fresh
@@ -453,12 +455,12 @@ async function withMinSearchSpinner(minMs: number, run: () => void | Promise<voi
 }
 
 let searchDebounceTimer: number | null = null
-function kickRemoteSearch() {
+function kickRemoteSearch(force = false) {
   if (searchDebounceTimer !== null) clearTimeout(searchDebounceTimer)
-  searchDebounceTimer = window.setTimeout(doKickRemoteSearch, 50)
+  searchDebounceTimer = window.setTimeout(() => doKickRemoteSearch(force), 50)
 }
 
-function doKickRemoteSearch() {
+async function doKickRemoteSearch(force: boolean) {
   const tokens = (searchTokens.value ?? []).filter((t) => t.text && t.text.trim())
   const stratSig = JSON.stringify({
     r: !!searchStrategyWeights.value.use_rrf,
@@ -473,6 +475,10 @@ function doKickRemoteSearch() {
     remoteSearchDone.value = false
     remoteSearching.value = false
     lastSuccessfulSearchKey.value = null
+    // 空 Enter = 刷新当前选中的历史（有 loading 动画）
+    if (selectedHistory.value) {
+      await handleHistoryChange(selectedHistory.value)
+    }
     schedulePersistPageState()
     return
   }
@@ -491,7 +497,7 @@ function doKickRemoteSearch() {
   })
 
   const cached = videoAnalysisSearchCache.get(cacheKey)
-  if (cached && Array.isArray(cached.cards)) {
+  if (cached && Array.isArray(cached.cards) && !force) {
     remoteSearching.value = true
     const t0 = Date.now()
     // 截取 cache key 中最后的 JSON token 部分作摘要，拼上卡片数量
@@ -570,6 +576,11 @@ async function refreshHistory() {
   }
 }
 
+function handleClearCache() {
+  videoAnalysisSearchCache.clearAll()
+  ElMessage.success('已清空本地检索缓存')
+  kickRemoteSearch(true)
+}
 const carModelDialogVisible = ref(false)
 const batchCarModel = ref('')
 
@@ -772,6 +783,11 @@ onMounted(async () => {
         if (prefill.searchStrategyName) {
           searchStrategyName.value = prefill.searchStrategyName
         }
+        if (prefill.enableRoadRunFallback !== undefined) {
+          enableRoadRunFallback.value = prefill.enableRoadRunFallback
+        } else if (prefill.searchFuzzy !== undefined) {
+          enableRoadRunFallback.value = prefill.searchFuzzy
+        }
         lastSuccessfulSearchKey.value = null
         remoteSearchCards.value = []
         analysisResults.value = []
@@ -782,7 +798,7 @@ onMounted(async () => {
         const snap = loadPageSnapshot()
         if (snap) {
           if (snap.currentWorkspace) currentWorkspace.value = snap.currentWorkspace
-          selectedHistory.value = snap.selectedHistory ?? ''
+          selectedHistory.value = snap.selectedHistory || '__all__'
           splitScenes.value = snap.splitScenes ?? true
           searchTokens.value = Array.isArray(snap.searchTokens) ? [...snap.searchTokens] : []
           lastSuccessfulSearchKey.value = snap.lastSearchCacheKey ?? null
@@ -862,19 +878,19 @@ watch(currentWorkspace, async () => {
   remoteSearchCards.value = []
   searchTokens.value = []
   lastSuccessfulSearchKey.value = null
-  selectedHistory.value = '' // 清空选中的历史，因为不同 workspace 历史不同
+  selectedHistory.value = '__all__' // workspace 切换时默认选全部
   await loadTokenJoinAndFields()
   await refreshHistory()
   schedulePersistPageState()
 })
 
-// token 变化时：无 token → 清空搜索结果恢复历史卡片；有 token → 本地过滤立即生效（filteredResults computed）
-// tokens 置空时中止搜索
+// token 变化时：只在 token 全部清空时重置远程结果（不做本地自动过滤）
 watch(searchTokens, (tokens) => {
   if (restoringSnapshot.value) return
   if (!(tokens ?? []).some((t) => t.text?.trim())) {
-    kickRemoteSearch() // 内部 tokens.length===0 分支：中止请求 + 清空 remoteSearchCards
+    kickRemoteSearch() // tokens 全清时中止并清空远程结果
   }
+  // 有 token 时不自动触发，等用户 Enter
 })
 
 onBeforeUnmount(() => {
@@ -958,6 +974,7 @@ onBeforeUnmount(() => {
           :loading="remoteSearching"
           dense
           @search="kickRemoteSearch"
+          @clear-cache="handleClearCache"
           class="tag-search"
         >
           <template #footer-leading-actions>
@@ -993,20 +1010,37 @@ onBeforeUnmount(() => {
       </div>
     </el-card>
 
-    <!-- 分析结果展示区 -->
-    <div class="results-area" v-if="effectiveResults.length > 0">
-      <ShotCardGrid
-        :shots="filteredResults"
-        :active-frame-index="activeFrameIndex"
-        :strategy-weights="searchStrategyWeights"
-        @select-shot="openShotDetail"
-        @frame-select="onFrameSelect"
-        @reindex="reindexOne"
-      />
+    <!-- 全屏加载遮罩：切换历史或后端搜索中时显示 -->
+    <div v-if="isLoadingHistory || remoteSearching" class="results-loading-overlay">
+      <div class="results-loading-spinner" />
+      <span class="results-loading-text">{{ isLoadingHistory ? '加载中...' : '搜索中...' }}</span>
     </div>
 
+    <!-- 分析结果展示区 -->
+    <template v-else-if="filteredResults.length > 0">
+      <div class="results-meta-bar">
+        <span class="results-count">
+          共 {{ filteredResults.length }} 张卡片，已显示 {{ displayedResults.length }} 张
+          <span v-if="displayedResults.length < filteredResults.length" class="results-more-hint">
+            · 向右拖动到底部自动加载更多
+          </span>
+        </span>
+      </div>
+      <div class="results-area">
+        <ShotCardGrid
+          :shots="displayedResults"
+          :active-frame-index="activeFrameIndex"
+          :strategy-weights="searchStrategyWeights"
+          :on-scroll-end="loadMoreCards"
+          @select-shot="openShotDetail"
+          @frame-select="onFrameSelect"
+          @reindex="reindexOne"
+        />
+      </div>
+    </template>
+
     <!-- 空状态 -->
-    <el-empty v-else-if="!isLoadingHistory" description="暂无分析数据，请选择历史记录或上传视频" class="empty-state" />
+    <el-empty v-else-if="!isLoadingHistory && !remoteSearching" description="暂无分析数据，请选择历史记录或上传视频" class="empty-state" />
 
     <ShotDetailDrawer v-model="drawerOpen" :shot="activeShot" />
 
@@ -1191,6 +1225,47 @@ onBeforeUnmount(() => {
 
 .empty-state {
   margin-top: 60px;
+}
+
+/* 全屏加载遮罩 */
+.results-loading-overlay {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  min-height: 240px;
+}
+.results-loading-spinner {
+  width: 48px;
+  height: 48px;
+  border: 4px solid #e4e7ed;
+  border-top-color: #409eff;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+.results-loading-text {
+  font-size: 14px;
+  color: #909399;
+}
+
+/* 结果计数栏 */
+.results-meta-bar {
+  padding: 4px 8px 4px 4px;
+  flex-shrink: 0;
+}
+.results-count {
+  font-size: 12px;
+  color: #909399;
+}
+
+.results-more-hint {
+  color: #c0c4cc;
 }
 </style>
 

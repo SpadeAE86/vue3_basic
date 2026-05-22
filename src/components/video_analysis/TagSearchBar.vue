@@ -62,7 +62,8 @@ const emit = defineEmits<{
     use_rrf?: boolean
   }): void
   (e: 'update:enableRoadRunFallback', v: boolean): void
-  (e: 'search'): void
+  (e: 'search', force?: boolean): void
+  (e: 'clear-cache'): void
 }>()
 
 // --- 搜索策略相关逻辑 ---
@@ -149,8 +150,8 @@ async function loadStrategies() {
     const res = await getSearchStrategiesApi()
     if (res.success) {
       strategies.value = res.strategies
-      if (!selectedStrategy.value) {
-        const def = strategies.value.find((s) => s.is_default)
+      if (!selectedStrategy.value && strategies.value.length > 0) {
+        const def = strategies.value.find((s) => s.is_default) || strategies.value[0]
         if (def) {
           applyStrategy(def)
         }
@@ -614,6 +615,9 @@ function handleEnterKey() {
   } else if (tokens.value.length > 0) {
     // 输入框已空且有 label → 发起搜索
     emit('search')
+  } else {
+    // 输入框和 label 都空 → 视为刷新（由父组件决定行为）
+    emit('search', true)
   }
 }
 </script>
@@ -710,6 +714,17 @@ function handleEnterKey() {
         >
           <el-icon><i-ep-setting /></el-icon>
         </el-button>
+        <el-tooltip content="清空本地检索缓存并强制重新搜索" placement="top">
+          <el-button
+            circle
+            size="small"
+            type="warning"
+            plain
+            @click="$emit('clear-cache')"
+          >
+            <el-icon><i-ep-refresh /></el-icon>
+          </el-button>
+        </el-tooltip>
       </div>
     </div>
 

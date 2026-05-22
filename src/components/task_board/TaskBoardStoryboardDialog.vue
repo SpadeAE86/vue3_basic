@@ -36,9 +36,12 @@ watch(visible, (val) => {
 const shotTranscribeVisible = ref(false)
 const shotTranscribeRow = ref<VideoMatchShotDto | null>(null)
 
-const shotTranscribeTokens = computed(() =>
-  tagsJsonToSearchTokens((shotTranscribeRow.value?.tags_json ?? {}) as Record<string, unknown>),
-)
+const shotTranscribeTokens = computed(() => {
+  if (shotTranscribeRow.value?.search_tokens_json && Array.isArray(shotTranscribeRow.value.search_tokens_json)) {
+    return shotTranscribeRow.value.search_tokens_json
+  }
+  return tagsJsonToSearchTokens((shotTranscribeRow.value?.tags_json ?? {}) as Record<string, unknown>)
+})
 
 function openShotTranscribe(row: VideoMatchShotDto) {
   shotTranscribeRow.value = row

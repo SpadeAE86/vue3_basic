@@ -81,7 +81,7 @@ const emit = defineEmits(['detail', 'retry', 'view-material', 'navigate-analysis
         header-cell-class-name="admin-th"
         style="width: 100%"
       >
-        <el-table-column prop="id" label="履历 ID" min-width="112" show-overflow-tooltip />
+        <el-table-column prop="id" label="ID" min-width="112" show-overflow-tooltip />
         <el-table-column label="来源" width="120" show-overflow-tooltip>
           <template #default="{ row }">
             {{ materialSourceLabel(row.source) }}
@@ -130,14 +130,12 @@ const emit = defineEmits(['detail', 'retry', 'view-material', 'navigate-analysis
         <el-table-column label="路跑兜底" width="88" align="center">
           <template #default="{ row }">
             <el-tag
-              v-if="row.enable_road_run_fallback != null"
               :type="row.enable_road_run_fallback ? 'success' : 'info'"
               effect="light"
               size="small"
             >
               {{ row.enable_road_run_fallback ? '是' : '否' }}
             </el-tag>
-            <span v-else class="muted-small">—</span>
           </template>
         </el-table-column>
         <el-table-column label="创建时间" min-width="168">

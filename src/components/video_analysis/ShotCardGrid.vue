@@ -13,6 +13,7 @@ const props = defineProps<{
     text_weights?: Record<string, number>;
     vector_weights?: Record<string, number>;
   }
+  onScrollEnd?: () => void
 }>()
 
 const emit = defineEmits<{
@@ -20,6 +21,14 @@ const emit = defineEmits<{
   (e: 'frame-select', id: string, idx: number): void
   (e: 'reindex', ev: MouseEvent, shot: UiShotCard): void
 }>()
+
+function handleContainerScroll(e: Event) {
+  if (!props.onScrollEnd) return
+  const el = e.currentTarget as HTMLElement
+  if (el.scrollLeft + el.clientWidth >= el.scrollWidth - 200) {
+    props.onScrollEnd()
+  }
+}
 
 // ─── Core field chips (v2 schema) ─────────────────────────────────────────────
 type CoreFieldDef = { key: string; label: string; bg: string; color: string }
@@ -251,7 +260,7 @@ function parseExplanation(explanation: any, matchedQueries: string[] = []): { it
 </script>
 
 <template>
-  <div class="sg-scroll-container">
+  <div class="sg-scroll-container" @scroll="handleContainerScroll">
     <div class="sg-track">
       <el-card
         v-for="shot in shots"

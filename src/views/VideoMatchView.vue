@@ -9,11 +9,14 @@ import VideoMatchShotsTable from '@/components/video_match/VideoMatchShotsTable.
 import VideoMatchDetailDialog from '@/components/video_match/VideoMatchDetailDialog.vue'
 import VideoMatchTranscribeDialog from '@/components/video_match/VideoMatchTranscribeDialog.vue'
 import TokenJoinTemplateDialog from '@/components/video_analysis/TokenJoinTemplateDialog.vue'
+import SearchStrategyDialog from '@/components/video_analysis/SearchStrategyDialog.vue'
 
 import { useVideoMatchSearch } from '@/composables/video_match/useVideoMatchSearch'
 import { useVideoMatchJobPoller } from '@/composables/video_match/useVideoMatchJobPoller'
 import { useVideoMatchMixCompose } from '@/composables/video_match/useVideoMatchMixCompose'
 import { useVideoMatchAudio } from '@/composables/video_match/useVideoMatchAudio'
+import { extractTagsVideoMatchShotApi, updateVideoMatchShotTokensApi } from '@/api/video_match'
+import { ElMessage } from 'element-plus'
 
 const router = useRouter()
 
@@ -64,8 +67,9 @@ const {
   shotTranscribeVisible, shotTranscribeRow, vmShotRematchingId,
   hasShots, canMatch, canMixCompose, mixComposeDisabledHint,
   formatMatchDetailJson, normalizeMatchHitRows, syncMatchJobContext, openShotTranscribe, rematchVmShot, goVideoAnalysisFromVmShot, openMatchDetail,
-  normalizeVideoMatchScriptInbound, applyVideoMatchJobInputsToForm, shortJobIdForDisplay, pipelineStatusZh, loadHistoryJobs, historyJobLabel, onHistoryJobChange, fetchWorkspaces, onParse, onMatch, refreshJob, onExtract, isExtracting
-} = useVideoMatchJobPoller(form, workspaceOptions, selectedStrategy, router, strategies)
+  normalizeVideoMatchScriptInbound, applyVideoMatchJobInputsToForm, shortJobIdForDisplay, pipelineStatusZh, loadHistoryJobs, historyJobLabel, onHistoryJobChange, fetchWorkspaces, onParse, onMatch, refreshJob, onExtract, isExtracting,
+  isFullPipeline, onFullPipeline, enableRoadRunFallback
+} = useVideoMatchJobPoller(form, workspaceOptions, selectedStrategy, router, strategies, tokenJoinAndFields)
 
 watch(() => matchDetailRow, (val) => { matchDetailRowProxy.value = val?.value }, { deep: true })
 watch(() => shotTranscribeRow, (val) => { shotTranscribeRowProxy.value = val?.value }, { deep: true })
@@ -79,6 +83,37 @@ function rowClassName() {
   return 'video-match-table-row'
 }
 
+async function extractSingleShot(row: any) {
+  if (!currentJobId.value || row.id == null) return
+  try {
+    await extractTagsVideoMatchShotApi(currentJobId.value, row.id)
+    ElMessage.success(`分镜 #${row.shot_order} 已提交后台重新抽取标签`)
+  } catch (e: any) {
+    ElMessage.error(`重新抽取失败: ${e?.message ?? e}`)
+  }
+}
+
+async function handleShotTagsSaved({ shotId, tokens }: { shotId: number; tokens: any[] }) {
+  if (!currentJobId.value || shotId == null) return
+  try {
+    const res = await updateVideoMatchShotTokensApi(currentJobId.value, shotId, tokens)
+    if (res.success) {
+      ElMessage.success('标签结构更新成功，正在重新匹配...')
+      // Re-trigger the match for this shot automatically
+      const rowToMatch = shots.value.find((s: any) => s.id === shotId)
+      if (rowToMatch) {
+        await rematchVmShot(rowToMatch)
+      } else {
+        await refreshJob()
+      }
+    } else {
+      ElMessage.error(res.error || '保存标签结构失败')
+    }
+  } catch (e: any) {
+    ElMessage.error(`保存失败: ${e?.message ?? e}`)
+  }
+}
+
 const {
   composing, composePollTimer, mixPreferSrt, lastMixCompose,
   clearComposePoll, isAbsoluteHttpUrl, mixComposeResultHref, copyMixOutputPath, downloadMixSrtFile, onMixCompose
@@ -87,6 +122,17 @@ const {
 onMounted(() => {
   fetchWorkspaces()
   loadHistoryJobs()
+  loadTokenJoinAndFields()
+})
+
+watch(() => form.value.workspace, () => {
+  loadTokenJoinAndFields()
+})
+
+watch(tokenJoinDialogVisible, (val) => {
+  if (!val) {
+    loadTokenJoinAndFields()
+  }
 })
 </script>
 
@@ -106,6 +152,7 @@ onMounted(() => {
       :canMatch="canMatch"
       :canMixCompose="canMixCompose"
       :isExtracting="isExtracting"
+      :isFullPipeline="isFullPipeline"
       :mixComposeDisabledHint="mixComposeDisabledHint"
       :historyJobs="historyJobs"
       :historyJobId="historyJobId"
@@ -121,10 +168,12 @@ onMounted(() => {
       :lastMixCompose="lastMixCompose"
       :mixComposeResultHref="mixComposeResultHref"
       v-model:mixPreferSrt="mixPreferSrt"
+      v-model:enableRoadRunFallback="enableRoadRunFallback"
       @update:historyJobId="historyJobId = ($event as any)"
       @update:selectedStrategy="selectedStrategy = ($event as any)"
       @parse="onParse"
       @extract="onExtract"
+      @full-pipeline="onFullPipeline"
       @match="onMatch"
       @mix-compose="onMixCompose"
       @history-change="onHistoryJobChange"
@@ -156,6 +205,7 @@ onMounted(() => {
         @openMatchDetail="openMatchDetail"
         @openShotTranscribe="openShotTranscribe"
         @rematchVmShot="rematchVmShot"
+        @extractSingleShot="extractSingleShot"
       />
     </div>
 
@@ -174,10 +224,31 @@ onMounted(() => {
       v-model="shotTranscribeVisible"
       :row="shotTranscribeRow"
       :tokens="shotTranscribeTokens"
-      @saved="refreshJob"
+      @saved="handleShotTagsSaved"
     />
 
     <TokenJoinTemplateDialog v-model="tokenJoinDialogVisible" :workspace="form.workspace" />
+
+    <SearchStrategyDialog
+      v-model="vmStrategyDialogVisible"
+      :mode="vmStrategyDialogMode"
+      :initial-name="vmStrategyInitialName"
+      :initial-is-default="vmStrategyInitialIsDefault"
+      :bm25-weight="vmStrategyBm25"
+      :vector-weight="vmStrategyVector"
+      :text-weights="vmStrategyTextWeights"
+      :vector-weights="vmStrategyVectorWeights"
+      :use-rrf="vmStrategyUseRrf"
+      :index-fields="vmIndexFields"
+      :text-weight-defaults="vmTextWeightDefaults"
+      :vector-weight-defaults="vmVectorWeightDefaults"
+      @update:bm25-weight="vmStrategyBm25 = $event"
+      @update:vector-weight="vmStrategyVector = $event"
+      @update:text-weights="vmStrategyTextWeights = $event"
+      @update:vector-weights="vmStrategyVectorWeights = $event"
+      @update:use-rrf="vmStrategyUseRrf = $event"
+      @save="handleVmStrategySave"
+    />
   </div>
 </template>
 

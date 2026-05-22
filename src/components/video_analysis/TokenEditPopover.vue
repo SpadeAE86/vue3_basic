@@ -18,6 +18,13 @@ const visible = computed({
   get: () => props.modelValue,
   set: (v) => emit('update:modelValue', v)
 })
+const validFields = [
+  'car_model', 'frame_size', 'frame_orientation', 'product_status_scene', 'footage_type',
+  'movement', 'subject', 'camera_movement', 'topic', 'shot_style', 'shot_type', 'weather',
+  'time', 'object', 'scene_location', 'design_selling_points', 'function_selling_points',
+  'design_adjectives', 'function_adjectives', 'scenario_a', 'scenario_b', 'marketing_tags',
+  'appealing_audience', 'extra_tags', 'description', 'segment_text', 'marketing_phrases', 'text'
+]
 </script>
 
 <template>
@@ -30,6 +37,19 @@ const visible = computed({
     virtual-triggering
   >
     <div v-if="editingToken" class="editor">
+      <div class="row">
+        <span class="lab">字段</span>
+        <el-select
+          v-model="editingToken.sourceField"
+          size="small"
+          style="width: 160px"
+          clearable
+          placeholder="全局兜底 (无)"
+        >
+          <el-option v-for="f in validFields" :key="f" :label="f" :value="f" />
+        </el-select>
+      </div>
+
       <div class="row">
         <span class="lab">类型</span>
         <el-segmented
