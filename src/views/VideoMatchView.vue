@@ -15,7 +15,7 @@ import { useVideoMatchSearch } from '@/composables/video_match/useVideoMatchSear
 import { useVideoMatchJobPoller } from '@/composables/video_match/useVideoMatchJobPoller'
 import { useVideoMatchMixCompose } from '@/composables/video_match/useVideoMatchMixCompose'
 import { useVideoMatchAudio } from '@/composables/video_match/useVideoMatchAudio'
-import { extractTagsVideoMatchShotApi, updateVideoMatchShotTokensApi } from '@/api/video_match'
+import { extractTagsVideoMatchShotApi, updateVideoMatchShotTokensApi, updateVideoMatchShotTop1Api } from '@/api/video_match'
 import { ElMessage } from 'element-plus'
 
 const router = useRouter()
@@ -114,6 +114,23 @@ async function handleShotTagsSaved({ shotId, tokens }: { shotId: number; tokens:
   }
 }
 
+async function handleShotTop1Changed(row: any, url: string) {
+  if (!currentJobId.value || row.id == null) return
+  
+  // 1. 乐观更新：立刻在前端响应式状态中修改，实现 0 延迟切换
+  row.top1_obs_url = url
+  
+  try {
+    // 2. 后台异步发送请求更新数据库，保持数据最终一致，不阻塞 UI 且不重新拉取整页数据
+    const res = await updateVideoMatchShotTop1Api(currentJobId.value, row.id, url)
+    if (!res.success) {
+      ElMessage.error(res.error || '同步素材选择失败，请重试')
+    }
+  } catch (e: any) {
+    ElMessage.error(`同步失败: ${e?.message ?? e}`)
+  }
+}
+
 const {
   composing, composePollTimer, mixPreferSrt, lastMixCompose,
   clearComposePoll, isAbsoluteHttpUrl, mixComposeResultHref, copyMixOutputPath, downloadMixSrtFile, onMixCompose
@@ -186,8 +203,17 @@ watch(tokenJoinDialogVisible, (val) => {
       @downloadMixSrtFile="downloadMixSrtFile"
     />
 
-    <div v-if="hasShots" class="results-area">
+    <div v-if="hasShots || parseStatus === 'running'" class="results-area">
+      <template v-if="parseStatus === 'running'">
+        <div class="transcribing-placeholder" v-loading="true" element-loading-text="口播脚本正在转写并生成分镜中，请稍候...">
+          <div class="placeholder-content">
+            <h4>正在转写口播并拆分分镜规划...</h4>
+            <p class="muted">AI 正在为每个分镜生成画面描述、检索标签并合成朗读音频，可能需要 15 - 30 秒。</p>
+          </div>
+        </div>
+      </template>
       <VideoMatchShotsTable
+        v-else
         :shots="shots"
         :currentJobId="currentJobId"
         :synthBusyByShotId="synthBusyByShotId"
@@ -206,6 +232,7 @@ watch(tokenJoinDialogVisible, (val) => {
         @openShotTranscribe="openShotTranscribe"
         @rematchVmShot="rematchVmShot"
         @extractSingleShot="extractSingleShot"
+        @updateShotTop1="handleShotTop1Changed"
       />
     </div>
 
@@ -264,5 +291,24 @@ watch(tokenJoinDialogVisible, (val) => {
   border-radius: 8px;
   box-shadow: 0 1px 4px rgba(0,0,0,0.05);
   padding: 16px;
+}
+.transcribing-placeholder {
+  min-height: 240px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+.placeholder-content h4 {
+  margin-top: 0;
+  margin-bottom: 8px;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+}
+.placeholder-content .muted {
+  margin: 0;
+  font-size: 13px;
+  color: var(--el-text-color-secondary);
 }
 </style>

@@ -43,11 +43,32 @@ export async function saveHistoryApi(mode: GenerateMode, history: any[]) {
   })
 }
 
-/** 图片模式：从 MySQL 删除一条历史（POST 全量不会删库）；视频生成暂仍走 JSON 全量 POST */
+/** 图片模式：从 MySQL 删除一条历史（POST 全量不会删库）；视频生成对齐此接口 */
 export async function deleteImageHistoryItemApi(itemId: string) {
   return fetch(`${API_BASE}/image/history/${encodeURIComponent(itemId)}`, {
     method: 'DELETE',
   })
+}
+
+/** 视频模式：从 MySQL 删除一条历史 */
+export async function deleteVideoHistoryItemApi(itemId: string) {
+  return fetch(`${API_BASE}/video/history/${encodeURIComponent(itemId)}`, {
+    method: 'DELETE',
+  })
+}
+
+/** 视频失败任务重试 */
+export async function retryVideoHistoryTaskApi(itemId: string) {
+  const resp = await fetch(`${API_BASE}/video/history/${encodeURIComponent(itemId)}/retry`, {
+    method: 'POST',
+  })
+  return resp.json()
+}
+
+/** 视频任务看板详情 */
+export async function getVideoHistoryDetailApi(itemId: string) {
+  const resp = await fetch(`${API_BASE}/video/history/${encodeURIComponent(itemId)}/detail`)
+  return resp.json()
 }
 
 export async function getVideoStatusApi(taskId: string) {
@@ -84,7 +105,7 @@ export async function generateImageApi(payload: any) {
   return resp.json()
 }
 
-export async function beautifyPromptApi(prompt: string, systemPrompt: string, videoDuration?: number) {
+export async function beautifyPromptApi(prompt: string, systemPrompt: string, videoDuration?: number, referenceImageList?: string[]) {
   const resp = await fetchWithTimeout(`${API_BASE}/text`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -93,6 +114,7 @@ export async function beautifyPromptApi(prompt: string, systemPrompt: string, vi
       system_prompt: systemPrompt,
       model: 'Seed 2.0 Pro',
       video_duration: videoDuration,
+      reference_image_list: referenceImageList,
     }),
     timeoutMs: 60_000, // 文本模型生成可能较慢，设置 60 秒超时
   })

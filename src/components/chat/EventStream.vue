@@ -11,6 +11,15 @@ const props = defineProps<{
 }>()
 
 const scrollRef = ref<InstanceType<typeof import('element-plus')['ElScrollbar']>>()
+const expandedEventId = ref<string | null>(null)
+
+function toggleExpand(id: string) {
+  if (expandedEventId.value === id) {
+    expandedEventId.value = null
+  } else {
+    expandedEventId.value = id
+  }
+}
 
 // 新事件来了自动滚到底
 watch(
@@ -27,7 +36,12 @@ watch(
     <div class="event-list">
       <template v-for="event in events" :key="event.id">
         <!-- 用户消息 -->
-        <UserBubble v-if="event.type === 'user'" :event="event" />
+        <UserBubble
+          v-if="event.type === 'user'"
+          :event="event"
+          :is-expanded="expandedEventId === event.id"
+          @toggle-expand="toggleExpand(event.id)"
+        />
 
         <!-- 思考过程 -->
         <ThinkingBlock v-else-if="event.type === 'thinking'" :event="event" />
@@ -36,7 +50,12 @@ watch(
         <ToolBlock v-else-if="event.type === 'tool_call' || event.type === 'tool_result'" :event="event" />
 
         <!-- Agent 回复 -->
-        <AssistantBubble v-else-if="event.type === 'assistant'" :event="event" />
+        <AssistantBubble
+          v-else-if="event.type === 'assistant'"
+          :event="event"
+          :is-expanded="expandedEventId === event.id"
+          @toggle-expand="toggleExpand(event.id)"
+        />
 
         <!-- 状态 / 错误 -->
         <div v-else-if="event.type === 'status'" class="status-line">

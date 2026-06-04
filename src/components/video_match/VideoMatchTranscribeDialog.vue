@@ -62,7 +62,7 @@ const props = defineProps<{
 }>()
 const emit = defineEmits<{
   (e: 'update:modelValue', v: boolean): void
-  (e: 'saved'): void
+  (e: 'saved', payload: { shotId: number; tokens: SearchToken[] }): void
 }>()
 
 const localTokens = ref<SearchToken[]>([])

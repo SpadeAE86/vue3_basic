@@ -51,6 +51,12 @@ const router = createRouter({
       meta: { title: '视频分析任务', boardSection: 'video' },
     },
     {
+      path: '/task-board/video-gen',
+      name: 'task-board-video-gen',
+      component: () => import('../views/TaskBoardView.vue'),
+      meta: { title: '视频生成任务', boardSection: 'video_gen' },
+    },
+    {
       path: '/task-board/script-transcription',
       redirect: { name: 'task-board-video-match-transcribe' },
     },

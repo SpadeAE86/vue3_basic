@@ -292,3 +292,23 @@ export async function getMixComposeApi(composeId: string): Promise<MixComposeJob
   }
   return resp.json() as Promise<MixComposeJobDto>
 }
+
+export async function updateVideoMatchShotTop1Api(
+  jobId: string,
+  shotRowId: number,
+  top1ObsUrl: string,
+): Promise<{ success: boolean; error?: string; top1_obs_url?: string }> {
+  const resp = await fetch(
+    `${API_BASE}/video-match/jobs/${encodeURIComponent(jobId)}/shots/${shotRowId}/top1`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ top1_obs_url: top1ObsUrl }),
+    },
+  )
+  if (!resp.ok) {
+    return { success: false, error: `HTTP ${resp.status}` }
+  }
+  return resp.json() as Promise<{ success: boolean; error?: string; top1_obs_url?: string }>
+}
+

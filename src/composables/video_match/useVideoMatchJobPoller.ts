@@ -22,7 +22,7 @@ const jobSearchStatus = ref<string | null>(null)
 const jobSearchError = ref<string | null>(null)
 const extractStatus = ref<string | null>(null)
 const extractError = ref<string | null>(null)
-const enableRoadRunFallback = ref(false)
+const enableRoadRunFallback = ref(true)
 /** 与任务看板一致：跳转视频分析时带入工作区与策略权重 */
 const matchJobWorkspace = ref('v1')
 const jobStrategySnapshot = ref<Record<string, unknown> | null>(null)
@@ -103,17 +103,16 @@ async function rematchVmShot(row: VideoMatchShotDto) {
   vmShotRematchingId.value = row.id
   try {
     const res = await rematchVideoMatchShotApi(jid, row.id)
-    const shot = res.shot
-    if (shot) {
-      const i = shots.value.findIndex((s) => s.id === row.id)
-      if (i >= 0) shots.value[i] = { ...shots.value[i], ...shot }
-    } else if (res.success) {
-      const r2 = await getVideoMatchJobApi(jid)
-      if (r2.success && r2.shots) shots.value = r2.shots
-      if (r2.success) syncMatchJobContext(r2)
-    }
     if (res.success) {
       ElMessage.success('已重新检索本分镜')
+      // 拉取最新 Job 详情，更新分镜列表、全局搜索状态与全局错误信息
+      const r2 = await getVideoMatchJobApi(jid)
+      if (r2.success) {
+        if (r2.shots) shots.value = r2.shots
+        jobSearchStatus.value = r2.search_status ?? null
+        jobSearchError.value = r2.search_error ?? null
+        syncMatchJobContext(r2)
+      }
     } else {
       ElMessage.error(res.error || '本分镜匹配失败')
     }
@@ -324,7 +323,6 @@ function pipelineStatusZh(raw: string | null | undefined): { label: string; tag:
 async function loadHistoryJobs() {
   try {
     const res = await listVideoMatchJobsApi({
-      parse_status: 'done',
       limit: 80,
     })
     if (res?.success && Array.isArray(res.jobs)) {
@@ -350,7 +348,28 @@ function historyJobLabel(j: VideoMatchJobSummary) {
   const ts = j.created_at ? j.created_at.replace('T', ' ').slice(0, 19) : ''
   const ws = (j.workspace ?? '').trim()
   const wsTag = ws ? `[${ws}] ` : ''
-  return ts ? `${sn}${wsTag}${ts} · ${t}` : `${sn}${wsTag}${t}`
+  const statusSuffix = j.parse_status === 'running' ? ' (转写中...)' : (j.parse_status === 'failed' ? ' (转写失败)' : '')
+  return ts ? `${sn}${wsTag}${ts} · ${t}${statusSuffix}` : `${sn}${wsTag}${t}${statusSuffix}`
+}
+
+function pollParseJob(jobId: string): Promise<VideoMatchJobResponse> {
+  return new Promise((resolve) => {
+    const timer = setInterval(async () => {
+      try {
+        const snap = await getVideoMatchJobApi(jobId)
+        if (snap.success) {
+          parseStatus.value = snap.parse_status ?? null
+          parseError.value = snap.parse_error ?? null
+          if (snap.parse_status !== 'running') {
+            clearInterval(timer)
+            resolve(snap)
+          }
+        }
+      } catch (err) {
+        // Poll error, ignore and continue
+      }
+    }, 1500)
+  })
 }
 
 async function onHistoryJobChange(id: string | null | undefined) {
@@ -374,6 +393,31 @@ async function onHistoryJobChange(id: string | null | undefined) {
     // 持久化选中状态，切路由返回后自动恢复
     try { sessionStorage.setItem('videoMatch:lastJobId:v1', sid) } catch { /* ignore */ }
     ElMessage.success('已载入历史任务')
+
+    // If the loaded job is still transcribing, start polling
+    if (res.parse_status === 'running') {
+      try {
+        const completedJob = await pollParseJob(sid)
+        if (currentJobId.value !== sid) return
+        if (completedJob.parse_status === 'done') {
+          shots.value = completedJob.shots ?? []
+          parseStatus.value = completedJob.parse_status ?? null
+          jobSearchStatus.value = completedJob.search_status ?? null
+          searchTotalMs.value = completedJob.search_total_ms ?? null
+          jobSearchError.value = completedJob.search_error ?? null
+          extractStatus.value = completedJob.extract_status ?? null
+          extractError.value = completedJob.extract_error ?? null
+          syncMatchJobContext(completedJob)
+          ElMessage.success('转写完成')
+        } else {
+          parseStatus.value = completedJob.parse_status ?? null
+          parseError.value = completedJob.parse_error || '解析/转写失败'
+          ElMessage.error(parseError.value)
+        }
+      } finally {
+        await loadHistoryJobs()
+      }
+    }
   } catch (e) {
     ElMessage.error(e instanceof Error ? e.message : '加载失败')
   }
@@ -425,11 +469,12 @@ async function onParse() {
       currentJobId.value = res.job_id ?? null
       parseStatus.value = res.parse_status ?? null
       ElMessage.error(parseError.value)
+      parsing.value = false
       return
     }
 
     currentJobId.value = res.job_id ?? null
-    shots.value = res.shots ?? []
+    shots.value = [] // Immediately clear old shots to show loading placeholder
     parseStatus.value = res.parse_status ?? null
     jobSearchStatus.value = res.search_status ?? null
     searchTotalMs.value = res.search_total_ms ?? null
@@ -438,34 +483,72 @@ async function onParse() {
     extractError.value = res.extract_error ?? null
     syncMatchJobContext(res)
     form.value.script = scriptClean
-    if (res.job_id) try { sessionStorage.setItem('videoMatch:lastJobId:v1', res.job_id) } catch { /* ignore */ }
-    ElMessage.success(res.mock ? '转写完成（服务端返回 mock）' : '转写完成')
-
-    // Automatically generate audio after parsing
-    if (shots.value && shots.value.length > 0) {
-      ElMessage.info('正在自动生成分镜音频...')
-      const audioPromises = shots.value.map(async (shot) => {
-        if (shot.id != null && !(shot.obs_audio_url || '').trim()) {
-          try {
-            const audioRes = await synthesizeShotAudioApi(currentJobId.value!, shot.id)
-            if (audioRes.success && audioRes.shot) {
-              Object.assign(shot, audioRes.shot)
-            }
-          } catch (e) {
-            console.error('Shot audio generation failed:', e)
-          }
-        }
-      })
-      await Promise.all(audioPromises)
+    
+    if (res.job_id) {
+      try { sessionStorage.setItem('videoMatch:lastJobId:v1', res.job_id) } catch { /* ignore */ }
     }
-
+    
+    // Immediately load history so it appears in the dropdown list and select it
     await loadHistoryJobs()
     historyJobId.value = currentJobId.value
+
+    parsing.value = false // Done loading for button! The user can now click again or interact!
+
+    let finalJob = res
+    if (res.parse_status === 'running') {
+      ElMessage.info('转写任务创建成功，正在后台解析...')
+      finalJob = await pollParseJob(res.job_id!)
+      
+      // Check if user has switched to another job during polling
+      if (currentJobId.value !== res.job_id) {
+        return
+      }
+
+      // Update with polled final results
+      shots.value = finalJob.shots ?? []
+      parseStatus.value = finalJob.parse_status ?? null
+      jobSearchStatus.value = finalJob.search_status ?? null
+      searchTotalMs.value = finalJob.search_total_ms ?? null
+      jobSearchError.value = finalJob.search_error ?? null
+      extractStatus.value = finalJob.extract_status ?? null
+      extractError.value = finalJob.extract_error ?? null
+      syncMatchJobContext(finalJob)
+      
+      await loadHistoryJobs() // Update the label in the dropdown
+    } else {
+      shots.value = res.shots ?? []
+    }
+
+    if (finalJob.parse_status === 'done') {
+      if (currentJobId.value !== res.job_id) return
+      ElMessage.success(finalJob.mock ? '转写完成（服务端返回 mock）' : '转写完成')
+
+      // Automatically generate audio after parsing
+      if (shots.value && shots.value.length > 0) {
+        ElMessage.info('正在自动生成分镜音频...')
+        const audioPromises = shots.value.map(async (shot) => {
+          if (shot.id != null && !(shot.obs_audio_url || '').trim()) {
+            try {
+              const audioRes = await synthesizeShotAudioApi(res.job_id!, shot.id)
+              if (currentJobId.value === res.job_id && audioRes.success && audioRes.shot) {
+                Object.assign(shot, audioRes.shot)
+              }
+            } catch (e) {
+              console.error('Shot audio generation failed:', e)
+            }
+          }
+        })
+        await Promise.all(audioPromises)
+      }
+    } else {
+      if (currentJobId.value !== res.job_id) return
+      parseError.value = finalJob.parse_error || '解析/转写失败'
+      ElMessage.error(parseError.value)
+    }
   } catch (e) {
     const msg = e instanceof Error ? e.message : '请求异常'
     parseError.value = msg
     ElMessage.error(msg)
-  } finally {
     parsing.value = false
   }
 }

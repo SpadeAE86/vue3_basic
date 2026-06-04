@@ -8,6 +8,35 @@ export async function fetchImageHistoryForBoard(params?: { ids?: string }) {
   return resp.json()
 }
 
+export async function fetchVideoGenHistoryForBoard(params?: { ids?: string }) {
+  const sp = new URLSearchParams()
+  if (params?.ids) sp.set('ids', params.ids)
+  const q = sp.toString()
+  const resp = await fetch(`${API_BASE}/video/history${q ? `?${q}` : ''}`)
+  return resp.json()
+}
+
+export async function fetchVideoGenTaskDetail(id: string) {
+  const resp = await fetch(`${API_BASE}/video/history/${encodeURIComponent(id)}/detail`)
+  return resp.json()
+}
+
+export async function retryVideoGenTask(id: string) {
+  const resp = await fetch(`${API_BASE}/video/history/${encodeURIComponent(id)}/retry`, {
+    method: 'POST',
+  })
+  const data = await resp.json().catch(() => ({}))
+  if (!resp.ok) {
+    const msg =
+      typeof (data as { detail?: string }).detail === 'string'
+        ? (data as { detail: string }).detail
+        : `HTTP ${resp.status}`
+    return { success: false as const, error: msg, ...data }
+  }
+  return data
+}
+
+
 export async function fetchVideoAnalysisHistoryForBoard(params?: { workspace?: string, ids?: string }) {
   const sp = new URLSearchParams()
   if (params?.workspace) sp.set('workspace', params.workspace)

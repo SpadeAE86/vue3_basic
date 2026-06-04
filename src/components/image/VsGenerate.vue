@@ -190,9 +190,11 @@ async function handleGenerateBoth() {
       const sysA = await getTemplateContent(templateForA!)
       const sysB = await getTemplateContent(templateForB!)
       
+      const refImages = sharedForm.referenceMedia?.filter((m: MediaFile) => m.type === 'image' && m.url).map((m: MediaFile) => m.url)
+      
       const [resA, resB] = await Promise.all([
-        beautifyPromptApi(rawPrompt.value, sysA, props.currentMode === 'video' ? sharedForm.videoDuration : undefined),
-        beautifyPromptApi(rawPrompt.value, sysB, props.currentMode === 'video' ? sharedForm.videoDuration : undefined)
+        beautifyPromptApi(rawPrompt.value, sysA, props.currentMode === 'video' ? sharedForm.videoDuration : undefined, refImages),
+        beautifyPromptApi(rawPrompt.value, sysB, props.currentMode === 'video' ? sharedForm.videoDuration : undefined, refImages)
       ])
 
       if (resA.success && resA.text) {
@@ -319,6 +321,9 @@ watch(compareVariable, () => {
 function handleBeautifyRawPrompt() {
   beautifyPrompt(rawPrompt.value, (newPrompt: string) => {
     rawPrompt.value = newPrompt
+  }, {
+    videoDuration: props.currentMode === 'video' ? sharedForm.videoDuration : undefined,
+    referenceImageList: sharedForm.referenceMedia?.filter((m: MediaFile) => m.type === 'image' && m.url).map((m: MediaFile) => m.url)
   })
 }
 </script>

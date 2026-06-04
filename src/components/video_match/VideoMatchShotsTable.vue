@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { shotStatusLabel, shotExtractStatusLabel, shotSearchStatusNorm, shotExtractStatusNorm, shotStatusTagType, shotTop1VideoUrl, top1UrlDisplay, shotMatchFailedVm, canJumpVideoAnalysisFromVmShot } from '@/utils/videoMatchHelpers'
+import { shotStatusLabel, shotExtractStatusLabel, shotSearchStatusNorm, shotExtractStatusNorm, shotStatusTagType, shotTop1VideoUrl, top1UrlDisplay, shotMatchFailedVm, canJumpVideoAnalysisFromVmShot, shotRankedVideoUrls } from '@/utils/videoMatchHelpers'
 import { Headset, Microphone, Position, RefreshRight, VideoPlay, Document, View, Search, DocumentCopy, Loading, MoreFilled, Refresh } from '@element-plus/icons-vue'
 
 const props = defineProps<{
@@ -60,12 +60,21 @@ const emit = defineEmits<{
   (e: 'rematchVmShot', row: any): void
   (e: 'extractSingleShot', row: any): void
   (e: 'goVideoAnalysisFromVmShot', row: any): void
+  (e: 'updateShotTop1', row: any, url: string): void
 }>()
 
 function handleMoreCmd(cmd: string, row: any) {
   if (cmd === 'detail') emit('openMatchDetail', row)
   else if (cmd === 'rematch') emit('rematchVmShot', row)
   else if (cmd === 'extract') emit('extractSingleShot', row)
+}
+
+function handleTop1Change(row: any, url: string) {
+  if (url === 'COPY_LINK') {
+    copyTop1Url(shotTop1VideoUrl(row))
+    return
+  }
+  emit('updateShotTop1', row, url)
 }
 </script>
 
@@ -242,9 +251,31 @@ function handleMoreCmd(cmd: string, row: any) {
                     :title="shotTop1VideoUrl(row) ?? undefined"
                     >{{ top1UrlDisplay(shotTop1VideoUrl(row) ?? null) }}</a
                   >
-                  <el-button type="info" link @click="copyTop1Url(shotTop1VideoUrl(row))">
-                    <el-icon><DocumentCopy /></el-icon>
-                  </el-button>
+                  <!-- Replace copy button with dropdown to switch top5 videos -->
+                  <el-dropdown trigger="click" size="small" @command="(url: string) => handleTop1Change(row, url)">
+                    <el-button type="info" link title="切换视频/复制链接">
+                      <el-icon><Refresh /></el-icon>
+                    </el-button>
+                    <template #dropdown>
+                      <el-dropdown-menu>
+                        <el-dropdown-item
+                          v-for="(url, idx) in shotRankedVideoUrls(row)"
+                          :key="idx"
+                          :command="url"
+                          :disabled="url === shotTop1VideoUrl(row)"
+                        >
+                          <span :style="{ fontWeight: url === shotTop1VideoUrl(row) ? 'bold' : 'normal', color: url === shotTop1VideoUrl(row) ? '#409eff' : 'inherit' }">
+                            Top {{ idx + 1 }}: {{ top1UrlDisplay(url) }}
+                          </span>
+                        </el-dropdown-item>
+                        <el-dropdown-item divided command="COPY_LINK">
+                          <span style="display: flex; align-items: center; gap: 4px;">
+                            <el-icon><DocumentCopy /></el-icon> 复制当前视频链接
+                          </span>
+                        </el-dropdown-item>
+                      </el-dropdown-menu>
+                    </template>
+                  </el-dropdown>
                 </div>
               <div v-if="row.match_hit_count != null" class="muted-small match-hit-meta">
                 命中 {{ row.match_hit_count }} 条              </div>

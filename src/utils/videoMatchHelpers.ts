@@ -18,6 +18,9 @@ export function shotRankedVideoUrls(row: VideoMatchShotDto): string[] {
 }
 
 export function shotTop1VideoUrl(row: VideoMatchShotDto): string | null {
+  if (row.top1_obs_url && row.top1_obs_url.trim()) {
+    return row.top1_obs_url
+  }
   const arr = shotRankedVideoUrls(row)
   return arr.length > 0 ? (arr[0] ?? null) : null
 }

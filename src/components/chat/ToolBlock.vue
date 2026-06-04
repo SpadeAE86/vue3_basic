@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import type { ChatEvent } from '@/types/chat'
+import ResultCard from '@/components/image/ResultCard.vue'
 
 const props = defineProps<{ event: ChatEvent }>()
 
@@ -11,6 +12,17 @@ const terminalTools = ['bash', 'shell_exec', 'grep', 'file_search']
 const isTerminal = computed(() => terminalTools.includes(props.event.toolName ?? ''))
 
 const isResult = computed(() => props.event.type === 'tool_result')
+const isGenerateImage = computed(() => props.event.toolName === 'generate_image')
+
+const parsedResult = computed(() => {
+  if (!isResult.value || !isGenerateImage.value || !props.event.content) return null
+  try {
+    return JSON.parse(props.event.content)
+  } catch (e) {
+    console.warn('解析生图工具返回结果失败:', e)
+    return null
+  }
+})
 
 // 简洁参数预览
 const argsPreview = computed(() => {
@@ -47,7 +59,10 @@ const argsPreview = computed(() => {
 
     <!-- tool_result: 显示输出 -->
     <template v-if="isResult && event.content">
-      <pre v-if="isTerminal" class="terminal-output">{{ event.content }}</pre>
+      <div v-if="isGenerateImage && parsedResult" class="image-card-output">
+        <ResultCard :item="parsedResult" :model-label="parsedResult.model || 'Seedream 5.0'" />
+      </div>
+      <pre v-else-if="isTerminal" class="terminal-output">{{ event.content }}</pre>
       <div v-else class="text-output">{{ event.content }}</div>
     </template>
   </div>
@@ -162,5 +177,13 @@ const argsPreview = computed(() => {
 .slide-enter-from, .slide-leave-to {
   max-height: 0;
   opacity: 0;
+}
+
+.image-card-output {
+  margin-top: 8px;
+  max-width: 320px;
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 2px 12px 0 rgba(0, 0, 0, 0.08);
 }
 </style>

@@ -183,6 +183,10 @@ onUnmounted(() => {
             <el-icon><i-ep-picture /></el-icon>
             <template #title>图像生成</template>
           </el-menu-item>
+          <el-menu-item index="/task-board/video-gen">
+            <el-icon><i-ep-video-play /></el-icon>
+            <template #title>视频生成</template>
+          </el-menu-item>
           <el-menu-item index="/task-board/video-analysis">
             <el-icon><i-ep-video-camera /></el-icon>
             <template #title>
@@ -255,6 +259,7 @@ onUnmounted(() => {
 
       <el-main class="app-main">
         <RouterView :key="routerViewKey" />
+        <el-backtop target=".app-main" :right="24" :bottom="24" />
       </el-main>
     </el-container>
   </el-container>
@@ -423,5 +428,22 @@ onUnmounted(() => {
   vertical-align: middle;
   position: relative;
   top: 0;
+}
+
+/* 自定义回到顶部按钮为扁平化的现代方形，与截图一致 */
+:deep(.el-backtop) {
+  border-radius: 4px !important;
+  background-color: #ffffff !important;
+  box-shadow: 0 2px 12px 0 rgba(0, 0, 0, 0.08) !important;
+  border: 1px solid #ebeef5 !important;
+  width: 40px !important;
+  height: 40px !important;
+  color: #606266 !important;
+  transition: all 0.3s;
+}
+
+:deep(.el-backtop:hover) {
+  background-color: #f5f7fa !important;
+  color: #6366f1 !important;
 }
 </style>

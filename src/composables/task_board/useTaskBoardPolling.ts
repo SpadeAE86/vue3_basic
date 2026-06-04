@@ -4,10 +4,12 @@ export function useTaskBoardPolling({
   boardSection,
   imageRows,
   videoRows,
+  videoGenRows,
   materialMatchRows,
   vmJobRows,
   loadImage,
   loadVideo,
+  loadVideoGen,
   loadMaterialMatches,
   loadVmJobs,
   rowStatusNorm
@@ -15,10 +17,12 @@ export function useTaskBoardPolling({
   boardSection: Ref<string>
   imageRows: Ref<Record<string, unknown>[]>
   videoRows: Ref<Record<string, unknown>[]>
+  videoGenRows: Ref<Record<string, unknown>[]>
   materialMatchRows: Ref<Record<string, unknown>[]>
   vmJobRows: Ref<Record<string, unknown>[]>
   loadImage: (bg: boolean, ids?: string[]) => Promise<void>
   loadVideo: (bg: boolean, ids?: string[]) => Promise<void>
+  loadVideoGen: (bg: boolean, ids?: string[]) => Promise<void>
   loadMaterialMatches: (bg: boolean, ids?: string[]) => Promise<void>
   loadVmJobs: (bg: boolean, ids?: string[]) => Promise<void>
   rowStatusNorm: (row: Record<string, unknown>, sec: import('@/views/task_board/taskBoardTypes').BoardSection) => string
@@ -31,6 +35,7 @@ export function useTaskBoardPolling({
     const need =
       (boardSection.value === 'image' && imageRows.value.some((r) => rowStatusNorm(r, 'image') === 'running')) ||
       (boardSection.value === 'video' && videoRows.value.some((r) => rowStatusNorm(r, 'video') === 'running')) ||
+      (boardSection.value === 'video_gen' && videoGenRows.value.some((r) => rowStatusNorm(r, 'video_gen') === 'running')) ||
       (boardSection.value === 'video_match_search' && materialMatchRows.value.some((r) => rowStatusNorm(r, 'video_match_search') === 'running')) ||
       (boardSection.value === 'video_match_transcribe' && vmJobRows.value.some((r) => rowStatusNorm(r, 'video_match_transcribe') === 'running'))
 
@@ -49,6 +54,7 @@ export function useTaskBoardPolling({
     const needPoll =
       (section === 'image' && imageRows.value.some((r) => rowStatusNorm(r, 'image') === 'running')) ||
       (section === 'video' && videoRows.value.some((r) => rowStatusNorm(r, 'video') === 'running')) ||
+      (section === 'video_gen' && videoGenRows.value.some((r) => rowStatusNorm(r, 'video_gen') === 'running')) ||
       (section === 'video_match_search' && materialMatchRows.value.some((r) => rowStatusNorm(r, 'video_match_search') === 'running')) ||
       (section === 'video_match_transcribe' && vmJobRows.value.some((r) => rowStatusNorm(r, 'video_match_transcribe') === 'running'))
 
@@ -65,6 +71,9 @@ export function useTaskBoardPolling({
           } else if (s === 'video') {
             const running = videoRows.value.filter((r) => rowStatusNorm(r, 'video') === 'running')
             if (running.length) await loadVideo(true, running.map(r => String(r.id || r.taskId)))
+          } else if (s === 'video_gen') {
+            const running = videoGenRows.value.filter((r) => rowStatusNorm(r, 'video_gen') === 'running')
+            if (running.length) await loadVideoGen(true, running.map(r => String(r.id || r.taskId)))
           } else if (s === 'video_match_search') {
             const running = materialMatchRows.value.filter((r) => rowStatusNorm(r, 'video_match_search') === 'running')
             if (running.length) await loadMaterialMatches(true, running.map(r => String(r.id || r.taskId)))
@@ -86,7 +95,7 @@ export function useTaskBoardPolling({
     }
   }
 
-  watch([boardSection, imageRows, videoRows, vmJobRows, materialMatchRows], () => {
+  watch([boardSection, imageRows, videoRows, videoGenRows, vmJobRows, materialMatchRows], () => {
     syncRunningDurationTimer()
     syncBoardHistoryPoll()
   }, { deep: true })
@@ -98,3 +107,4 @@ export function useTaskBoardPolling({
 
   return { durationTick }
 }
+

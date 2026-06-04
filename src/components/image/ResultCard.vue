@@ -124,7 +124,7 @@ function pauseVideo(e: Event) {
         @keydown.enter.prevent="openPreview"
         @keydown.space.prevent="openPreview"
       >
-        <video v-if="item.type.includes('v')" :src="item.url" class="generated-image" loop muted playsinline></video>
+        <video v-if="item.type.includes('v')" :src="item.url ? item.url + '#t=0.001' : ''" class="generated-image" loop muted playsinline preload="metadata"></video>
         <el-image
           v-else
           ref="elImageRef"

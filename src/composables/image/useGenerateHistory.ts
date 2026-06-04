@@ -6,6 +6,8 @@ import {
   loadHistoryApi,
   saveHistoryApi,
   deleteImageHistoryItemApi,
+  deleteVideoHistoryItemApi,
+  retryVideoHistoryTaskApi,
   getVideoStatusApi,
   getImageStatusApi,
   generateVideoApi,
@@ -77,6 +79,8 @@ export function useGenerateHistory(currentMode: Ref<GenerateMode>) {
   }
 
   async function saveHistory() {
+    // 视频模式：历史由后端 DB 管理，不需要前端全量写回
+    if (currentMode.value === 'video') return
     try {
       const historyToSave = generatedImages.value
         .map(img => ({
@@ -291,13 +295,13 @@ export function useGenerateHistory(currentMode: Ref<GenerateMode>) {
         if (imgIndex === -1) return
         
         if (data.success && data.task_id) {
+          // 后端返回的 task_id 是我们自己的 UUID legacy_id，前端用它做轮询
+          generatedImages.value[imgIndex]!.id = data.task_id
           generatedImages.value[imgIndex]!.taskId = data.task_id
-          await saveHistory()
-          startVideoPolling(pendingRowKey, data.task_id)
+          startVideoPolling(data.task_id, data.task_id)
         } else {
           generatedImages.value[imgIndex]!.error = data.error || '任务提交失败'
           generatedImages.value[imgIndex]!.loading = false
-          await saveHistory()
         }
       } else {
         const data = await generateImageApi({
@@ -361,13 +365,13 @@ export function useGenerateHistory(currentMode: Ref<GenerateMode>) {
   }
 
   async function clearAll() {
+    const ids = generatedImages.value.map((img) => img.id)
+    generatedImages.value = []
     if (currentMode.value === 'image') {
-      const ids = generatedImages.value.map((img) => img.id)
-      generatedImages.value = []
       await Promise.all(ids.map((id) => deleteImageHistoryItemApi(id)))
     } else {
-      generatedImages.value = []
-      await saveHistory()
+      // 视频：逐条 DB 删除
+      await Promise.all(ids.map((id) => deleteVideoHistoryItemApi(id)))
     }
   }
 
@@ -386,11 +390,15 @@ export function useGenerateHistory(currentMode: Ref<GenerateMode>) {
           ElMessage.error(msg)
           return
         }
+      } else {
+        // 视频：DB 删除
+        const resp = await deleteVideoHistoryItemApi(id)
+        if (!resp.ok) {
+          ElMessage.error(`删除失败: HTTP ${resp.status}`)
+          return
+        }
       }
       generatedImages.value = generatedImages.value.filter(img => img.id !== id)
-      if (currentMode.value === 'video') {
-        await saveHistory()
-      }
     } catch (e) {
       console.error('deleteImage failed', e)
       ElMessage.error('删除失败')
@@ -404,46 +412,44 @@ export function useGenerateHistory(currentMode: Ref<GenerateMode>) {
 
   /** 失败生图：与服务端 POST /image/history/{id}/retry 一致，复用同一行 id */
   async function retryImageTask(rowId: string) {
-    if (currentMode.value !== 'image') {
-      ElMessage.warning('当前为视频模式，暂不支持在此重试')
-      return
-    }
-    const idx = generatedImages.value.findIndex((img) => img.id === rowId || img.taskId === rowId)
-    if (idx === -1) {
-      ElMessage.warning('列表中找不到该任务')
-      return
-    }
-    const row = generatedImages.value[idx]!
-    if (row.type.includes('v')) {
-      ElMessage.warning('视频任务请使用任务看板或后续统一入口重试')
-      return
-    }
-    if (row.loading) {
-      ElMessage.warning('任务进行中')
-      return
-    }
-    if (!row.error) {
-      ElMessage.warning('仅失败任务可重试')
-      return
-    }
-
-    const canonicalId = row.id
-    row.loading = true
-    row.error = null
-    row.url = null
-    try {
-      const res = (await retryImageHistoryTask(canonicalId)) as { success?: boolean; error?: string }
-      if (!res?.success) {
+    if (currentMode.value === 'image') {
+      // 图像重试逻辑
+      const idx = generatedImages.value.findIndex((img) => img.id === rowId || img.taskId === rowId)
+      if (idx === -1) { ElMessage.warning('列表中找不到该任务'); return }
+      const row = generatedImages.value[idx]!
+      if (row.type.includes('v')) { ElMessage.warning('视频任务请使用任务看板或后续统一入口重试'); return }
+      if (row.loading) { ElMessage.warning('任务进行中'); return }
+      if (!row.error) { ElMessage.warning('仅失败任务可重试'); return }
+      const canonicalId = row.id
+      row.loading = true; row.error = null; row.url = null
+      try {
+        const res = (await retryImageHistoryTask(canonicalId)) as { success?: boolean; error?: string }
+        if (!res?.success) { row.loading = false; row.error = typeof res?.error === 'string' ? res.error : '重试失败'; return }
+        startImagePolling(canonicalId)
+        ElMessage.success('已重新排队生成')
+        await saveHistory()
+      } catch (e: unknown) {
         row.loading = false
-        row.error = typeof res?.error === 'string' ? res.error : '重试失败'
-        return
+        row.error = (e as Error)?.message || '重试请求失败'
       }
-      startImagePolling(canonicalId)
-      ElMessage.success('已重新排队生成')
-      await saveHistory()
-    } catch (e: unknown) {
-      row.loading = false
-      row.error = (e as Error)?.message || '重试请求失败'
+    } else {
+      // 视频重试逻辑
+      const idx = generatedImages.value.findIndex((img) => img.id === rowId || img.taskId === rowId)
+      if (idx === -1) { ElMessage.warning('列表中找不到该任务'); return }
+      const row = generatedImages.value[idx]!
+      if (row.loading) { ElMessage.warning('任务进行中'); return }
+      if (!row.error) { ElMessage.warning('仅失败任务可重试'); return }
+      const canonicalId = row.id
+      row.loading = true; row.error = null; row.url = null
+      try {
+        const res = await retryVideoHistoryTaskApi(canonicalId)
+        if (!res?.success) { row.loading = false; row.error = typeof res?.error === 'string' ? res.error : '重试失败'; return }
+        startVideoPolling(canonicalId, canonicalId)
+        ElMessage.success('已重新排队生成')
+      } catch (e: unknown) {
+        row.loading = false
+        row.error = (e as Error)?.message || '重试请求失败'
+      }
     }
   }
 

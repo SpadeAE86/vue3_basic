@@ -184,7 +184,7 @@ export function usePromptTemplates() {
   async function beautifyPrompt(
     prompt: string,
     onUpdate: (newPrompt: string) => void,
-    opts?: { videoDuration?: number }
+    opts?: { videoDuration?: number, referenceImageList?: string[] }
   ) {
     if (!prompt.trim()) {
       ElMessage.warning('请输入提示词')
@@ -200,7 +200,7 @@ export function usePromptTemplates() {
 
     try {
       const systemPrompt = await getTemplateContent(selectedTemplate.value)
-      const data = await beautifyPromptApi(prompt, systemPrompt, opts?.videoDuration)
+      const data = await beautifyPromptApi(prompt, systemPrompt, opts?.videoDuration, opts?.referenceImageList)
 
       // 处理后端可能返回的 JSON 字符串或对象
       let textResult = ''

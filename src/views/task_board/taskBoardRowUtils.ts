@@ -72,7 +72,7 @@ export function rowDurationLabel(
   /** 由模板传入 `durationTick`（解包后的数值），用于进行中任务每秒刷新耗时展示 */
   durationTickValue: number,
 ): string {
-  if (section === 'image') {
+  if (section === 'image' || section === 'video_gen') {
     const st = rowStatusNorm(r, section)
     if (st !== 'running') {
       const dm = r.duration_ms
@@ -133,7 +133,7 @@ export function rowDurationLabel(
 }
 
 export function rowStatusNorm(r: Record<string, unknown>, section: BoardSection): string {
-  if (section === 'image') {
+  if (section === 'image' || section === 'video_gen') {
     const s = ((r.status as string) || '').toLowerCase()
     if (r.error) return 'failed'
     if (s === 'failed' || s === 'error') return 'failed'

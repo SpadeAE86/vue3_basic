@@ -68,7 +68,8 @@ function handleBeautify() {
   beautifyPrompt(form.prompt, (newPrompt) => {
     form.prompt = newPrompt
   }, {
-    videoDuration: currentMode.value === 'video' ? form.videoDuration : undefined
+    videoDuration: currentMode.value === 'video' ? form.videoDuration : undefined,
+    referenceImageList: form.referenceMedia?.filter((m: MediaFile) => m.type === 'image' && m.url).map((m: MediaFile) => m.url)
   })
 }
 

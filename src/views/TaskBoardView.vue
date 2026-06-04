@@ -5,6 +5,9 @@ import { ElImageViewer, ElMessage } from 'element-plus'
 import { Position, VideoCamera } from '@element-plus/icons-vue'
 import {
   fetchImageHistoryForBoard,
+  fetchVideoGenHistoryForBoard,
+  fetchVideoGenTaskDetail,
+  retryVideoGenTask,
   fetchVideoAnalysisHistoryForBoard,
   fetchVideoMatchJobsForBoard,
   fetchMaterialMatchesForBoard,
@@ -34,6 +37,7 @@ import { type BoardSection, isVmBoard } from '@/views/task_board/taskBoardTypes'
 import { useTaskBoardPolling } from '@/composables/task_board/useTaskBoardPolling'
 import TaskBoardFilterForm from '@/components/task_board/TaskBoardFilterForm.vue'
 import ImageBoardPanel from '@/components/task_board/ImageBoardPanel.vue'
+import VideoGenBoardPanel from '@/components/task_board/VideoGenBoardPanel.vue'
 import VideoAnalysisBoardPanel from '@/components/task_board/VideoAnalysisBoardPanel.vue'
 import VideoMatchTagBoardPanel from '@/components/task_board/VideoMatchTagBoardPanel.vue'
 import VideoMatchTranscribeBoardPanel from '@/components/task_board/VideoMatchTranscribeBoardPanel.vue'
@@ -54,9 +58,9 @@ const router = useRouter()
 const boardSection = computed<BoardSection>(() => {
   const s = route.meta.boardSection
   if (s === 'video') return 'video'
+  if (s === 'video_gen') return 'video_gen'
   if (s === 'video_match_tag') return 'video_match_tag'
   if (s === 'video_match_transcribe') return 'video_match_transcribe'
-
   if (s === 'video_match_search') return 'video_match_search'
   return 'image'
 })
@@ -66,6 +70,7 @@ const pageTitle = computed(() => (route.meta.title as string) || '任务看板')
 const loading = ref(false)
 const imageRows = ref<Record<string, unknown>[]>([])
 const videoRows = ref<Record<string, unknown>[]>([])
+const videoGenRows = ref<Record<string, unknown>[]>([])
 const vmJobRows = ref<Record<string, unknown>[]>([])
 const materialMatchRows = ref<Record<string, unknown>[]>([])
 
@@ -109,6 +114,27 @@ async function loadVideo(silent = false, targetIds?: string[]) {
       }
     } else if (!targetIds?.length) {
       videoRows.value = []
+    }
+  } finally {
+    if (!silent) loading.value = false
+  }
+}
+
+async function loadVideoGen(silent = false, targetIds?: string[]) {
+  if (!silent) loading.value = true
+  try {
+    const data = await fetchVideoGenHistoryForBoard(targetIds?.length ? { ids: targetIds.join(',') } : undefined)
+    if (data?.success && Array.isArray(data.history)) {
+      if (targetIds?.length) {
+        data.history.forEach((newItem: Record<string, unknown>) => {
+          const idx = videoGenRows.value.findIndex((r) => r.id === newItem.id || r.taskId === newItem.taskId)
+          if (idx !== -1 && videoGenRows.value[idx]) Object.assign(videoGenRows.value[idx]!, newItem)
+        })
+      } else {
+        videoGenRows.value = data.history as Record<string, unknown>[]
+      }
+    } else if (!targetIds?.length) {
+      videoGenRows.value = []
     }
   } finally {
     if (!silent) loading.value = false
@@ -170,10 +196,12 @@ const { durationTick } = useTaskBoardPolling({
   boardSection,
   imageRows,
   videoRows,
+  videoGenRows,
   materialMatchRows,
   vmJobRows,
   loadImage,
   loadVideo,
+  loadVideoGen,
   loadMaterialMatches,
   loadVmJobs,
   rowStatusNorm
@@ -184,6 +212,7 @@ async function refresh() {
   const s = boardSection.value
   if (s === 'image') await loadImage()
   else if (s === 'video') await loadVideo()
+  else if (s === 'video_gen') await loadVideoGen()
   else if (s === 'video_match_transcribe' || s === 'video_match_tag') await loadVmJobs()
   else if (s === 'video_match_search') await loadMaterialMatches()
 }
@@ -224,6 +253,7 @@ const shotRematchingId = ref<number | null>(null)
 function pickRows(): Record<string, unknown>[] {
   if (boardSection.value === 'image') return imageRows.value
   if (boardSection.value === 'video') return videoRows.value
+  if (boardSection.value === 'video_gen') return videoGenRows.value
   if (boardSection.value === 'video_match_transcribe') return vmJobRows.value
   if (boardSection.value === 'video_match_search') return materialMatchRows.value
   return []
@@ -346,6 +376,7 @@ function detailLookupKey(row: Record<string, unknown>): string {
 const handleRetry = (row: Record<string, unknown>) => {
   const s = boardSection.value
   if (s === 'image') retryImageRow(row)
+  else if (s === 'video_gen') retryVideoGenRow(row)
   else if (s === 'video') retryVideoRow(row)
   else if (s === 'video_match_transcribe') retryVmJobRow(row)
   else if (s === 'video_match_search') retryMaterialMatchRow(row)
@@ -367,11 +398,13 @@ async function openDetail(row: Record<string, unknown>) {
     const res =
       section === 'image'
         ? await fetchImageTaskDetail(id)
-        : section === 'video'
-          ? await fetchVideoAnalysisTaskDetail(id)
-          : section === 'video_match_transcribe'
-            ? await fetchVideoMatchJobTaskDetail(id)
-            : await fetchMaterialMatchTaskDetail(id)
+        : section === 'video_gen'
+          ? await fetchVideoGenTaskDetail(id)
+          : section === 'video'
+            ? await fetchVideoAnalysisTaskDetail(id)
+            : section === 'video_match_transcribe'
+              ? await fetchVideoMatchJobTaskDetail(id)
+              : await fetchMaterialMatchTaskDetail(id)
     if (res?.success && res.detail) {
       detailPayload.value = res.detail as Record<string, unknown>
       // 素材匹配看板：从 top_hits_for_board 里提取 Top 命中行
@@ -871,6 +904,31 @@ async function retryImageRow(row: Record<string, unknown>) {
   }
 }
 
+const videoGenRetryingId = ref('')
+
+async function retryVideoGenRow(row: Record<string, unknown>) {
+  const id = detailLookupKey(row)
+  if (!id) {
+    ElMessage.warning('缺少任务 ID')
+    return
+  }
+  videoGenRetryingId.value = id
+  try {
+    const res = (await retryVideoGenTask(id)) as { success?: boolean; error?: string }
+    if (res?.success) {
+      ElMessage.success('已重新排队视频生成')
+      await loadVideoGen(true)
+    } else {
+      ElMessage.error(typeof res?.error === 'string' ? res.error : '重试失败')
+    }
+  } catch (e: unknown) {
+    ElMessage.error((e as Error)?.message || '重试请求失败')
+  } finally {
+    videoGenRetryingId.value = ''
+  }
+}
+
+
 const vmRetryingId = ref('')
 
 function vmJobCanRetryTranscribe(row: Record<string, unknown>): boolean {
@@ -1015,8 +1073,8 @@ watch(shotTranscribeVisible, (open) => {
   if (!open) shotTranscribeRow.value = null
 })
 
-const handleViewMaterialBoard = (row: any) => { console.log('View material board', row) }
-const handleNavigateToVideoAnalysis = (row: any, workspace: string) => { 
+const handleViewMaterialBoard = (row: Record<string, unknown>) => { console.log('View material board', row) }
+const handleNavigateToVideoAnalysis = (row: Record<string, unknown>, _workspace?: string) => { 
   if (boardSection.value === 'video_match_search') {
     goVideoAnalysisFromMaterialRow(row)
   } else {
@@ -1047,6 +1105,12 @@ const handleNavigateToVideoAnalysis = (row: any, workspace: string) => {
       <!-- 图像生成 -->
       <ImageBoardPanel
         v-if="boardSection === 'image'"
+        :loading="loading" :rows="pagedRows" :durationTick="durationTick" @detail="openDetail" @retry="handleRetry"
+      />
+
+      <!-- 视频生成 -->
+      <VideoGenBoardPanel
+        v-else-if="boardSection === 'video_gen'"
         :loading="loading" :rows="pagedRows" :durationTick="durationTick" @detail="openDetail" @retry="handleRetry"
       />
 

@@ -8,8 +8,8 @@ const props = defineProps<{
   detailDialogTitle: string
   detailIsShotMatch: boolean
   detailLoading: boolean
-  detailPayload: any
-  detailMatchHitRows: any[]
+  detailPayload: Record<string, unknown> | null
+  detailMatchHitRows: Record<string, unknown>[]
   isImageGenDetail: boolean
   detailPrompt: string
   detailResultImageUrl: string
@@ -31,6 +31,10 @@ watch(visible, (val) => {
 const detailImageViewerVisible = ref(false)
 const hitRowsExpanded = ref(false)
 
+const isVideoGenDetail = computed(
+  () => !!(props.detailPayload && props.detailPayload.businessType === 'VIDEO_GEN'),
+)
+
 const slicedHitRows = computed(() => {
   if (!props.detailMatchHitRows?.length) return []
   return hitRowsExpanded.value
@@ -38,7 +42,7 @@ const slicedHitRows = computed(() => {
     : props.detailMatchHitRows.slice(0, 5)
 })
 
-function formatJson(val: any) {
+function formatJson(val: unknown) {
   if (!val) return '—'
   if (typeof val === 'string') return val
   try {
@@ -202,6 +206,26 @@ function formatJson(val: any) {
               />
             </div>
             <div v-else class="text-panel muted">暂无图片 URL（可能仍在生成或失败）</div>
+          </div>
+        </template>
+
+        <template v-else-if="isVideoGenDetail">
+          <div class="detail-image-tail">
+            <div class="field-label">提示词</div>
+            <div class="text-panel">{{ detailPrompt || '—' }}</div>
+            <div class="field-label">生成结果</div>
+            <div
+              v-if="detailResultImageUrl"
+              class="result-img-wrap detail-result-img-wrap"
+              style="background: #000; display: flex; align-items: center; justify-content: center; height: auto; max-height: 480px;"
+            >
+              <video
+                :src="detailResultImageUrl"
+                controls
+                style="max-width: 100%; max-height: 460px; border-radius: 4px;"
+              />
+            </div>
+            <div v-else class="text-panel muted">暂无视频 URL（可能仍在生成或失败）</div>
           </div>
         </template>
       </template>
