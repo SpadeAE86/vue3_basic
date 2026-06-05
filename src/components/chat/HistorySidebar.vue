@@ -40,7 +40,12 @@ async function fetchSessions(reset = false) {
     if (res.ok) {
       const data = await res.json()
       if (reset) {
+        // 查找当前活跃的会话项（防止刚生成的临时会话被后端的延迟加载覆盖导致消失）
+        const activeSession = sessions.value.find(s => s.session_id === props.currentSessionId)
         sessions.value = data.sessions
+        if (activeSession && !data.sessions.some(s => s.session_id === props.currentSessionId)) {
+          sessions.value.unshift(activeSession)
+        }
         page.value = 2
       } else {
         sessions.value.push(...data.sessions)
