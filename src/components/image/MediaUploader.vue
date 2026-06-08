@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import { ElMessage } from 'element-plus'
-import ObsClient from 'esdk-obs-browserjs'
+import { uploadToObs, getMediaType } from '@/utils/obs'
 
 export interface MediaFile {
   url: string
@@ -28,14 +28,6 @@ const isDragging = ref(false)
 const acceptString = computed(() => {
   return acceptTypes.value.map(t => `${t}/*`).join(',')
 })
-
-// OBS Configuration
-const obsClient = new ObsClient({
-  access_key_id: 'UJDPK31ANIBV0XTEUN5N',
-  secret_access_key: 'NhQExxv9PUYsvmvGnVReizRksaiHcJdQ6vMMw19d',
-  server: 'https://obs.cn-east-3.myhuaweicloud.com'
-})
-const BUCKET_NAME = 'freeuuu'
 
 interface UploadingMedia {
   id: string
@@ -80,13 +72,6 @@ function onDrop(e: DragEvent) {
   if (e.dataTransfer?.files) {
     processFiles(Array.from(e.dataTransfer.files))
   }
-}
-
-function getMediaType(fileType: string): 'image' | 'video' | 'audio' | null {
-  if (fileType.startsWith('image/')) return 'image'
-  if (fileType.startsWith('video/')) return 'video'
-  if (fileType.startsWith('audio/')) return 'audio'
-  return null
 }
 
 async function processFiles(files: File[]) {
@@ -135,45 +120,21 @@ async function uploadFile(file: File) {
   checkUploadingState()
   
   try {
-    const ext = file.name.split('.').pop() || 'tmp'
-    const timestamp = new Date().getTime()
-    const filename = `${timestamp}_${id}.${ext}`
-    
     let prefix = 'ai_picture/reference_image'
     if (mediaType === 'video') prefix = 'ai_picture/reference_video'
     if (mediaType === 'audio') prefix = 'ai_picture/reference_audio'
-    const objectKey = `${prefix}/${filename}`
     
-    const result = await new Promise<unknown>((resolve, reject) => {
-      obsClient.putObject({
-        Bucket: BUCKET_NAME,
-        Key: objectKey,
-        SourceFile: file,
-        ProgressCallback: function (transferredAmount: number, totalAmount: number) {
-          const percent = Math.round((transferredAmount * 100.0) / totalAmount)
-          const item = uploadingMedias.value.find(m => m.id === id)
-          if (item) item.progress = percent
-        }
-      }, (err: Error | null, result: unknown) => {
-        if (err) reject(err)
-        else resolve(result)
-      })
+    const publicUrl = await uploadToObs(file, prefix, (percent) => {
+      const item = uploadingMedias.value.find(m => m.id === id)
+      if (item) item.progress = percent
     })
     
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    if ((result as any).CommonMsg.Status < 300) {
-      const publicUrl = `https://${BUCKET_NAME}.obs.cn-east-3.myhuaweicloud.com/${objectKey}`
-      
-      const index = uploadingMedias.value.findIndex(m => m.id === id)
-      if (index !== -1) {
-        uploadingMedias.value.splice(index, 1)
-      }
-      
-      emit('update:modelValue', [...props.modelValue, { url: publicUrl, type: mediaType }])
-    } else {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      throw new Error(`Upload failed with status ${(result as any).CommonMsg.Status}`)
+    const index = uploadingMedias.value.findIndex(m => m.id === id)
+    if (index !== -1) {
+      uploadingMedias.value.splice(index, 1)
     }
+    
+    emit('update:modelValue', [...props.modelValue, { url: publicUrl, type: mediaType }])
   } catch (error) {
     console.error('Upload error:', error)
     const item = uploadingMedias.value.find(m => m.id === id)
@@ -216,10 +177,11 @@ function onDropItem(index: number, e: DragEvent) {
   if (draggedIndex === -1 || draggedIndex === index) return
   
   const newItems = [...props.modelValue]
-  const [moved] = newItems.splice(draggedIndex, 1)
-  newItems.splice(index, 0, moved)
-  
-  emit('update:modelValue', newItems)
+  const moved = newItems.splice(draggedIndex, 1)[0]
+  if (moved !== undefined) {
+    newItems.splice(index, 0, moved)
+    emit('update:modelValue', newItems)
+  }
   draggedIndex = -1
 }
 
@@ -227,6 +189,10 @@ function triggerSelect() {
   if (props.disabled) return
   fileInput.value?.click()
 }
+
+defineExpose({
+  processFiles
+})
 </script>
 
 <template>

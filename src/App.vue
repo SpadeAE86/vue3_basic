@@ -144,6 +144,11 @@ onUnmounted(() => {
           <template #title>Agent 调试</template>
         </el-menu-item>
 
+        <el-menu-item index="/canvas">
+          <el-icon><i-ep-grid /></el-icon>
+          <template #title>工程画布</template>
+        </el-menu-item>
+
         <el-menu-item index="/image">
           <el-icon><i-ep-picture /></el-icon>
           <template #title>提示词对比</template>

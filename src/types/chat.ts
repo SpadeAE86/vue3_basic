@@ -3,7 +3,7 @@
 
 export interface ChatEvent {
   id: string
-  type: 'user' | 'assistant' | 'thinking' | 'tool_call' | 'tool_result' | 'status' | 'error'
+  type: 'user' | 'assistant' | 'thinking' | 'tool_call' | 'tool_result' | 'status' | 'error' | 'compressed'
   content: string
   timestamp: number
 
@@ -14,6 +14,9 @@ export interface ChatEvent {
 
   // 流式相关 — Phase 2 用, 先留口子
   streaming?: boolean
+  
+  // 参考图片列表
+  referenceImages?: string[]
 }
 
 // 后端 SSE 推过来的原始格式 (和 event.py 对齐)
@@ -30,6 +33,7 @@ export interface SSEEventPayload {
   message?: string
   summary?: string
   call_id?: string
+  reference_image_list?: string[]
   [key: string]: any
 }
 
@@ -41,7 +45,13 @@ export function mapSSEtoChatEvent(raw: SSEEventPayload): ChatEvent | null {
 
   switch (raw.event_type) {
     case 'user_message':
-      return { id, type: 'user', content: raw.content ?? '', timestamp: ts }
+      return { 
+        id, 
+        type: 'user', 
+        content: raw.content ?? '', 
+        timestamp: ts,
+        referenceImages: raw.reference_image_list ?? []
+      }
 
     case 'agent_thought':
       return { id, type: 'thinking', content: raw.content ?? '', timestamp: ts, streaming: true }
@@ -69,10 +79,18 @@ export function mapSSEtoChatEvent(raw: SSEEventPayload): ChatEvent | null {
       return { id, type: 'status', content: raw.message ?? raw.status ?? '', timestamp: ts }
 
     case 'task_complete':
-      return { id, type: 'status', content: `✅ ${raw.summary ?? '完成'}`, timestamp: ts }
+      return { id, type: 'status', content: '✅ 任务完成', timestamp: ts }
 
     case 'error':
       return { id, type: 'error', content: raw.message ?? '未知错误', timestamp: ts }
+
+    case 'session_compacted':
+      return {
+        id,
+        type: 'compressed',
+        content: raw.summary ?? '',
+        timestamp: ts
+      }
 
     default:
       return null

@@ -53,6 +53,23 @@ async function copyPrompt(prompt: string) {
   }
 }
 
+async function copyToCanvas() {
+  if (!props.item.url) return
+  const data = {
+    type: 'jottings-canvas-node',
+    image_url: props.item.url,
+    prompt: props.item.prompt || '',
+    model: props.item.model || '',
+    media_type: props.item.type.includes('v') ? 'video' : 'image'
+  }
+  const success = await copyToClipboard(JSON.stringify(data))
+  if (success) {
+    ElMessage.success('已复制卡片数据，可在画布页面按 Ctrl+V 粘贴为节点')
+  } else {
+    ElMessage.error('复制失败')
+  }
+}
+
 function downloadImage(url: string) {
   const a = document.createElement('a')
   a.href = url
@@ -188,6 +205,11 @@ function pauseVideo(e: Event) {
                 </div>
               </el-tooltip>
               <div class="action-icons">
+                <el-tooltip content="复制到画布" placement="top">
+                  <div class="icon-btn" @click="copyToCanvas">
+                    <el-icon><i-ep-copy-document /></el-icon>
+                  </div>
+                </el-tooltip>
                 <el-tooltip content="复制提示词" placement="top">
                   <div class="icon-btn" @click="copyPrompt(item.prompt)">
                     <el-icon><i-ep-document-copy /></el-icon>

@@ -2,9 +2,11 @@
 import { ref, computed } from 'vue'
 import type { ChatEvent } from '@/types/chat'
 import ResultCard from '@/components/image/ResultCard.vue'
+import { useChatStore } from '@/stores/chat'
 
 const props = defineProps<{ event: ChatEvent }>()
 
+const chatStore = useChatStore()
 const showArgs = ref(false)
 
 // 终端类工具用黑底等宽字体
@@ -24,12 +26,68 @@ const parsedResult = computed(() => {
   }
 })
 
+// 缩短 URL
+function cleanValue(val: any): string {
+  if (typeof val === 'string' && val.startsWith('http')) {
+    try {
+      const url = new URL(val)
+      const filename = url.pathname.split('/').pop() || url.hostname
+      return `"${filename}"`
+    } catch (e) {
+      return JSON.stringify(val)
+    }
+  }
+  if (Array.isArray(val)) {
+    return '[' + val.map(v => typeof v === 'string' && v.startsWith('http') ? cleanValue(v) : JSON.stringify(v)).join(', ') + ']'
+  }
+  return JSON.stringify(val)
+}
+
+function shortenUrlsInText(text: string): string {
+  const urlRegex = /(https?:\/\/[^\s]+)/g
+  return text.replace(urlRegex, (urlStr) => {
+    try {
+      const cleanUrlStr = urlStr.replace(/[.,;:)\]]+$/, '')
+      const url = new URL(cleanUrlStr)
+      const filename = url.pathname.split('/').pop() || url.hostname
+      return filename
+    } catch (e) {
+      return urlStr
+    }
+  })
+}
+
 // 简洁参数预览
 const argsPreview = computed(() => {
   if (!props.event.toolArgs) return ''
   const keys = Object.keys(props.event.toolArgs)
   if (keys.length === 0) return '(无参数)'
-  return keys.map(k => `${k}: ${JSON.stringify(props.event.toolArgs![k])}`).join(', ')
+  
+  if (chatStore.debugMode) {
+    return keys.map(k => `${k}: ${JSON.stringify(props.event.toolArgs![k])}`).join(', ')
+  }
+  
+  return keys.map(k => {
+    const val = props.event.toolArgs![k]
+    return `${k}: ${cleanValue(val)}`
+  }).join(', ')
+})
+
+// 清洗后的结果输出
+const cleanedContent = computed(() => {
+  const content = props.event.content
+  if (!content) return ''
+  
+  if (chatStore.debugMode) {
+    return content
+  }
+  
+  if (props.event.toolName === 'get_canvas_graph') {
+    const firstLine = content.split('\n')[0]
+    return firstLine || '成功获取画布拓扑结构'
+  }
+  
+  return shortenUrlsInText(content)
 })
 </script>
 
@@ -63,7 +121,7 @@ const argsPreview = computed(() => {
         <ResultCard :item="parsedResult" :model-label="parsedResult.model || 'Seedream 5.0'" />
       </div>
       <pre v-else-if="isTerminal" class="terminal-output">{{ event.content }}</pre>
-      <div v-else class="text-output">{{ event.content }}</div>
+      <div v-else class="text-output">{{ cleanedContent }}</div>
     </template>
   </div>
 </template>

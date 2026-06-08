@@ -1,10 +1,21 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 import type { ChatEvent } from '@/types/chat'
 
-defineProps<{ event: ChatEvent }>()
+const props = defineProps<{ event: ChatEvent }>()
 
-const expanded = ref(false)
+const expanded = ref(true)
+
+// 当完成思考（streaming 变为 false）时，自动折叠
+watch(
+  () => props.event.streaming,
+  (isStreaming) => {
+    if (!isStreaming) {
+      expanded.value = false
+    }
+  },
+  { immediate: true }
+)
 </script>
 
 <template>

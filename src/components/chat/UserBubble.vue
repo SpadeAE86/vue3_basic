@@ -47,6 +47,20 @@ onMounted(() => {
       }"
     >
       <div class="bubble-scroll-container">
+        <!-- 参考图片展示 -->
+        <div v-if="event.referenceImages && event.referenceImages.length > 0" class="user-images-list">
+          <div v-for="url in event.referenceImages" :key="url" class="user-image-item">
+            <el-image 
+              :src="url" 
+              :preview-src-list="event.referenceImages" 
+              :initial-index="event.referenceImages.indexOf(url)"
+              fit="cover" 
+              class="img-thumbnail"
+              hide-on-click-modal
+              :preview-teleported="true"
+            />
+          </div>
+        </div>
         <div class="bubble-text">{{ event.content }}</div>
       </div>
       
@@ -166,5 +180,27 @@ onMounted(() => {
 .toggle-btn:hover {
   background: rgba(255, 255, 255, 0.15);
   color: #fff;
+}
+
+.user-images-list {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.user-image-item {
+  width: 72px;
+  height: 72px;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.img-thumbnail {
+  width: 100%;
+  height: 100%;
+  display: block;
 }
 </style>

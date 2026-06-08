@@ -23,6 +23,12 @@ const router = createRouter({
       meta: { title: '力导图' },
     },
     {
+      path: '/canvas',
+      name: 'canvas',
+      component: () => import('../views/CanvasWorkspaceView.vue'),
+      meta: { title: '工程画布' },
+    },
+    {
       path: '/chat',
       name: 'chat',
       component: () => import('../views/ChatDebugView.vue'),

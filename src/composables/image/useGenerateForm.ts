@@ -82,7 +82,7 @@ function modelPixelBounds(model: string) {
   return { min: 1280 * 720, max: 4096 * 4096 }
 }
 
-function computeSizePx(model: string, level: SizeLevel, ratio: RatioKey) {
+export function computeSizePx(model: string, level: SizeLevel, ratio: RatioKey) {
   const r = RATIO_OPTIONS.find((x) => x.value === ratio)?.r ?? 1
   const { min, max } = modelPixelBounds(model)
   const target = clamp(LEVEL_TARGET_PIXELS[level], min, max)

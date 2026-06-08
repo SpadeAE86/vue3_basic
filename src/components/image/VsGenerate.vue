@@ -42,8 +42,17 @@ const {
   deleteTemplateByName,
   downloadSelectedTemplate,
   getTemplateContent,
-  beautifyPrompt
+  beautifyPrompt,
+  localTemplates
 } = usePromptTemplates()
+
+const SLOT_REGEX = /\{([^:]+):\s*([^}]+)\}/g
+const beautifyTemplatesOnly = computed(() => {
+  return templates.value.filter((tpl) => {
+    const content = localTemplates.get(tpl.name) || ''
+    return !content.match(SLOT_REGEX)
+  })
+})
 
 function handleTemplateRefresh() {
   loadTemplates(true)
@@ -60,6 +69,11 @@ const {
 const rawPrompt = ref('')
 const compareVariable = ref<'template' | 'model'>('template')
 const vsStage = ref<1 | 2>(1) // 1: 准备/美化阶段, 2: 准备生图阶段
+
+// 胶囊插槽视图同步状态
+const isTemplateMode = ref(false)
+const hasSlots = ref(false)
+const renderedPrompt = ref('')
 
 // 公共变量
 const sharedModel = computed({
@@ -90,7 +104,7 @@ const generating = ref(false)
 
 // 监听模板列表加载
 watch(() => templates.value, (newTemplates) => {
-  if (newTemplates && newTemplates.length > 0) {
+  if (newTemplates && newTemplates[0]) {
     if (!templateA.value) templateA.value = newTemplates[0].name
     if (!templateB.value) templateB.value = newTemplates[0].name
   }
@@ -98,7 +112,7 @@ watch(() => templates.value, (newTemplates) => {
 
 // 监听模型列表加载
 watch(() => currentModels.value, (models) => {
-  if (models && models.length > 0) {
+  if (models && models[0]) {
     if (!modelA.value || !models.find(m => m.value === modelA.value)) modelA.value = models[0].value
     if (!modelB.value || !models.find(m => m.value === modelB.value)) modelB.value = models[0].value
   }
@@ -118,7 +132,7 @@ const computedAvailableLevels = computed(() => {
   let intersection = IMAGE_MODEL_LEVEL_OPTIONS[activeModels.value[0] as keyof typeof IMAGE_MODEL_LEVEL_OPTIONS] || []
   for (let i = 1; i < activeModels.value.length; i++) {
     const opts = IMAGE_MODEL_LEVEL_OPTIONS[activeModels.value[i] as keyof typeof IMAGE_MODEL_LEVEL_OPTIONS] || []
-    intersection = intersection.filter((x: string) => opts.includes(x))
+    intersection = intersection.filter((x: string) => (opts as string[]).includes(x))
   }
   return intersection.length > 0 ? intersection : ['2K']
 })
@@ -139,14 +153,14 @@ const computedDisableMediaUpload = computed(() => {
 // 自动纠正交集变化后的值
 watch(computedAvailableLevels, (levels) => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  if (props.currentMode === 'image' && !levels.includes(sharedForm.sizeLevel as any)) {
+  if (props.currentMode === 'image' && levels[0] && !levels.includes(sharedForm.sizeLevel as any)) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     sharedForm.sizeLevel = levels[0] as any
   }
 })
 
 watch(computedAvailableVideoResolutions, (resolutions) => {
-  if (props.currentMode === 'video' && resolutions && resolutions.length > 0 && !resolutions.find(r => r.value === sharedForm.videoResolution)) {
+  if (props.currentMode === 'video' && resolutions && resolutions[0] && !resolutions.find(r => r.value === sharedForm.videoResolution)) {
     sharedForm.videoResolution = resolutions[0].value
   }
 })
@@ -182,9 +196,14 @@ async function handleGenerateBoth() {
   generating.value = true
 
   try {
+    // 替换插槽与分隔符以发送纯净提示词
+    const cleanRawPrompt = rawPrompt.value
+      .replace(/\{([^:]+):\s*([^}]+)\}/g, (_match, _key, val) => val.trim())
+      .replace(/--split--/g, '\n')
+
     // 1. 提示词美化阶段
-    let finalPromptA = rawPrompt.value
-    let finalPromptB = rawPrompt.value
+    let finalPromptA = cleanRawPrompt
+    let finalPromptB = cleanRawPrompt
 
     if (compareVariable.value === 'template') {
       const sysA = await getTemplateContent(templateForA!)
@@ -193,8 +212,8 @@ async function handleGenerateBoth() {
       const refImages = sharedForm.referenceMedia?.filter((m: MediaFile) => m.type === 'image' && m.url).map((m: MediaFile) => m.url)
       
       const [resA, resB] = await Promise.all([
-        beautifyPromptApi(rawPrompt.value, sysA, props.currentMode === 'video' ? sharedForm.videoDuration : undefined, refImages),
-        beautifyPromptApi(rawPrompt.value, sysB, props.currentMode === 'video' ? sharedForm.videoDuration : undefined, refImages)
+        beautifyPromptApi(cleanRawPrompt, sysA, props.currentMode === 'video' ? sharedForm.videoDuration : undefined, refImages),
+        beautifyPromptApi(cleanRawPrompt, sysB, props.currentMode === 'video' ? sharedForm.videoDuration : undefined, refImages)
       ])
 
       if (resA.success && resA.text) {
@@ -318,8 +337,24 @@ watch(compareVariable, () => {
   beautifiedPromptB.value = ''
 })
 
+async function handleTemplateSelected(name: string) {
+  selectedTemplate.value = name
+  if (name) {
+    const content = await getTemplateContent(name)
+    if (content) {
+      const SLOT_REGEX = /\{([^:]+):\s*([^}]+)\}/g
+      if (SLOT_REGEX.test(content)) {
+        rawPrompt.value = content
+      }
+    }
+  }
+}
+
 function handleBeautifyRawPrompt() {
-  beautifyPrompt(rawPrompt.value, (newPrompt: string) => {
+  const cleanRawPrompt = rawPrompt.value
+    .replace(/\{([^:]+):\s*([^}]+)\}/g, (_match, _key, val) => val.trim())
+    .replace(/--split--/g, '\n')
+  beautifyPrompt(cleanRawPrompt, (newPrompt: string) => {
     rawPrompt.value = newPrompt
   }, {
     videoDuration: props.currentMode === 'video' ? sharedForm.videoDuration : undefined,
@@ -333,13 +368,45 @@ function handleBeautifyRawPrompt() {
     <!-- 顶部：公共变量设置 -->
     <div class="shared-controls">
       <el-form label-width="80px" label-position="right">
-        <el-form-item label="原始提示词">
+        <el-form-item>
+          <template #label>
+            <div class="custom-prompt-label">
+              <div class="label-top-row">
+                <span>原始提示词</span>
+                <el-popover v-if="hasSlots" placement="top" :width="320" trigger="hover" popper-class="preview-popover">
+                  <template #reference>
+                    <el-icon class="preview-search-icon"><i-ep-search /></el-icon>
+                  </template>
+                  <div class="final-prompt-preview">
+                    <div class="preview-title">当前渲染提示词（发送给模型）</div>
+                    <div class="preview-content">{{ renderedPrompt }}</div>
+                  </div>
+                </el-popover>
+              </div>
+              <div v-if="hasSlots" class="label-bottom-row">
+                <div 
+                  class="view-switch-link-simple" 
+                  @click="isTemplateMode = !isTemplateMode" 
+                  :title="isTemplateMode ? '切换到文本编辑模式' : '切换到胶囊参数模式'"
+                >
+                  <el-icon>
+                    <i-ep-edit v-if="isTemplateMode" />
+                    <i-ep-menu v-else />
+                  </el-icon>
+                  <span>{{ isTemplateMode ? '编辑文本' : '查看插槽' }}</span>
+                </div>
+              </div>
+            </div>
+          </template>
           <PromptComposer
             :prompt="rawPrompt"
             @update:prompt="(v: string) => (rawPrompt = v)"
+            v-model:is-template-mode="isTemplateMode"
+            @update:has-slots="(v) => hasSlots = v"
+            @update:rendered-prompt="(v) => renderedPrompt = v"
             :templates="templates"
             :selected-template="selectedTemplate"
-            @update:selected-template="(v: string) => (selectedTemplate = v)"
+            @update:selected-template="handleTemplateSelected"
             :reference-media="sharedForm.referenceMedia"
             @update:reference-media="(v: MediaFile[]) => (sharedForm.referenceMedia = v)"
             :beautifying="beautifying"
@@ -447,7 +514,7 @@ function handleBeautifyRawPrompt() {
         <div class="column-header a-header">A 组</div>
         <div class="column-config">
           <el-select v-if="compareVariable === 'template'" v-model="templateA" placeholder="选择模板 A" style="width: 100%">
-            <el-option v-for="t in templates" :key="t.name" :label="t.name" :value="t.name" />
+            <el-option v-for="t in beautifyTemplatesOnly" :key="t.name" :label="t.name" :value="t.name" />
           </el-select>
           <el-select v-else v-model="modelA" placeholder="选择模型 A" style="width: 100%">
             <el-option v-for="m in currentModels" :key="m.value" :label="m.label" :value="m.value" />
@@ -468,7 +535,7 @@ function handleBeautifyRawPrompt() {
         <div class="column-header b-header">B 组</div>
         <div class="column-config">
           <el-select v-if="compareVariable === 'template'" v-model="templateB" placeholder="选择模板 B" style="width: 100%">
-            <el-option v-for="t in templates" :key="t.name" :label="t.name" :value="t.name" />
+            <el-option v-for="t in beautifyTemplatesOnly" :key="t.name" :label="t.name" :value="t.name" />
           </el-select>
           <el-select v-else v-model="modelB" placeholder="选择模型 B" style="width: 100%">
             <el-option v-for="m in currentModels" :key="m.value" :label="m.label" :value="m.value" />
@@ -679,5 +746,63 @@ function handleBeautifyRawPrompt() {
 .refresh-btn:hover {
   transform: translateY(-2px);
   box-shadow: 0 6px 16px rgba(0, 0, 0, 0.15);
+}
+
+/* Custom Prompt Label layout */
+:deep(.el-form-item__label) {
+  display: inline-flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+  line-height: 1.5 !important;
+  padding-top: 8px;
+}
+
+.custom-prompt-label {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  width: 100%;
+  text-align: right;
+  padding-right: 12px;
+  box-sizing: border-box;
+}
+
+.label-top-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  color: #475569;
+}
+
+.label-bottom-row {
+  margin-top: 4px;
+}
+
+.view-switch-link-simple {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: #6366f1;
+  cursor: pointer;
+  transition: color 0.2s;
+  user-select: none;
+}
+
+.view-switch-link-simple:hover {
+  color: #4f46e5;
+}
+
+.preview-search-icon {
+  font-size: 13px;
+  color: #6366f1;
+  cursor: pointer;
+  transition: transform 0.2s, color 0.2s;
+}
+
+.preview-search-icon:hover {
+  transform: scale(1.15);
+  color: #4f46e5;
 }
 </style>

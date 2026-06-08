@@ -5,6 +5,7 @@ import { mapSSEtoChatEvent } from '@/types/chat'
 import EventStream from '@/components/chat/EventStream.vue'
 import ChatInput from '@/components/chat/ChatInput.vue'
 import HistorySidebar from '@/components/chat/HistorySidebar.vue'
+import type { MediaFile } from '@/components/image/MediaUploader.vue'
 
 const events = ref<ChatEvent[]>([])
 const loading = ref(false)
@@ -12,10 +13,10 @@ const sessionId = ref<string | null>(null)
 const sidebarRef = ref<InstanceType<typeof HistorySidebar> | null>(null)
 
 // ─── 模式切换: Mock / 真实后端 ────────────────────────────────────
-const useMock = ref(true)
+const useMock = ref(false)
 const API_BASE = '/api'   // 你的后端地址
 
-async function handleSend(text: string) {
+async function handleSend(text: string, referenceMedia: MediaFile[] = [], model: string = 'gpt-5.4') {
   if (useMock.value && !sessionId.value) {
     sessionId.value = 'mock_' + Math.random().toString(36).substring(2, 10)
     setTimeout(() => sidebarRef.value?.refresh(), 100)
@@ -35,13 +36,17 @@ async function handleSend(text: string) {
     sidebarRef.value?.addTemporarySession(newSid, tempTitle)
   }
 
-  pushEvent({ event_type: 'user_message', content: text })
+  pushEvent({ 
+    event_type: 'user_message', 
+    content: text,
+    reference_image_list: referenceMedia.filter(m => m.type === 'image').map(m => m.url)
+  })
   loading.value = true
 
   if (useMock.value) {
     await simulateAgentResponse(text)
   } else {
-    await connectSSE(text)
+    await connectSSE(text, referenceMedia, model)
     // 延迟 300ms 刷新以避开 Windows 文件系统写入缓存延迟导致的列表不同步
     setTimeout(() => {
       sidebarRef.value?.refresh()
@@ -140,12 +145,14 @@ async function streamText(
   return evt as ChatEvent
 }
 
-/** SSE 用: 往最后一个同类型事件追加文本 */
 function appendToLast(type: ChatEvent['type'], delta: string) {
   const last = events.value[events.value.length - 1]
   if (last && last.type === type && last.streaming) {
     last.content += delta
   } else {
+    if (last && last.streaming) {
+      last.streaming = false
+    }
     pushEvent({
       event_type: type === 'assistant' ? 'text_chunk' : 'agent_thought',
       content: delta,
@@ -202,7 +209,7 @@ async function simulateAgentResponse(userText: string) {
 }
 
 // ─── 真实 SSE 连接 ──────────────────────────────────────────────
-async function connectSSE(userText: string) {
+async function connectSSE(userText: string, referenceMedia: MediaFile[] = [], model: string = 'gpt-5.4') {
   try {
     const resp = await fetch(`${API_BASE}/chat`, {
       method: 'POST',
@@ -210,7 +217,8 @@ async function connectSSE(userText: string) {
       body: JSON.stringify({
         message: userText,
         user_id: 'default_user',
-        model: 'gpt-5.4',
+        model: model,
+        reference_image_list: referenceMedia.filter(m => m.type === 'image').map(m => m.url),
         session_id: sessionId.value || undefined,
         max_iterations: 10,
       }),
@@ -288,16 +296,7 @@ async function connectSSE(userText: string) {
       <!-- 顶部工具栏 -->
       <div class="chat-toolbar">
         <span class="toolbar-title">Agent 调试</span>
-        <el-tag
-          :type="useMock ? 'info' : 'success'"
-          effect="dark"
-          size="small"
-          round
-          class="mode-tag"
-          @click="useMock = !useMock"
-        >
-          {{ useMock ? '🔬 Mock 模式' : '🔗 后端 SSE' }}
-        </el-tag>
+
         <div class="toolbar-spacer" />
         <el-button text size="small" @click="clearEvents" :disabled="events.length === 0">
           <el-icon><i-ep-delete /></el-icon>

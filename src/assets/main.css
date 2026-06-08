@@ -53,3 +53,227 @@ a,
 .storyboard-dialog .el-dialog__footer {
   background-color: #ffffff !important;
 }
+
+/* 节点 ID 开关对应的右上角徽章样式 */
+.node-wrapper-outer {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+.node-id-badge {
+  position: absolute;
+  top: -18px;
+  right: 4px;
+  font-size: 11px;
+  font-family: monospace;
+  color: #4f46e5;
+  opacity: 0.75;
+  background: rgba(241, 245, 249, 0.95);
+  padding: 1px 6px;
+  border-radius: 4px;
+  border: 1px solid #c7d2fe;
+  pointer-events: none;
+  z-index: 999;
+  line-height: 1.2;
+  font-weight: bold;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+}
+
+/* 折叠工具卡片样式 */
+.collapsed-tools-card {
+  margin-left: 40px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  overflow: hidden;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.collapsed-tools-card:hover {
+  border-color: #cbd5e1;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.03);
+}
+
+.collapsed-header {
+  display: flex;
+  align-items: center;
+  padding: 10px 14px;
+  cursor: pointer;
+  user-select: none;
+  gap: 8px;
+}
+
+.collapsed-icon {
+  font-size: 14px;
+  color: #64748b;
+  display: flex;
+  align-items: center;
+}
+
+.collapsed-meta {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  overflow: hidden;
+}
+
+.collapsed-title {
+  color: #334155;
+  font-weight: 500;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  overflow: hidden;
+}
+
+.collapsed-summary {
+  color: #94a3b8;
+  font-size: 12px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  overflow: hidden;
+}
+
+.collapsed-body {
+  border-top: 1px dashed #e2e8f0;
+  background: #ffffff;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* 展开指示图标旋转 */
+.collapsed-header .expand-icon {
+  transition: transform 0.2s ease;
+  font-size: 12px;
+  color: #64748b;
+}
+
+.collapsed-header .expand-icon.rotated {
+  transform: rotate(90deg);
+}
+
+/* Slide 动画过渡 */
+.slide-enter-active, .slide-leave-active {
+  transition: max-height 0.3s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s ease;
+  max-height: 2000px;
+}
+.slide-enter-from, .slide-leave-to {
+  max-height: 0;
+  opacity: 0;
+  overflow: hidden;
+}
+
+/* 压缩会话分割线与摘要卡片样式 */
+.compaction-divider-block {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin: 20px 0;
+  gap: 10px;
+  width: 100%;
+}
+
+.compaction-divider {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  color: #94a3b8;
+  font-size: 13px;
+  gap: 16px;
+}
+
+.compaction-divider-line {
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, #cbd5e1, transparent);
+  border: none;
+}
+
+.compaction-divider-text {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 500;
+  color: #d97706; /* 橙黄色 (Amber-600) 提醒但温和 */
+  background: #fef3c7; /* Amber-100 背景色 */
+  padding: 5px 14px;
+  border-radius: 20px;
+  border: 1px solid #fde68a;
+  box-shadow: 0 2px 6px rgba(217, 119, 6, 0.05);
+  transition: all 0.2s ease;
+  user-select: none;
+}
+
+.compaction-divider-text:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 8px rgba(217, 119, 6, 0.1);
+}
+
+.compaction-divider-text .el-icon {
+  font-size: 14px;
+}
+
+.compaction-summary-box {
+  width: 85%;
+  max-width: 650px;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.02);
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.compaction-summary-box:hover {
+  border-color: #cbd5e1;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.04);
+}
+
+.compaction-summary-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #475569;
+  background: #f8fafc;
+  cursor: pointer;
+  user-select: none;
+  transition: background-color 0.2s;
+}
+
+.compaction-summary-title:hover {
+  background: #f1f5f9;
+  color: #1e293b;
+}
+
+.compaction-summary-title .title-text {
+  display: flex;
+  align-items: center;
+}
+
+.compaction-summary-content {
+  padding: 14px;
+  font-size: 13px;
+  color: #334155;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  background: #f8fafc;
+  border-top: 1px solid #e2e8f0;
+}
+
+.compaction-summary-title .expand-icon {
+  transition: transform 0.2s ease;
+  font-size: 12px;
+  color: #64748b;
+}
+
+.compaction-summary-title .expand-icon.rotated {
+  transform: rotate(90deg);
+}
+

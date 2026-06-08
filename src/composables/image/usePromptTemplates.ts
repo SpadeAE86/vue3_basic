@@ -19,6 +19,7 @@ const editingTemplate = reactive({
 })
 const beautifying = ref(false)
 const localTemplates = new Map<string, string>()
+const SLOT_REGEX = /\{([^:]+):\s*([^}]+)\}/g
 
 export function usePromptTemplates() {
   function sanitizeMdFileName(name: string) {
@@ -39,8 +40,16 @@ export function usePromptTemplates() {
         const res = await loadTemplatesApi()
         if (Array.isArray(res) && res.length > 0) {
           templates.value = res
+          // Pre-fetch all template contents for cache & classification
+          await Promise.all(res.map(t => getTemplateContent(t.name, false)))
+          
+          const firstBeautify = res.find(t => {
+            const content = localTemplates.get(t.name) || ''
+            return !content.match(SLOT_REGEX)
+          })
+
           if (!selectedTemplate.value || !res.some((t) => t.name === selectedTemplate.value)) {
-            selectedTemplate.value = res[0].name
+            selectedTemplate.value = firstBeautify ? firstBeautify.name : res[0].name
           }
           return
         }
@@ -245,6 +254,7 @@ export function usePromptTemplates() {
     downloadSelectedTemplate,
     deleteTemplateByName,
     beautifyPrompt,
-    getTemplateContent
+    getTemplateContent,
+    localTemplates
   }
 }

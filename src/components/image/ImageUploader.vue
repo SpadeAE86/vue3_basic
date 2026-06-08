@@ -139,7 +139,7 @@ async function uploadFile(file: File) {
       // Add to modelValue
       emit('update:modelValue', [...props.modelValue, publicUrl])
     } else {
-      throw new Error(`Upload failed with status ${result.CommonMsg.Status}`)
+      throw new Error(`Upload failed with status ${(result as any).CommonMsg.Status}`)
     }
   } catch (error) {
     console.error('Upload error:', error)
@@ -183,10 +183,11 @@ function onDropItem(index: number, e: DragEvent) {
   if (draggedIndex === -1 || draggedIndex === index) return
   
   const newUrls = [...props.modelValue]
-  const [moved] = newUrls.splice(draggedIndex, 1)
-  newUrls.splice(index, 0, moved)
-  
-  emit('update:modelValue', newUrls)
+  const moved = newUrls.splice(draggedIndex, 1)[0]
+  if (moved !== undefined) {
+    newUrls.splice(index, 0, moved)
+    emit('update:modelValue', newUrls)
+  }
   draggedIndex = -1
 }
 

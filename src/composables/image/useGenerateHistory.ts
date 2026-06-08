@@ -246,6 +246,11 @@ export function useGenerateHistory(currentMode: Ref<GenerateMode>) {
     if (!form.prompt.trim()) return
 
     generating.value = true
+
+    // 替换插槽与分隔符以发送纯净提示词
+    const cleanPrompt = form.prompt
+      .replace(/\{([^:]+):\s*([^}]+)\}/g, (_match: any, _key: any, val: string) => val.trim())
+      .replace(/--split--/g, '\n')
     
     // 仅用于本次请求内在列表中定位行；持久化 id 必须与接口返回的 history_id 一致
     const pendingRowKey = generateUUID()
@@ -261,7 +266,7 @@ export function useGenerateHistory(currentMode: Ref<GenerateMode>) {
       url: null,
       loading: true,
       error: null,
-      prompt: form.prompt,
+      prompt: cleanPrompt,
       size: isVideo ? undefined : computedSize,
       resolution: isVideo ? form.videoResolution : undefined,
       ratio: form.ratio,
@@ -277,7 +282,7 @@ export function useGenerateHistory(currentMode: Ref<GenerateMode>) {
     try {
       if (isVideo) {
         const data = await generateVideoApi({
-          prompt: form.prompt,
+          prompt: cleanPrompt,
           model: form.videoModel,
           resolution: form.videoResolution,
           ratio: form.ratio,
@@ -305,7 +310,7 @@ export function useGenerateHistory(currentMode: Ref<GenerateMode>) {
         }
       } else {
         const data = await generateImageApi({
-          prompt: form.prompt,
+          prompt: cleanPrompt,
           size: computedSize,
           model: form.imageModel,
           ratio: form.ratio,

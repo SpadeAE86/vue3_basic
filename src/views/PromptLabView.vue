@@ -37,7 +37,8 @@ const {
   saveTemplate,
   deleteTemplateByName,
   downloadSelectedTemplate,
-  beautifyPrompt
+  beautifyPrompt,
+  getTemplateContent
 } = usePromptTemplates()
 
 const {
@@ -64,8 +65,29 @@ watch(currentMode, async () => {
 
 const TEMPLATE_ACTION_COLOR = '#6366f1'
 
+// 胶囊插槽视图同步状态
+const isTemplateMode = ref(false)
+const hasSlots = ref(false)
+const renderedPrompt = ref('')
+
+async function handleTemplateSelected(name: string) {
+  selectedTemplate.value = name
+  if (name) {
+    const content = await getTemplateContent(name)
+    if (content) {
+      const SLOT_REGEX = /\{([^:]+):\s*([^}]+)\}/g
+      if (SLOT_REGEX.test(content)) {
+        form.prompt = content
+      }
+    }
+  }
+}
+
 function handleBeautify() {
-  beautifyPrompt(form.prompt, (newPrompt) => {
+  const cleanPrompt = form.prompt
+    .replace(/\{([^:]+):\s*([^}]+)\}/g, (_match, _key, val) => val.trim())
+    .replace(/--split--/g, '\n')
+  beautifyPrompt(cleanPrompt, (newPrompt) => {
     form.prompt = newPrompt
   }, {
     videoDuration: currentMode.value === 'video' ? form.videoDuration : undefined,
@@ -129,28 +151,60 @@ function handleGenerate() {
       <template v-if="!isVsMode">
         <div class="form-section">
           <el-form :model="form" label-width="100px">
-            <el-form-item label="提示词">
-            <PromptComposer
-              :prompt="form.prompt"
-              @update:prompt="(v: string) => (form.prompt = v)"
-              :templates="templates"
-              :selected-template="selectedTemplate"
-              @update:selected-template="(v: string) => (selectedTemplate = v)"
-              :reference-media="form.referenceMedia"
-              @update:reference-media="(v: MediaFile[]) => (form.referenceMedia = v)"
-              @update:is-uploading="(v: boolean) => (isUploadingImage = v)"
-              :beautifying="beautifying"
-              :action-color="TEMPLATE_ACTION_COLOR"
-              :accept-types="currentMode === 'image' ? ['image'] : ['image', 'video', 'audio']"
-              :disable-media="disableMediaUpload"
-              @create-template="openNewTemplate"
-              @edit-template="openEditTemplate"
-              @download-template="downloadSelectedTemplate"
-              @delete-template="deleteTemplateByName"
-              @refresh-templates="handleTemplateRefresh"
-              @beautify="handleBeautify"
-            />
-          </el-form-item>
+            <el-form-item>
+              <template #label>
+                <div class="custom-prompt-label">
+                  <div class="label-top-row">
+                    <span>提示词</span>
+                    <el-popover v-if="hasSlots" placement="top" :width="320" trigger="hover" popper-class="preview-popover">
+                      <template #reference>
+                        <el-icon class="preview-search-icon"><i-ep-search /></el-icon>
+                      </template>
+                      <div class="final-prompt-preview">
+                        <div class="preview-title">当前渲染提示词（发送给模型）</div>
+                        <div class="preview-content">{{ renderedPrompt }}</div>
+                      </div>
+                    </el-popover>
+                  </div>
+                  <div v-if="hasSlots" class="label-bottom-row">
+                    <div 
+                      class="view-switch-link-simple" 
+                      @click="isTemplateMode = !isTemplateMode" 
+                      :title="isTemplateMode ? '切换到文本编辑模式' : '切换到胶囊参数模式'"
+                    >
+                      <el-icon>
+                        <i-ep-edit v-if="isTemplateMode" />
+                        <i-ep-menu v-else />
+                      </el-icon>
+                      <span>{{ isTemplateMode ? '编辑文本' : '查看插槽' }}</span>
+                    </div>
+                  </div>
+                </div>
+              </template>
+              <PromptComposer
+                :prompt="form.prompt"
+                @update:prompt="(v: string) => (form.prompt = v)"
+                v-model:is-template-mode="isTemplateMode"
+                @update:has-slots="(v) => hasSlots = v"
+                @update:rendered-prompt="(v) => renderedPrompt = v"
+                :templates="templates"
+                :selected-template="selectedTemplate"
+                @update:selected-template="handleTemplateSelected"
+                :reference-media="form.referenceMedia"
+                @update:reference-media="(v: MediaFile[]) => (form.referenceMedia = v)"
+                @update:is-uploading="(v: boolean) => (isUploadingImage = v)"
+                :beautifying="beautifying"
+                :action-color="TEMPLATE_ACTION_COLOR"
+                :accept-types="currentMode === 'image' ? ['image'] : ['image', 'video', 'audio']"
+                :disable-media="disableMediaUpload"
+                @create-template="openNewTemplate"
+                @edit-template="openEditTemplate"
+                @download-template="downloadSelectedTemplate"
+                @delete-template="deleteTemplateByName"
+                @refresh-templates="handleTemplateRefresh"
+                @beautify="handleBeautify"
+              />
+            </el-form-item>
 
           <!-- Image Specific Settings -->
           <template v-if="currentMode === 'image'">
@@ -369,5 +423,63 @@ function handleGenerate() {
 
 .results-section {
   margin-top: 24px;
+}
+
+/* Custom Prompt Label layout */
+:deep(.el-form-item__label) {
+  display: inline-flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+  line-height: 1.5 !important;
+  padding-top: 8px;
+}
+
+.custom-prompt-label {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  width: 100%;
+  text-align: right;
+  padding-right: 12px;
+  box-sizing: border-box;
+}
+
+.label-top-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  color: #475569;
+}
+
+.label-bottom-row {
+  margin-top: 4px;
+}
+
+.view-switch-link-simple {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: #6366f1;
+  cursor: pointer;
+  transition: color 0.2s;
+  user-select: none;
+}
+
+.view-switch-link-simple:hover {
+  color: #4f46e5;
+}
+
+.preview-search-icon {
+  font-size: 13px;
+  color: #6366f1;
+  cursor: pointer;
+  transition: transform 0.2s, color 0.2s;
+}
+
+.preview-search-icon:hover {
+  transform: scale(1.15);
+  color: #4f46e5;
 }
 </style>

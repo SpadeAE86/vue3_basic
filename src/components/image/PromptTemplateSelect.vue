@@ -9,12 +9,18 @@ interface TemplateInfo {
 const props = defineProps<{
   modelValue: string
   templates: TemplateInfo[]
+  beautifyTemplates: TemplateInfo[]
+  slotTemplates: TemplateInfo[]
+  activeTab: 'beautify' | 'slots'
   placeholder?: string
+  slotPlaceholder?: string
   actionColor?: string
 }>()
 
 const emit = defineEmits<{
   (e: 'update:modelValue', v: string): void
+  (e: 'update:activeTab', v: 'beautify' | 'slots'): void
+  (e: 'selectSlotTemplate', name: string): void
   (e: 'create'): void
   (e: 'delete', name: string): void
   (e: 'refresh'): void
@@ -25,11 +31,26 @@ const value = computed({
   set: (v: string) => emit('update:modelValue', v),
 })
 
+const currentTemplates = computed(() => {
+  return props.activeTab === 'slots' ? props.slotTemplates : props.beautifyTemplates
+})
+
+const computedPlaceholder = computed(() => {
+  if (props.activeTab === 'slots') {
+    return props.slotPlaceholder ?? '选择插槽模板'
+  }
+  return props.placeholder ?? '选择系统模板'
+})
+
 function onChange(v: string) {
   if (v === '__create__') {
-    // revert selection (keep current) then open dialog
     emit('update:modelValue', props.modelValue)
     emit('create')
+    return
+  }
+  if (props.activeTab === 'slots') {
+    emit('selectSlotTemplate', v)
+    emit('update:modelValue', v)
   } else {
     emit('update:modelValue', v)
   }
@@ -47,7 +68,7 @@ function handleDelete(e: MouseEvent, name: string) {
     :model-value="value"
     @update:model-value="value = $event"
     @change="onChange"
-    :placeholder="placeholder ?? '选择系统模板'"
+    :placeholder="computedPlaceholder"
     size="small"
     placement="top-start"
     popper-class="template-select-dropdown"
@@ -56,7 +77,7 @@ function handleDelete(e: MouseEvent, name: string) {
   >
     <el-option :value="'__create__'" :label="'＋ 新建模板'" />
 
-    <el-option v-for="tpl in templates" :key="tpl.name" :label="tpl.name" :value="tpl.name">
+    <el-option v-for="tpl in currentTemplates" :key="tpl.name" :label="tpl.name" :value="tpl.name">
       <div class="opt-row">
         <span class="opt-label">{{ tpl.name }}</span>
         <el-button
@@ -69,6 +90,27 @@ function handleDelete(e: MouseEvent, name: string) {
         </el-button>
       </div>
     </el-option>
+
+    <template #footer>
+      <div class="dropdown-tabs-footer" @click.stop>
+        <div class="tabs-segment-control">
+          <div 
+            class="segment-item" 
+            :class="{ active: activeTab === 'beautify' }"
+            @click="emit('update:activeTab', 'beautify')"
+          >
+            AI 美化预设
+          </div>
+          <div 
+            class="segment-item" 
+            :class="{ active: activeTab === 'slots' }"
+            @click="emit('update:activeTab', 'slots')"
+          >
+            📋 我的插槽模板
+          </div>
+        </div>
+      </div>
+    </template>
   </el-select>
 </template>
 
@@ -104,6 +146,45 @@ function handleDelete(e: MouseEvent, name: string) {
 .opt-del:hover {
   color: #606266;
 }
+
+/* 底部标签切换栏 */
+.dropdown-tabs-footer {
+  padding: 6px;
+  border-top: 1px solid #f1f5f9;
+  background-color: #fafafa;
+}
+
+.tabs-segment-control {
+  display: flex;
+  background-color: #f1f5f9;
+  border-radius: 6px;
+  padding: 2px;
+  width: 100%;
+}
+
+.segment-item {
+  flex: 1;
+  text-align: center;
+  padding: 6px 0;
+  border-radius: 4px;
+  font-weight: 500;
+  color: #64748b;
+  font-size: 11px;
+  cursor: pointer;
+  user-select: none;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.segment-item:hover:not(.active) {
+  color: #334155;
+}
+
+.segment-item.active {
+  background-color: #fff;
+  color: #6366f1;
+  font-weight: 600;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
 </style>
 
 <style>
@@ -112,4 +193,3 @@ function handleDelete(e: MouseEvent, name: string) {
   max-height: 170px;
 }
 </style>
-
