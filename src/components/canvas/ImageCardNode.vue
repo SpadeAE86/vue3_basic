@@ -3,7 +3,7 @@ import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { Handle, Position } from '@vue-flow/core'
 import { 
   Picture, Refresh, Delete, ZoomIn, Film, 
-  Loading, Warning, CircleCheck, Edit, Close, Search, MagicStick 
+  Loading, Warning, CircleCheck, Edit, Close, Search, MagicStick, Headset
 } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { uploadToObs } from '@/utils/obs'
@@ -77,6 +77,22 @@ const ratio = ref(props.data.ratio || (props.data.media_type === 'video' ? 'adap
 const sizeLevel = ref<SizeLevel>((props.data.sizeLevel as SizeLevel) || '2K')
 const videoResolution = ref(props.data.videoResolution || '720p')
 const videoDuration = ref(props.data.videoDuration || 5)
+
+const isMorphing = ref(false)
+
+function switchMode(newMode: 'image' | 'video') {
+  if (mode.value === newMode) return
+  isMorphing.value = true
+  
+  // 模拟翻折至中途时瞬间变换模式卡片内容，实现连贯翻面体验
+  setTimeout(() => {
+    mode.value = newMode
+  }, 180)
+  
+  setTimeout(() => {
+    isMorphing.value = false
+  }, 450)
+}
 
 // Watchers
 watch(() => props.data.media_type, (newType) => {
@@ -463,6 +479,33 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="node-wrapper-outer">
+    <!-- Floating Tab Ears on the right-bottom edge -->
+    <div v-if="isExpanded && data.source === 'generate' && data.status !== 'generating'" class="node-tab-ears nodrag">
+      <el-tooltip content="切换为图像生成" placement="right" :show-after="400">
+        <div 
+          class="tab-ear" 
+          :class="{ active: mode === 'image', 'ear-image': mode === 'image' }"
+          @click.stop="switchMode('image')"
+        >
+          <el-icon><Picture /></el-icon>
+        </div>
+      </el-tooltip>
+      <el-tooltip content="切换为视频生成" placement="right" :show-after="400">
+        <div 
+          class="tab-ear" 
+          :class="{ active: mode === 'video', 'ear-video': mode === 'video' }"
+          @click.stop="switchMode('video')"
+        >
+          <el-icon><Film /></el-icon>
+        </div>
+      </el-tooltip>
+      <el-tooltip content="音频生成 (即将推出)" placement="right" :show-after="400">
+        <div class="tab-ear disabled">
+          <el-icon><Headset /></el-icon>
+        </div>
+      </el-tooltip>
+    </div>
+
     <!-- Display ID badge floating on top-left -->
     <div class="node-top-badge-bar">
       <div class="type-badge" :class="activeMediaType === 'video' ? 'video' : 'image'">
@@ -474,7 +517,14 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <div class="image-card-node" :class="[{ 'is-expanded': isExpanded && data.source === 'generate' }, `is-${data.status || 'success'}`]">
+    <div 
+      class="image-card-node" 
+      :class="[
+        { 'is-expanded': isExpanded && data.source === 'generate' }, 
+        `is-${data.status || 'success'}`,
+        { 'is-morphing': isMorphing }
+      ]"
+    >
       <!-- Ports (Input port only for generated nodes. Output port only if image_url exists) -->
       <Handle 
         v-if="data.source === 'generate'"
@@ -682,14 +732,6 @@ onBeforeUnmount(() => {
                   </button>
                 </div>
               </div>
-            </div>
-
-            <div class="editor-field">
-              <label class="field-label">生成类型</label>
-              <el-radio-group v-model="mode" size="small" class="mode-toggle-group nodrag">
-                <el-radio-button label="image">图片生成</el-radio-button>
-                <el-radio-button label="video">视频生成</el-radio-button>
-              </el-radio-group>
             </div>
 
             <div class="editor-row">
@@ -1389,5 +1431,94 @@ onBeforeUnmount(() => {
 .slide-fade-leave-to {
   transform: translateY(-10px);
   opacity: 0;
+}
+
+/* --- Floating Tab Ears Switcher --- */
+.node-wrapper-outer {
+  perspective: 1000px; /* Enable 3D space for the card flip */
+}
+
+.node-tab-ears {
+  position: absolute;
+  right: -32px;
+  bottom: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  z-index: 10;
+}
+
+.tab-ear {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid rgba(226, 232, 240, 0.8);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.05);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #64748b;
+  cursor: pointer;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.tab-ear:hover:not(.disabled) {
+  transform: scale(1.15) translateX(2px);
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);
+  color: #1e293b;
+}
+
+/* Image Active Glow */
+.tab-ear.active.ear-image {
+  background: #fef08a; /* light yellow */
+  border-color: #f59e0b;
+  color: #b45309;
+  box-shadow: 0 0 8px rgba(245, 158, 11, 0.4);
+}
+
+/* Video Active Glow */
+.tab-ear.active.ear-video {
+  background: #f3e8ff; /* light purple */
+  border-color: #a855f7;
+  color: #7e22ce;
+  box-shadow: 0 0 8px rgba(168, 85, 247, 0.4);
+}
+
+.tab-ear.disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  background: rgba(241, 245, 249, 0.8);
+  border-color: #e2e8f0;
+  color: #94a3b8;
+}
+
+/* --- Card Flip Morphing Animation --- */
+.image-card-node {
+  transform-style: preserve-3d;
+  backface-visibility: hidden;
+  transition: box-shadow 0.3s;
+}
+
+.image-card-node.is-morphing {
+  animation: cardFlipMorph 0.45s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+@keyframes cardFlipMorph {
+  0% {
+    transform: rotateY(0deg) scale(1);
+  }
+  40% {
+    transform: rotateY(90deg) scale(0.92);
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
+  }
+  60% {
+    transform: rotateY(90deg) scale(0.92);
+  }
+  100% {
+    transform: rotateY(0deg) scale(1);
+  }
 }
 </style>
