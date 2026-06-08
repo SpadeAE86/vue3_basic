@@ -181,7 +181,22 @@ const availableVideoResolutions = computed(() => {
   return VIDEO_RESOLUTION_OPTIONS
 })
 
+const urlMediaType = computed(() => {
+  const url = props.data.image_url || ''
+  if (!url) return null
+  return (url.toLowerCase().endsWith('.mp4') || url.toLowerCase().endsWith('.webm')) ? 'video' : 'image'
+})
+
+const hasValidMediaForCurrentMode = computed(() => {
+  if (props.data.source !== 'generate') return true
+  if (!props.data.image_url) return false
+  return urlMediaType.value === mode.value
+})
+
 const isVideo = computed(() => {
+  if (props.data.source === 'generate') {
+    return urlMediaType.value === 'video'
+  }
   if (props.data.media_type === 'video') return true
   const url = props.data.image_url || ''
   return url.toLowerCase().endsWith('.mp4') || url.toLowerCase().endsWith('.webm')
@@ -202,7 +217,7 @@ function onVideoLoad(event: Event) {
 }
 
 const computedUpperHeight = computed(() => {
-  if (!props.data.image_url || props.data.status === 'generating' || props.data.status === 'failed') {
+  if (!props.data.image_url || props.data.status === 'generating' || props.data.status === 'failed' || !hasValidMediaForCurrentMode.value) {
     return '150px'
   }
   const clampedRatio = Math.max(0.5, Math.min(2.0, imageRatio.value))
@@ -467,7 +482,7 @@ function handleOutsideClick(event: MouseEvent) {
 
 onMounted(() => {
   document.addEventListener('click', handleOutsideClick)
-  if (props.data.source === 'generate' && !props.data.image_url && props.data.status !== 'generating') {
+  if (props.data.source === 'generate' && (!props.data.image_url || !hasValidMediaForCurrentMode.value) && props.data.status !== 'generating') {
     isExpanded.value = true
   }
 })
@@ -535,7 +550,7 @@ onBeforeUnmount(() => {
         :class="activeMediaType === 'video' ? 'handle-video-color' : 'handle-image-color'"
       />
       <Handle 
-        v-if="data.image_url"
+        v-if="data.image_url && hasValidMediaForCurrentMode"
         id="out" 
         type="source" 
         :position="Position.Right" 
@@ -574,7 +589,7 @@ onBeforeUnmount(() => {
           </div>
 
           <!-- Successful Media Display -->
-          <div v-else-if="data.image_url" class="media-overlay success">
+          <div v-else-if="data.image_url && hasValidMediaForCurrentMode" class="media-overlay success">
             <video 
               v-if="isVideo" 
               :src="data.image_url" 
