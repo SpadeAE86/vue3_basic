@@ -58,7 +58,7 @@ export const useCanvasStore = defineStore('canvas', () => {
   }
 
   async function recomputeReferenceImages(workspaceId: string) {
-    const genNodes = nodes.value.filter(n => n.type === 'gen_node')
+    const genNodes = nodes.value.filter(n => n.type === 'image_card' && n.data?.source === 'generate')
     let hasChanged = false
     
     for (const genNode of genNodes) {
@@ -78,7 +78,7 @@ export const useCanvasStore = defineStore('canvas', () => {
         hasChanged = true
         await apiSaveNode(workspaceId, {
           id: genNode.id,
-          type: genNode.type || 'gen_node',
+          type: 'image_card',
           x: genNode.position.x,
           y: genNode.position.y,
           data: genNode.data
@@ -106,7 +106,7 @@ export const useCanvasStore = defineStore('canvas', () => {
         }
       })
       
-      const vueFlowNodes = []
+      const vueFlowNodes: any[] = []
       for (const n of rawNodes) {
         const nodeData = { ...(n.data || {}) }
         let needsSave = false
@@ -116,9 +116,18 @@ export const useCanvasStore = defineStore('canvas', () => {
           needsSave = true
         }
         
+        let targetType = n.type || 'image_card'
+        if (targetType === 'gen_node' || targetType === 'image_node') {
+          targetType = 'image_card'
+          if (!nodeData.source) {
+            nodeData.source = 'generate'
+          }
+          needsSave = true
+        }
+        
         const vueFlowNode = {
           id: n.id,
-          type: n.type || 'image_node',
+          type: targetType,
           position: { x: n.x, y: n.y },
           data: nodeData,
         }
@@ -127,25 +136,48 @@ export const useCanvasStore = defineStore('canvas', () => {
         if (needsSave) {
           apiSaveNode(workspaceId, {
             id: n.id,
-            type: n.type || 'image_node',
+            type: targetType,
             x: n.x,
             y: n.y,
             data: nodeData
-          }).catch(err => console.error('补齐 display_id 失败:', err))
+          }).catch(err => console.error('补齐 display_id/转换类型失败:', err))
         }
       }
       
       // 转换连线格式为 Vue Flow 格式
       const rawEdges = data.edges || []
-      const vueFlowEdges = rawEdges.map((e: any) => ({
-        id: e.id,
-        source: e.source_node_id,
-        target: e.target_node_id,
-        label: e.label || '',
-        animated: true,
-        type: 'default',
-        style: { stroke: '#6366f1', strokeWidth: 2 },
-      }))
+      const vueFlowEdges = rawEdges.map((e: any) => {
+        const sourceNode = vueFlowNodes.find(n => n.id === e.source_node_id)
+        const isVideoNode = sourceNode?.data?.media_type === 'video'
+        const isTemplate = sourceNode?.type === 'prompt_template'
+        
+        let strokeColor = '#cbd5e1'
+        let edgeClass = 'edge-default-style'
+        if (isTemplate) {
+          strokeColor = '#8b5cf6'
+          edgeClass = 'edge-template-style'
+        } else if (isVideoNode) {
+          strokeColor = 'url(#video-edge-gradient)'
+          edgeClass = 'edge-video-style'
+        } else {
+          strokeColor = '#f59e0b'
+          edgeClass = 'edge-image-style'
+        }
+
+        return {
+          id: e.id,
+          source: e.source_node_id,
+          target: e.target_node_id,
+          label: e.label || '',
+          animated: true,
+          type: 'default',
+          class: edgeClass,
+          style: { 
+            stroke: strokeColor, 
+            strokeWidth: 2 
+          },
+        }
+      })
       
       nodes.value = vueFlowNodes
       edges.value = vueFlowEdges
@@ -167,41 +199,20 @@ export const useCanvasStore = defineStore('canvas', () => {
     }
   }
 
-  async function addGenNode(workspaceId: string) {
-    const nodeId = `gen_${Math.random().toString(36).substring(2, 8)}`
-    const x = Math.random() * 100 + 150
-    const y = Math.random() * 100 + 150
-    
-    const maxId = nodes.value.reduce((max, n) => {
-      const did = n.data?.display_id || 0
-      return did > max ? did : max
-    }, 0)
-    
-    const payload = {
-      id: nodeId,
-      type: 'gen_node',
-      x,
-      y,
-      data: {
-        display_id: maxId + 1,
-        status: undefined,
-        prompt: '',
-        model: 'Seedream 5.0',
-        ratio: '9:16',
-        sizeLevel: '2K',
-        image_url: ''
-      }
-    }
-    
-    await apiSaveNode(workspaceId, payload)
-    await loadGraph(workspaceId)
-    pushHistory()
+  async function addGenNode(workspaceId: string, x?: number, y?: number) {
+    await addImageCardNode(workspaceId, 'generate', 'image', x, y)
   }
 
-  async function addImageCardNode(workspaceId: string) {
+  async function addImageCardNode(
+    workspaceId: string,
+    source: 'upload' | 'generate' = 'upload',
+    mediaType: 'image' | 'video' = 'image',
+    x?: number,
+    y?: number
+  ) {
     const nodeId = `card_${Math.random().toString(36).substring(2, 8)}`
-    const x = Math.random() * 100 + 150
-    const y = Math.random() * 100 + 150
+    const posX = x !== undefined ? x : Math.random() * 100 + 150
+    const posY = y !== undefined ? y : Math.random() * 100 + 150
     
     const maxId = nodes.value.reduce((max, n) => {
       const did = n.data?.display_id || 0
@@ -211,13 +222,19 @@ export const useCanvasStore = defineStore('canvas', () => {
     const payload = {
       id: nodeId,
       type: 'image_card',
-      x,
-      y,
+      x: posX,
+      y: posY,
       data: {
         display_id: maxId + 1,
         image_url: '',
         prompt: '',
-        media_type: 'image'
+        media_type: mediaType,
+        source: source,
+        model: mediaType === 'video' ? 'Seedance 2.0' : 'Seedream 5.0',
+        ratio: mediaType === 'video' ? 'adaptive' : '9:16',
+        sizeLevel: '2K',
+        videoResolution: '720p',
+        videoDuration: 5
       }
     }
     
@@ -226,8 +243,12 @@ export const useCanvasStore = defineStore('canvas', () => {
     pushHistory()
   }
 
+  async function addVideoNode(workspaceId: string, x?: number, y?: number) {
+    await addImageCardNode(workspaceId, 'generate', 'video', x, y)
+  }
+
   async function recomputeTemplatePrompts(workspaceId: string) {
-    const genNodes = nodes.value.filter(n => n.type === 'gen_node')
+    const genNodes = nodes.value.filter(n => n.type === 'image_card' && n.data?.source === 'generate')
     let hasChanged = false
     
     for (const genNode of genNodes) {
@@ -249,7 +270,7 @@ export const useCanvasStore = defineStore('canvas', () => {
           hasChanged = true
           await apiSaveNode(workspaceId, {
             id: genNode.id,
-            type: genNode.type || 'gen_node',
+            type: 'image_card',
             x: genNode.position.x,
             y: genNode.position.y,
             data: genNode.data
@@ -286,7 +307,7 @@ export const useCanvasStore = defineStore('canvas', () => {
         hasChanged = true
         await apiSaveNode(workspaceId, {
           id: genNode.id,
-          type: genNode.type || 'gen_node',
+          type: 'image_card',
           x: genNode.position.x,
           y: genNode.position.y,
           data: genNode.data
@@ -296,10 +317,10 @@ export const useCanvasStore = defineStore('canvas', () => {
     return hasChanged
   }
 
-  async function addPromptTemplateNode(workspaceId: string) {
+  async function addPromptTemplateNode(workspaceId: string, x?: number, y?: number) {
     const nodeId = `template_${Math.random().toString(36).substring(2, 8)}`
-    const x = Math.random() * 100 + 150
-    const y = Math.random() * 100 + 150
+    const posX = x !== undefined ? x : Math.random() * 100 + 150
+    const posY = y !== undefined ? y : Math.random() * 100 + 150
     
     const maxId = nodes.value.reduce((max, n) => {
       const did = n.data?.display_id || 0
@@ -309,8 +330,8 @@ export const useCanvasStore = defineStore('canvas', () => {
     const payload = {
       id: nodeId,
       type: 'prompt_template',
-      x,
-      y,
+      x: posX,
+      y: posY,
       data: {
         display_id: maxId + 1,
         name: '未命名模板',
@@ -354,6 +375,7 @@ export const useCanvasStore = defineStore('canvas', () => {
     loadGraph,
     addGenNode,
     addImageCardNode,
+    addVideoNode,
     addPromptTemplateNode,
     saveNode,
     deleteNode,

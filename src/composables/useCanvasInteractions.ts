@@ -1,7 +1,7 @@
 import { type Ref } from 'vue'
 import { saveNode, deleteNode } from '@/api/node.api'
 import { saveEdge, deleteEdge } from '@/api/edge.api'
-import { ElMessageBox } from 'element-plus'
+import { ElMessageBox, ElMessage } from 'element-plus'
 
 export function useCanvasInteractions(
   workspaceId: Ref<string>,
@@ -45,6 +45,28 @@ export function useCanvasInteractions(
   async function handleConnect(connection: any) {
     if (!workspaceId.value) return
     
+    const sourceNode = nodes.value.find(n => n.id === connection.source)
+    const targetNode = nodes.value.find(n => n.id === connection.target)
+    
+    if (sourceNode && targetNode) {
+      const isSourceVideo = sourceNode.data?.media_type === 'video'
+      const isTargetImageGen = targetNode.data?.source === 'generate' && targetNode.data?.mode === 'image'
+      
+      if (isSourceVideo && isTargetImageGen) {
+        ElMessage.warning('类型不匹配：图像生成节点不支持将视频作为参考素材！')
+        
+        // Trigger shake effect on target node DOM
+        const targetEl = document.querySelector(`.vue-flow__node[data-id="${connection.target}"]`)
+        if (targetEl) {
+          targetEl.classList.add('shake-node')
+          setTimeout(() => {
+            targetEl.classList.remove('shake-node')
+          }, 500)
+        }
+        return // Abort connection
+      }
+    }
+
     const edgeId = `edge_${Math.random().toString(36).substring(2, 8)}`
     
     const payload = {
