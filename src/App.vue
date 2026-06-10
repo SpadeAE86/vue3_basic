@@ -154,6 +154,11 @@ onUnmounted(() => {
           <template #title>提示词对比</template>
         </el-menu-item>
 
+        <el-menu-item index="/collections">
+          <el-icon><i-ep-star /></el-icon>
+          <template #title>收藏空间</template>
+        </el-menu-item>
+
         <el-sub-menu index="menu-smart-mix">
           <template #title>
             <el-icon><i-ep-film /></el-icon>
@@ -263,7 +268,11 @@ onUnmounted(() => {
       </el-header>
 
       <el-main class="app-main">
-        <RouterView :key="routerViewKey" />
+        <router-view v-slot="{ Component }">
+          <keep-alive :max="10">
+            <component :is="Component" :key="route.path + '_' + routerViewKey" />
+          </keep-alive>
+        </router-view>
         <el-backtop target=".app-main" :right="24" :bottom="24" />
       </el-main>
     </el-container>

@@ -1,14 +1,43 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import type { GeneratedItem } from '@/types/generate'
 import { copyToClipboard } from '@/utils/browser'
+import { useCollectionsStore } from '@/stores/collections'
 import MediaPreviewDialog from './MediaPreviewDialog.vue'
 
 const props = defineProps<{
   item: GeneratedItem
   modelLabel: string
 }>()
+
+const collectionsStore = useCollectionsStore()
+
+const isFavorited = computed(() => {
+  if (!props.item.url) return false
+  return collectionsStore.isFavorited('media', props.item.url)
+})
+
+function toggleFavorite() {
+  if (!props.item.url) return
+  const title = props.item.prompt ? (props.item.prompt.substring(0, 20) + '...') : `生成结果 #${props.item.id}`
+  collectionsStore.toggleFavorite(
+    'media',
+    title,
+    props.item.url,
+    {
+      url: props.item.url,
+      prompt: props.item.prompt || '',
+      model: props.item.model || '',
+      type: props.item.type || 't2i',
+      time: props.item.time || ''
+    }
+  )
+}
+
+onMounted(() => {
+  collectionsStore.init()
+})
 
 const previewOpen = ref(false)
 /** 文生图/图生图：仅用 el-image 内嵌的 ElImageViewer（可缩放拖动）；勿再叠 MediaPreviewDialog */
@@ -193,6 +222,19 @@ function pauseVideo(e: Event) {
           </template>
         </el-image>
         
+        <!-- Star Button -->
+        <div 
+          class="result-favorite-star" 
+          :class="{ 'is-favorited': isFavorited }" 
+          @click.stop="toggleFavorite"
+          title="收藏"
+        >
+          <el-icon>
+            <i-ep-star-filled v-if="isFavorited" />
+            <i-ep-star v-else />
+          </el-icon>
+        </div>
+
         <!-- Hover Overlay -->
         <div class="result-overlay">
           <div class="overlay-top"></div>
@@ -285,17 +327,23 @@ function pauseVideo(e: Event) {
   color: #909399;
   padding: 40px 0;
   position: relative;
+  width: 100%;
+  box-sizing: border-box;
 }
 
-.loading-text,
-.error-text {
+.loading-text {
   font-size: 14px;
   text-align: center;
   padding: 0 16px;
 }
 
 .error-text {
+  font-size: 14px;
+  text-align: center;
+  padding: 0 16px;
   color: #f56c6c;
+  word-break: break-all;
+  white-space: normal;
 }
 
 .error-delete-btn {
@@ -323,6 +371,7 @@ function pauseVideo(e: Event) {
   display: flex;
   align-items: center;
   gap: 8px;
+  z-index: 10;
 }
 
 .error-retry-btn {
@@ -523,5 +572,46 @@ function pauseVideo(e: Event) {
 .result-preview-actions {
   display: flex;
   justify-content: flex-end;
+}
+
+.result-favorite-star {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  border: 1px solid rgba(0, 0, 0, 0.05);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  z-index: 15;
+  color: #94a3b8;
+  opacity: 0;
+  transform: scale(0.8);
+  transition: all 0.2s ease;
+  pointer-events: auto;
+}
+
+.image-wrapper:hover .result-favorite-star,
+.result-favorite-star.is-favorited {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.result-favorite-star:hover {
+  transform: scale(1.1) !important;
+  color: #eab308;
+}
+
+.result-favorite-star.is-favorited {
+  color: #eab308 !important;
+  background: #fff !important;
+  border-color: #f59e0b !important;
 }
 </style>

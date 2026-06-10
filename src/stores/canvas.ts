@@ -148,7 +148,11 @@ export const useCanvasStore = defineStore('canvas', () => {
       const rawEdges = data.edges || []
       const vueFlowEdges = rawEdges.map((e: any) => {
         const sourceNode = vueFlowNodes.find(n => n.id === e.source_node_id)
-        const isVideoNode = sourceNode?.data?.media_type === 'video'
+        const isVideoNode = sourceNode?.data?.media_type === 'video' ||
+                            sourceNode?.data?.mode === 'video' ||
+                            (sourceNode?.data?.image_url && 
+                             (sourceNode.data.image_url.toLowerCase().endsWith('.mp4') || 
+                              sourceNode.data.image_url.toLowerCase().endsWith('.webm')))
         const isTemplate = sourceNode?.type === 'prompt_template'
         
         let strokeColor = '#cbd5e1'

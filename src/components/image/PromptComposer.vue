@@ -1,10 +1,12 @@
 <script setup lang="ts">
-import { ref, computed, watch, nextTick } from 'vue'
+import { ref, computed, watch, nextTick, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import PromptTemplateSelect from './PromptTemplateSelect.vue'
 import MediaUploader, { type MediaFile } from './MediaUploader.vue'
+import PromptSlotDialog from './PromptSlotDialog.vue'
 import { usePromptTemplates } from '@/composables/image/usePromptTemplates'
 import { saveTemplateApi } from '@/api/generate'
+import { useCollectionsStore } from '@/stores/collections'
 
 interface TemplateInfo {
   name: string
@@ -73,6 +75,61 @@ const activeTab = ref<'beautify' | 'slots'>('beautify')
 
 // 获取全局共享的缓存
 const { localTemplates, getTemplateContent } = usePromptTemplates()
+const collectionsStore = useCollectionsStore()
+
+const isPromptFavorited = computed(() => {
+  if (!props.prompt.trim()) return false
+  const isTemplate = !!props.prompt.match(SLOT_REGEX)
+  return collectionsStore.isFavorited(isTemplate ? 'template' : 'prompt', props.prompt)
+})
+
+async function toggleFavoritePrompt() {
+  if (!props.prompt.trim()) {
+    ElMessage.warning('提示词内容不能为空，请先在输入框中输入提示词')
+    return
+  }
+
+  const isTemplate = !!props.prompt.match(SLOT_REGEX)
+  const itemType = isTemplate ? 'template' : 'prompt'
+
+  if (isPromptFavorited.value) {
+    const payload = isTemplate ? { template_text: props.prompt } : { prompt: props.prompt }
+    await collectionsStore.toggleFavorite(itemType, '', undefined, payload)
+    return
+  }
+
+  try {
+    const defaultName = isTemplate ? '我的插槽模板' : '我的提示词'
+    const { value: title } = await ElMessageBox.prompt(
+      isTemplate ? '请输入收藏的插槽模板名称：' : '请输入收藏的提示词名称：',
+      '收藏提示词',
+      {
+        confirmButtonText: '确定',
+        cancelButtonText: '取消',
+        inputPattern: /\S+/,
+        inputErrorMessage: '名称不能为空',
+        inputValue: defaultName
+      }
+    )
+
+    if (title) {
+      const name = title.trim()
+      const payload = isTemplate ? { name: name, template_text: props.prompt } : { prompt: props.prompt }
+      const success = await collectionsStore.toggleFavorite(itemType, name, undefined, payload)
+      if (success && isTemplate) {
+        // Automatically save as a local slot template so it appears in the dropdown too
+        await saveTemplateApi(name, props.prompt)
+        emit('refreshTemplates')
+      }
+    }
+  } catch {
+    // cancelled
+  }
+}
+
+onMounted(() => {
+  collectionsStore.init()
+})
 
 // 分类系统模板与插槽模板
 const beautifyTemplates = computed(() => {
@@ -170,149 +227,14 @@ async function handleSelectSlotTemplate(name: string) {
     }
   }
 }
-
 // 插槽模板 Dialog 高级变量提取器
 const isSlotDialogVisible = ref(false)
 const isNewSlotTemplate = ref(true)
 const slotTemplateName = ref('')
-const slotTemplateText = ref('')
-const textareaRef = ref<HTMLTextAreaElement | null>(null)
-
-interface DialogParsedVar {
-  key: string
-  defaultValue: string
-}
-
-const dialogParsedVariables = computed<DialogParsedVar[]>(() => {
-  const vars: DialogParsedVar[] = []
-  const seenKeys = new Set<string>()
-  const regex = /\{([^:]+):\s*([^}]+)\}/g
-  let match
-  while ((match = regex.exec(slotTemplateText.value)) !== null) {
-    const key = (match[1] || '').trim()
-    const defaultValue = (match[2] || '').trim()
-    if (key && !seenKeys.has(key)) {
-      seenKeys.add(key)
-      vars.push({ key, defaultValue })
-    }
-  }
-  return vars
-})
-
-const editingKey = ref<string | null>(null)
-const editingValue = ref('')
-
-function startEditInline(key: string, defaultValue: string) {
-  editingKey.value = key
-  editingValue.value = defaultValue
-  nextTick(() => {
-    const input = document.querySelector('.dialog-inline-capsule-input') as HTMLInputElement
-    if (input) {
-      input.focus()
-      input.select()
-    }
-  })
-}
-
-function escapeRegExp(string: string) {
-  return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-}
-
-function saveInlineEdit(key: string, oldValue: string) {
-  if (editingKey.value !== key) return
-  const newValue = editingValue.value.trim()
-  editingKey.value = null
-  if (!newValue) return
-
-  const escapedKey = escapeRegExp(key)
-  const escapedVal = escapeRegExp(oldValue)
-  const regex = new RegExp(`\\{${escapedKey}:\\s*${escapedVal}\\}`, 'g')
-  slotTemplateText.value = slotTemplateText.value.replace(regex, `{${key}: ${newValue}}`)
-  ElMessage.success(`变量 [ ${key} ] 的默认值已更新为 "${newValue}"`)
-}
-
-function removeVariableTag(key: string, defaultValue: string) {
-  const escapedKey = escapeRegExp(key)
-  const escapedVal = escapeRegExp(defaultValue)
-  const regex = new RegExp(`\\{${escapedKey}:\\s*${escapedVal}\\}`, 'g')
-  slotTemplateText.value = slotTemplateText.value.replace(regex, defaultValue)
-  ElMessage.success(`已删除变量槽位 {${key}}，还原为普通文本`)
-}
-
-async function handleExtractVariable() {
-  if (!textareaRef.value) return
-  const start = textareaRef.value.selectionStart
-  const end = textareaRef.value.selectionEnd
-
-  if (start === undefined || end === undefined || start === end) {
-    ElMessage.warning('请先在输入框中，用鼠标拖拽选中一段文字作为变量的默认值')
-    return
-  }
-
-  const selectedText = slotTemplateText.value.substring(start, end)
-
-  try {
-    const { value: varName } = await ElMessageBox.prompt('请输入该槽位的变量名称（如：主体、风格）', '提取模板变量', {
-      confirmButtonText: '确定',
-      cancelButtonText: '取消',
-      inputPattern: /\S+/,
-      inputErrorMessage: '变量名不能为空',
-      inputValue: ''
-    })
-
-    if (varName) {
-      const key = varName.trim()
-      const before = slotTemplateText.value.substring(0, start)
-      const after = slotTemplateText.value.substring(end)
-      slotTemplateText.value = `${before}{${key}: ${selectedText}}${after}`
-
-      nextTick(() => {
-        if (textareaRef.value) {
-          const newEnd = start + key.length + selectedText.length + 4
-          textareaRef.value.focus()
-          textareaRef.value.setSelectionRange(start, newEnd)
-        }
-      })
-      ElMessage.success(`成功将 "${selectedText}" 提取为变量槽位 {${key}}`)
-    }
-  } catch (e) {
-    // cancelled
-  }
-}
-
-async function handleSaveSlotTemplate() {
-  if (!slotTemplateName.value.trim() || !slotTemplateText.value.trim()) {
-    ElMessage.warning('模板名称和内容不能为空')
-    return
-  }
-
-  const name = slotTemplateName.value.trim()
-  const content = slotTemplateText.value
-  try {
-    await saveTemplateApi(name, content)
-    ElMessage.success('插槽模板保存成功')
-
-    // 立即在输入框中应用并追加该插槽模板，且设置为下拉框选中状态
-    selectedSlotTemplate.value = name
-    const current = props.prompt
-    if (current.trim()) {
-      emit('update:prompt', current + '\n--split--\n' + content)
-    } else {
-      emit('update:prompt', content)
-    }
-
-    isSlotDialogVisible.value = false
-    emit('refreshTemplates')
-  } catch (e) {
-    console.error(e)
-    ElMessage.error('保存模板失败')
-  }
-}
 
 function handleCreateTemplate() {
   if (activeTab.value === 'slots') {
     slotTemplateName.value = ''
-    slotTemplateText.value = ''
     isNewSlotTemplate.value = true
     isSlotDialogVisible.value = true
   } else {
@@ -329,11 +251,6 @@ function handleEditTemplate() {
     slotTemplateName.value = selectedSlotTemplate.value
     isNewSlotTemplate.value = false
     isSlotDialogVisible.value = true
-    getTemplateContent(selectedSlotTemplate.value).then(content => {
-      if (content) {
-        slotTemplateText.value = content
-      }
-    })
   } else {
     emit('editTemplate')
   }
@@ -358,6 +275,17 @@ function handleDownloadTemplate() {
   } else {
     emit('downloadTemplate')
   }
+}
+
+function onSlotTemplateSaved(name: string, content: string) {
+  selectedSlotTemplate.value = name
+  const current = props.prompt
+  if (current.trim()) {
+    emit('update:prompt', current + '\n--split--\n' + content)
+  } else {
+    emit('update:prompt', content)
+  }
+  emit('refreshTemplates')
 }
 
 // 选中框内文本，按 { 自动包裹为槽位 variables，并支持浏览器原生撤销 (Ctrl+Z) / 重做 (Ctrl+Y)
@@ -395,97 +323,59 @@ function handleKeydown(e: KeyboardEvent) {
     }
   }
 }
-
-// 快速保存提示词为模板（没插槽也能保存）
-async function handleQuickSaveTemplate() {
-  if (!props.prompt.trim()) {
-    ElMessage.warning('提示词内容不能为空，请先在输入框中输入提示词')
-    return
-  }
-
-  try {
-    const { value: templateName } = await ElMessageBox.prompt(
-      '请输入新建的提示词模板名称（如：复古人像、科幻背景）',
-      '保存提示词为模板',
-      {
-        confirmButtonText: '确定',
-        cancelButtonText: '取消',
-        inputPattern: /\S+/,
-        inputErrorMessage: '模板名称不能为空',
-        inputValue: ''
-      }
-    )
-
-    if (templateName) {
-      const name = templateName.trim()
-      await saveTemplateApi(name, props.prompt)
-      ElMessage.success('提示词模板保存成功')
-      emit('refreshTemplates')
-
-      const hasSlotVars = !!props.prompt.match(SLOT_REGEX)
-      activeTab.value = hasSlotVars ? 'slots' : 'beautify'
-      if (hasSlotVars) {
-        selectedSlotTemplate.value = name
-      } else {
-        emit('update:selectedTemplate', name)
-      }
-    }
-  } catch (e) {
-    if (e !== 'cancel') {
-      console.error(e)
-      ElMessage.error('保存模板失败')
-    }
-  }
-}
 </script>
 
 <template>
   <div class="prompt-composer">
-    <!-- 仅在胶囊填槽模式下显示插槽视图，移除了原有的 composer-header-bar-simple -->
-    <div v-if="isTemplateMode && hasSlots" class="template-tag-view">
-      <!-- 虚线框列表：按 --split-- 分割的多组插槽 -->
-      <div class="dashed-boxes-list">
-        <template v-for="(section, secIdx) in parsedSections" :key="secIdx">
-          <div
-            v-if="section.slots.length > 0"
-            class="tags-container-dashed"
-          >
-            <div class="tags-grid">
+    <div class="composer-body-row">
+      <div class="composer-input-container">
+        <!-- 仅在胶囊填槽模式下显示插槽视图，移除了原有的 composer-header-bar-simple -->
+        <div v-if="isTemplateMode && hasSlots" class="template-tag-view">
+          <!-- 虚线框列表：按 --split-- 分割的多组插槽 -->
+          <div class="dashed-boxes-list">
+            <template v-for="(section, secIdx) in parsedSections" :key="secIdx">
               <div
-                v-for="(slot, slotIdx) in section.slots"
-                :key="slotIdx"
-                class="capsule-tag"
+                v-if="section.slots.length > 0"
+                class="tags-container-dashed"
               >
-                <span class="tag-label">
-                  <span class="tag-icon">🏷️</span>
-                  {{ slot.key }}
-                </span>
-                <span class="tag-divider">:</span>
-                <input
-                  :value="slot.value"
-                  @input="(e: any) => updateSlotValueInSection(secIdx, slotIdx, e.target.value)"
-                  class="capsule-input"
-                  placeholder="输入值..."
-                  :style="{ width: Math.max(50, slot.value.length * 8 + 12) + 'px' }"
-                />
+                <div class="tags-grid">
+                  <div
+                    v-for="(slot, slotIdx) in section.slots"
+                    :key="slotIdx"
+                    class="capsule-tag"
+                  >
+                    <span class="tag-label">
+                      <span class="tag-icon">🏷️</span>
+                      {{ slot.key }}
+                    </span>
+                    <span class="tag-divider">:</span>
+                    <input
+                      :value="slot.value"
+                      @input="(e: any) => updateSlotValueInSection(secIdx, slotIdx, e.target.value)"
+                      class="capsule-input"
+                      placeholder="输入值..."
+                      :style="{ width: Math.max(50, slot.value.length * 8 + 12) + 'px' }"
+                    />
+                  </div>
+                </div>
               </div>
-            </div>
+            </template>
           </div>
-        </template>
+        </div>
+
+        <!-- 文本框模式，增加了 keydown Interceptor -->
+        <el-input
+          v-if="!isTemplateMode || !hasSlots"
+          :model-value="prompt"
+          @update:model-value="(v: string) => emit('update:prompt', v)"
+          @keydown="handleKeydown"
+          type="textarea"
+          :autosize="{ minRows: 4, maxRows: 8 }"
+          placeholder="请输入生成提示词..."
+          class="prompt-textarea"
+        />
       </div>
     </div>
-
-    <!-- 文本框模式，增加了 keydown Interceptor -->
-    <el-input
-      v-if="!isTemplateMode || !hasSlots"
-      :model-value="prompt"
-      @update:model-value="(v: string) => emit('update:prompt', v)"
-      @keydown="handleKeydown"
-      type="textarea"
-      :autosize="{ minRows: 4, maxRows: 8 }"
-      placeholder="请输入生成提示词..."
-      class="prompt-textarea"
-    />
 
     <div class="composer-footer">
       <div class="reference-images-container">
@@ -499,36 +389,37 @@ async function handleQuickSaveTemplate() {
         />
       </div>
 
-      <div class="toolbar">
-        <el-button-group class="left-btns">
-
-          <el-button
-            size="small"
-            class="ghost-btn"
-            :disabled="activeTab === 'slots' ? !selectedSlotTemplate : !selectedTemplate"
-            @click="handleEditTemplate"
-            title="编辑模板"
-          >
-            <el-icon><i-ep-edit /></el-icon>
-          </el-button>
-          <el-button
-            size="small"
-            class="ghost-btn"
-            :disabled="activeTab === 'slots' ? !selectedSlotTemplate : !selectedTemplate"
-            @click="handleDownloadTemplate"
-            title="下载 .md"
-          >
-            <el-icon><i-ep-download /></el-icon>
-          </el-button>
-          <el-button
-            size="small"
-            class="ghost-btn"
-            @click="handleQuickSaveTemplate"
-            title="保存为模板"
-          >
-            <el-icon><i-ep-folder-add /></el-icon>
-          </el-button>
-        </el-button-group>
+      <div class="footer-right-group">
+        <div class="toolbar">
+          <el-button-group class="left-btns">
+            <el-button
+              size="small"
+              class="ghost-btn"
+              :disabled="activeTab === 'slots' ? !selectedSlotTemplate : !selectedTemplate"
+              @click="handleEditTemplate"
+              title="编辑模板"
+            >
+              <el-icon><i-ep-edit /></el-icon>
+            </el-button>
+            <el-button
+              size="small"
+              class="ghost-btn"
+              :disabled="activeTab === 'slots' ? !selectedSlotTemplate : !selectedTemplate"
+              @click="handleDownloadTemplate"
+              title="下载 .md"
+            >
+              <el-icon><i-ep-download /></el-icon>
+            </el-button>
+            <el-button
+              size="small"
+              class="ghost-btn"
+              :disabled="!prompt.trim()"
+              @click="toggleFavoritePrompt"
+              title="收藏提示词"
+            >
+              <el-icon><i-ep-folder-add /></el-icon>
+            </el-button>
+          </el-button-group>
 
         <PromptTemplateSelect
           :model-value="activeTab === 'slots' ? selectedSlotTemplate : selectedTemplate"
@@ -558,90 +449,15 @@ async function handleQuickSaveTemplate() {
         </el-button>
       </div>
     </div>
+  </div>
 
     <!-- 配置插槽模板的 Dialog （高阶变量提取器，类似于画布模板节点的功能） -->
-    <el-dialog
-      v-model="isSlotDialogVisible"
-      title="配置提示词插槽模板"
-      width="600px"
-      append-to-body
-      class="template-editor-dialog"
-    >
-      <div class="dialog-form">
-        <div class="form-field">
-          <label class="form-label">模板名称</label>
-          <el-input v-model="slotTemplateName" :disabled="!isNewSlotTemplate" placeholder="输入模板名称，如：背景氛围、角色五官等" />
-        </div>
-
-        <div class="form-field">
-          <div class="textarea-header">
-            <label class="form-label">模板提示词文本</label>
-            <el-button
-              type="primary"
-              size="small"
-              plain
-              @click="handleExtractVariable"
-              class="extract-btn"
-            >
-              <el-icon><i-ep-magic-stick /></el-icon>
-              提取选定文本为变量
-            </el-button>
-          </div>
-          <p class="extract-tip">
-            提示：在下方选中文本片段（如 "girl"），点击上方“提取”按钮，即可快速将其定义为变量槽位。
-          </p>
-
-          <!-- 可视化槽位变量编辑区 -->
-          <div v-if="dialogParsedVariables.length > 0" class="dialog-variables-panel">
-            <div class="panel-title">已提取的变量槽位（点击原值编辑，点击 x 还原为文本）：</div>
-            <div class="dialog-tags-list">
-              <div
-                v-for="v in dialogParsedVariables"
-                :key="v.key"
-                class="dialog-capsule-tag"
-                @click.stop="startEditInline(v.key, v.defaultValue)"
-              >
-                <span class="capsule-label">🏷️ {{ v.key }}:</span>
-                <input
-                  v-if="editingKey === v.key"
-                  class="dialog-inline-capsule-input"
-                  v-model="editingValue"
-                  @blur="saveInlineEdit(v.key, v.defaultValue)"
-                  @keyup.enter="saveInlineEdit(v.key, v.defaultValue)"
-                  @click.stop
-                />
-                <span v-else class="capsule-value">{{ v.defaultValue }}</span>
-                <button
-                  class="capsule-delete-btn"
-                  @click.stop="removeVariableTag(v.key, v.defaultValue)"
-                  title="还原为普通文本"
-                >
-                  <el-icon><i-ep-close /></el-icon>
-                </button>
-              </div>
-            </div>
-          </div>
-
-          <textarea
-            ref="textareaRef"
-            v-model="slotTemplateText"
-            rows="8"
-            placeholder="例如: A majestic {主体: golden dragon} flying high in the {天空: stormy sky}..."
-            class="native-template-textarea"
-          ></textarea>
-        </div>
-      </div>
-
-      <template #footer>
-        <span class="dialog-footer">
-          <el-button @click="isSlotDialogVisible = false">取消</el-button>
-          <el-button type="primary" @click="handleSaveSlotTemplate">
-            <el-icon><i-ep-circle-check /></el-icon>
-            保存并应用
-          </el-button>
-        </span>
-      </template>
-    </el-dialog>
+    <PromptSlotDialog
+      v-model:visible="isSlotDialogVisible"
+      :is-new="isNewSlotTemplate"
+      :initial-name="slotTemplateName"
+      @saved="onSlotTemplateSaved"
+    />
   </div>
 </template>
 
@@ -655,6 +471,22 @@ async function handleQuickSaveTemplate() {
   transition: border-color 0.2s;
   display: flex;
   flex-direction: column;
+}
+
+.composer-body-row {
+  display: flex;
+  align-items: flex-start;
+  width: 100%;
+}
+
+.footer-right-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.composer-input-container {
+  flex: 1;
 }
 
 .prompt-composer:focus-within {
@@ -940,143 +772,4 @@ async function handleQuickSaveTemplate() {
   transform: translateY(-1px);
 }
 
-/* Dialog Form Styles */
-.dialog-form {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.form-field {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.textarea-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.form-label {
-  font-size: 13px;
-  font-weight: 600;
-  color: #374151;
-}
-
-.extract-btn {
-  font-size: 11px;
-}
-
-.extract-tip {
-  font-size: 11px;
-  color: #6b7280;
-  margin: 0;
-  background: #f9fafb;
-  padding: 6px 10px;
-  border-radius: 6px;
-  border-left: 3px solid #8b5cf6;
-}
-
-.native-template-textarea {
-  width: 100%;
-  padding: 10px;
-  box-sizing: border-box;
-  border-radius: 8px;
-  border: 1px solid #d1d5db;
-  font-size: 13px;
-  font-family: Menlo, Monaco, Consolas, "Courier New", monospace;
-  color: #1f2937;
-  resize: vertical;
-  line-height: 1.5;
-  outline: none;
-  transition: border-color 0.2s, box-shadow 0.2s;
-}
-
-.native-template-textarea:focus {
-  border-color: #8b5cf6;
-  box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.15);
-}
-
-/* Dialog 中的可视化槽位变量样式 */
-.dialog-variables-panel {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  background: #faf5ff;
-  border: 1px dashed #d8b4fe;
-  border-radius: 8px;
-  padding: 10px;
-  box-sizing: border-box;
-}
-
-.panel-title {
-  font-size: 11px;
-  font-weight: 600;
-  color: #7c3aed;
-}
-
-.dialog-tags-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.dialog-capsule-tag {
-  display: inline-flex;
-  align-items: center;
-  background: #ffffff;
-  border: 1px solid #e9d5ff;
-  border-radius: 20px;
-  padding: 2px 8px;
-  padding-right: 4px;
-  cursor: pointer;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
-  font-size: 11px;
-  transition: transform 0.15s, border-color 0.15s, box-shadow 0.15s;
-  user-select: none;
-  position: relative;
-  box-sizing: border-box;
-}
-
-.dialog-capsule-tag:hover {
-  transform: translateY(-1px);
-  border-color: #a855f7;
-  box-shadow: 0 2px 6px rgba(168, 85, 247, 0.15);
-}
-
-.dialog-capsule-tag .capsule-delete-btn {
-  background: none;
-  border: none;
-  padding: 0 4px;
-  color: #cbd5e1;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  opacity: 0;
-  transition: opacity 0.2s, color 0.2s;
-  font-size: 11px;
-}
-
-.dialog-capsule-tag:hover .capsule-delete-btn {
-  opacity: 1;
-}
-
-.dialog-capsule-tag .capsule-delete-btn:hover {
-  color: #ef4444;
-}
-
-.dialog-inline-capsule-input {
-  border: none;
-  background: #f3e8ff;
-  outline: none;
-  font-size: 11px;
-  color: #1f2937;
-  padding: 0 4px;
-  margin: 0;
-  width: 80px;
-  border-radius: 4px;
-  font-family: inherit;
-}
 </style>

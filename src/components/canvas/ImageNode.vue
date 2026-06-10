@@ -181,7 +181,7 @@ function handleRegenerate() {
 .node-handle {
   width: 10px;
   height: 10px;
-  background: #6366f1;
+  background: #f59e0b;
   border: 2px solid #ffffff;
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
   transition: transform 0.2s;

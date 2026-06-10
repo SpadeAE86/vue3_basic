@@ -17,6 +17,7 @@ import * as nodeService from '@/services/node.service'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { MagicStick, Film, Picture, FolderOpened, Memo } from '@element-plus/icons-vue'
 import { uploadToObs } from '@/utils/obs'
+import { copyToClipboard } from '@/utils/browser'
 
 // 导入 Vue Flow 样式
 import '@vue-flow/core/dist/style.css'
@@ -36,7 +37,9 @@ const {
   project, 
   fitView, 
   userSelectionActive, 
-  viewport
+  viewport,
+  getSelectedNodes,
+  getSelectedEdges
 } = useVueFlow()
 
 const containerRef = ref<HTMLElement | null>(null)
@@ -372,6 +375,28 @@ async function handleGlobalKeydown(e: KeyboardEvent) {
   if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
     return
   }
+
+  // 拦截 Backspace 和 Delete 键删除选中节点或连线以确保可靠的持久化
+  if (e.key === 'Backspace' || e.key === 'Delete') {
+    const selectedNodes = getSelectedNodes.value
+    const selectedEdges = getSelectedEdges.value
+    if (selectedNodes.length > 0 || selectedEdges.length > 0) {
+      e.preventDefault()
+      try {
+        if (selectedNodes.length > 0) {
+          await handleNodesDelete(selectedNodes)
+          ElMessage.success('节点已删除')
+        }
+        if (selectedEdges.length > 0) {
+          await handleEdgesDelete(selectedEdges)
+          ElMessage.success('连线已删除')
+        }
+      } catch (err) {
+        console.error('删除失败:', err)
+      }
+    }
+  }
+
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
     e.preventDefault()
     undo()
@@ -384,9 +409,32 @@ async function handleGlobalKeydown(e: KeyboardEvent) {
     e.preventDefault()
     handleSelectAll()
   }
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c') {
+    const selected = getSelectedNodes.value
+    if (selected.length > 0) {
+      e.preventDefault()
+      const clipData = {
+        type: 'jottings-canvas-nodes-clip',
+        nodes: selected.map(n => {
+          const origType = canvasStore.nodes.find(orig => orig.id === n.id)?.type || n.type || 'image_card'
+          const dataCopy = JSON.parse(JSON.stringify(n.data || {}))
+          delete dataCopy.display_id
+          return {
+            type: origType,
+            x: n.position.x,
+            y: n.position.y,
+            data: dataCopy
+          }
+        })
+      }
+      await copyToClipboard(JSON.stringify(clipData))
+      ElMessage.success(`已复制 ${selected.length} 个节点`)
+    }
+  }
 
   // 快捷键创建节点以鼠标位置生成
   if (!selectedWorkspaceId.value) return
+  if (e.ctrlKey || e.metaKey || e.altKey) return
   const key = e.key.toLowerCase()
   if (key === 'g' || key === 'm' || key === 'v' || key === 't' || key === 'x') {
     // 投影坐标
@@ -658,7 +706,7 @@ onBeforeUnmount(() => {
       :fit-view-on-init="true"
       :selectionKey="'Shift'"
       :multiSelectionKey="'Shift'"
-      :deleteKeyCode="['Backspace', 'Delete']"
+      :deleteKeyCode="null"
       :selectionMode="SelectionMode.Partial"
       class="custom-flow-board"
       @edge-double-click="handleEdgeDoubleClick"

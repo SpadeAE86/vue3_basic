@@ -101,6 +101,12 @@ const router = createRouter({
       component: () => import('../views/VideoMatchView.vue'),
       meta: { title: '视频匹配' },
     },
+    {
+      path: '/collections',
+      name: 'collections',
+      component: () => import('../views/CollectionsView.vue'),
+      meta: { title: '收藏空间' },
+    },
   ],
 })
 

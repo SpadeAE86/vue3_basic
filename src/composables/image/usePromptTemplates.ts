@@ -120,7 +120,7 @@ export function usePromptTemplates() {
       templates.value = [...templates.value, { name, has_content: true }]
     }
 
-    ElMessage.success('模板保存成功')
+    ElMessage.success('收藏成功')
     templateDialogVisible.value = false
     selectedTemplate.value = name
     

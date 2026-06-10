@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { ref, computed, nextTick } from 'vue'
+import { ref, computed, nextTick, onMounted } from 'vue'
 import { Handle, Position } from '@vue-flow/core'
-import { Memo, Delete, Edit, MagicStick, CircleCheck, Close } from '@element-plus/icons-vue'
+import { Memo, Delete, Edit, MagicStick, CircleCheck, Close, Star, StarFilled } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useCanvasStore } from '@/stores/canvas'
 import { useWorkspaceStore } from '@/stores/workspace'
+import { useCollectionsStore } from '@/stores/collections'
 
 interface NodeData {
   display_id?: number
@@ -23,6 +24,35 @@ const emit = defineEmits<{
 
 const canvasStore = useCanvasStore()
 const workspaceStore = useWorkspaceStore()
+const collectionsStore = useCollectionsStore()
+
+const isFavorited = computed(() => {
+  const text = props.data.template_text || ''
+  if (!text) return false
+  return collectionsStore.isFavorited('template', text)
+})
+
+function toggleFavorite() {
+  const text = props.data.template_text || ''
+  if (!text) {
+    ElMessage.warning('模板文本为空，无法收藏')
+    return
+  }
+  const name = props.data.name || '未命名模板'
+  collectionsStore.toggleFavorite(
+    'template',
+    name,
+    undefined,
+    {
+      name: name,
+      template_text: text
+    }
+  )
+}
+
+onMounted(() => {
+  collectionsStore.init()
+})
 
 const isDialogVisible = ref(false)
 const templateName = ref(props.data.name || '未命名模板')
@@ -201,9 +231,22 @@ function removeVariableTag(key: string, defaultValue: string) {
             <el-icon class="template-icon"><Memo /></el-icon>
             <span class="header-title">提示词模板</span>
           </div>
-          <button class="delete-btn" @click.stop="handleDelete" title="删除模板">
-            <el-icon><Delete /></el-icon>
-          </button>
+          <div class="header-actions-group">
+            <button 
+              class="header-favorite-star-btn" 
+              :class="{ 'is-favorited': isFavorited }" 
+              @click.stop="toggleFavorite"
+              title="收藏模板"
+            >
+              <el-icon>
+                <StarFilled v-if="isFavorited" />
+                <Star v-else />
+              </el-icon>
+            </button>
+            <button class="delete-btn" @click.stop="handleDelete" title="删除模板">
+              <el-icon><Delete /></el-icon>
+            </button>
+          </div>
         </div>
 
         <!-- 主体预览 -->
@@ -377,6 +420,41 @@ function removeVariableTag(key: string, defaultValue: string) {
 
 .delete-btn:hover {
   color: #ef4444;
+}
+
+.header-actions-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.header-favorite-star-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  color: #cbd5e1;
+  font-size: 14px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  transition: all 0.2s ease;
+  opacity: 0;
+  transform: scale(0.8);
+}
+
+.prompt-template-node:hover .header-favorite-star-btn,
+.header-favorite-star-btn.is-favorited {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.header-favorite-star-btn:hover {
+  color: #eab308;
+  transform: scale(1.1) !important;
+}
+
+.header-favorite-star-btn.is-favorited {
+  color: #eab308;
 }
 
 .card-body {

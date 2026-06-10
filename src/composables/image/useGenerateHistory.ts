@@ -384,7 +384,7 @@ export function useGenerateHistory(currentMode: Ref<GenerateMode>) {
     try {
       if (currentMode.value === 'image') {
         const resp = await deleteImageHistoryItemApi(id)
-        if (!resp.ok) {
+        if (!resp.ok && resp.status !== 404) {
           const err = await resp.json().catch(() => null)
           const d = err?.detail
           let msg = '删除失败'
@@ -398,16 +398,16 @@ export function useGenerateHistory(currentMode: Ref<GenerateMode>) {
       } else {
         // 视频：DB 删除
         const resp = await deleteVideoHistoryItemApi(id)
-        if (!resp.ok) {
+        if (!resp.ok && resp.status !== 404) {
           ElMessage.error(`删除失败: HTTP ${resp.status}`)
           return
         }
       }
-      generatedImages.value = generatedImages.value.filter(img => img.id !== id)
     } catch (e) {
-      console.error('deleteImage failed', e)
-      ElMessage.error('删除失败')
+      console.warn('deleteImage API error, removing locally:', e)
     }
+    generatedImages.value = generatedImages.value.filter(img => img.id !== id)
+    await saveHistory()
   }
 
   function clearPolling() {

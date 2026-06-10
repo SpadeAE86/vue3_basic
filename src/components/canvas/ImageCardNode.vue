@@ -1,24 +1,16 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
-import { Handle, Position } from '@vue-flow/core'
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+import { Handle, Position, useVueFlow } from '@vue-flow/core'
 import { 
   Picture, Refresh, Delete, ZoomIn, Film, 
-  Loading, Warning, CircleCheck, Edit, Close, Search, MagicStick, Headset
+  Loading, Warning, Edit, MagicStick, Star, StarFilled
 } from '@element-plus/icons-vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import { uploadToObs } from '@/utils/obs'
 import { useCanvasStore } from '@/stores/canvas'
 import { useWorkspaceStore } from '@/stores/workspace'
-import {
-  IMAGE_MODELS,
-  VIDEO_MODELS,
-  VIDEO_RESOLUTION_OPTIONS,
-  VIDEO_DURATION_OPTIONS,
-  RATIO_OPTIONS,
-  IMAGE_MODEL_LEVEL_OPTIONS,
-  IMAGE_MODEL_DEFAULT_LEVEL,
-  type SizeLevel
-} from '@/composables/image/useGenerateForm'
+import { useCollectionsStore } from '@/stores/collections'
+import NodeParameterEditor from './NodeParameterEditor.vue'
 
 interface NodeData {
   display_id?: number
@@ -60,126 +52,81 @@ const emit = defineEmits<{
 
 const canvasStore = useCanvasStore()
 const workspaceStore = useWorkspaceStore()
+const collectionsStore = useCollectionsStore()
+
+const isFavorited = computed(() => {
+  if (!props.data.image_url) return false
+  return collectionsStore.isFavorited('media', props.data.image_url)
+})
+
+function toggleFavorite() {
+  if (!props.data.image_url) return
+  const title = props.data.prompt ? (props.data.prompt.substring(0, 20) + '...') : `媒体卡片 #${props.data.display_id || ''}`
+  collectionsStore.toggleFavorite(
+    'media',
+    title,
+    props.data.image_url,
+    {
+      url: props.data.image_url,
+      prompt: props.data.prompt || '',
+      model: props.data.model || '',
+      ratio: props.data.ratio || '',
+      media_type: props.data.media_type || 'image',
+      source: props.data.source || 'generate'
+    }
+  )
+}
 
 // Upload state
 const isUploading = ref(false)
 const uploadProgress = ref(0)
 const fileInputRef = ref<HTMLInputElement | null>(null)
-const elImageRef = ref<any>(null)
+const elImageRef = ref<{ showPreview?: () => void } | null>(null)
 const imageRatio = ref(1.0)
 
 // Editor state (for generated nodes)
 const isExpanded = ref(false)
-const prompt = ref(props.data.prompt || '')
 const mode = ref<'image' | 'video'>(props.data.mode || (props.data.media_type === 'video' ? 'video' : 'image'))
-const model = ref(props.data.model || (props.data.media_type === 'video' ? 'Seedance 2.0' : 'Seedream 5.0'))
-const ratio = ref(props.data.ratio || (props.data.media_type === 'video' ? 'adaptive' : '9:16'))
-const sizeLevel = ref<SizeLevel>((props.data.sizeLevel as SizeLevel) || '2K')
-const videoResolution = ref(props.data.videoResolution || '720p')
-const videoDuration = ref(props.data.videoDuration || 5)
-
 const isMorphing = ref(false)
 
-function switchMode(newMode: 'image' | 'video') {
+async function switchMode(newMode: 'image' | 'video') {
   if (mode.value === newMode) return
   isMorphing.value = true
   
-  // 模拟翻折至中途时瞬间变换模式卡片内容，实现连贯翻面体验
-  setTimeout(() => {
+  setTimeout(async () => {
     mode.value = newMode
+    
+    // Save mode change immediately
+    const workspaceId = workspaceStore.selectedWorkspaceId
+    if (workspaceId) {
+      const localNode = canvasStore.nodes.find(n => n.id === props.id)
+      if (localNode) {
+        const defaultModel = newMode === 'video' ? 'Seedance 2.0' : 'Seedream 5.0'
+        const defaultRatio = newMode === 'video' ? 'adaptive' : '9:16'
+        const updatedData = {
+          ...props.data,
+          mode: newMode,
+          media_type: newMode,
+          model: defaultModel,
+          ratio: defaultRatio
+        }
+        localNode.data = updatedData
+        await canvasStore.saveNode(workspaceId, {
+          id: props.id,
+          type: 'image_card',
+          x: localNode.position.x,
+          y: localNode.position.y,
+          data: updatedData
+        })
+        canvasStore.pushHistory()
+      }
+    }
   }, 180)
   
   setTimeout(() => {
     isMorphing.value = false
   }, 450)
 }
-
-// Watchers
-watch(() => props.data.media_type, (newType) => {
-  if (newType) {
-    mode.value = newType
-  }
-})
-
-watch(mode, async (newMode) => {
-  if (newMode === 'video') {
-    model.value = 'Seedance 2.0'
-    ratio.value = 'adaptive'
-  } else {
-    model.value = 'Seedream 5.0'
-    ratio.value = '9:16'
-  }
-
-  const workspaceId = workspaceStore.selectedWorkspaceId
-  if (workspaceId) {
-    const localNode = canvasStore.nodes.find(n => n.id === props.id)
-    if (localNode) {
-      const updatedData = {
-        ...props.data,
-        mode: newMode,
-        media_type: newMode,
-        model: model.value,
-        ratio: ratio.value
-      }
-      localNode.data = updatedData
-      await canvasStore.saveNode(workspaceId, {
-        id: props.id,
-        type: 'image_card',
-        x: localNode.position.x,
-        y: localNode.position.y,
-        data: updatedData
-      })
-      canvasStore.pushHistory()
-    }
-  }
-})
-
-watch(() => props.data, (newData) => {
-  if (newData.prompt !== undefined && !isExpanded.value) {
-    prompt.value = newData.prompt || ''
-  }
-  if (newData.mode !== undefined) {
-    mode.value = newData.mode || 'image'
-  }
-  if (newData.model !== undefined) {
-    model.value = newData.model || (mode.value === 'video' ? 'Seedance 2.0' : 'Seedream 5.0')
-  }
-  if (newData.ratio !== undefined) {
-    ratio.value = newData.ratio || (mode.value === 'video' ? 'adaptive' : '9:16')
-  }
-  if (newData.sizeLevel !== undefined) {
-    sizeLevel.value = (newData.sizeLevel || '2K') as SizeLevel
-  }
-  if (newData.videoResolution !== undefined) {
-    videoResolution.value = newData.videoResolution || '720p'
-  }
-  if (newData.videoDuration !== undefined) {
-    videoDuration.value = newData.videoDuration || 5
-  }
-}, { deep: true })
-
-// Available options
-const availableLevels = computed(() => {
-  return IMAGE_MODEL_LEVEL_OPTIONS[model.value] || ['2K']
-})
-
-const availableRatios = computed(() => {
-  if (mode.value === 'video') {
-    return RATIO_OPTIONS
-  }
-  return RATIO_OPTIONS.filter(o => o.value !== 'adaptive')
-})
-
-const availableModels = computed(() => {
-  return mode.value === 'video' ? VIDEO_MODELS : IMAGE_MODELS
-})
-
-const availableVideoResolutions = computed(() => {
-  if (model.value === 'Seedance 2.0' || model.value === 'Seedance 2.0 Fast') {
-    return VIDEO_RESOLUTION_OPTIONS.filter(o => o.value !== '1080p')
-  }
-  return VIDEO_RESOLUTION_OPTIONS
-})
 
 const urlMediaType = computed(() => {
   const url = props.data.image_url || ''
@@ -277,22 +224,6 @@ function toggleExpand() {
   isExpanded.value = !isExpanded.value
 }
 
-// Template integrations
-const connectedTemplates = computed(() => {
-  const tplNodes: any[] = []
-  canvasStore.edges.forEach(edge => {
-    if (edge.target === props.id) {
-      const parentNode = canvasStore.nodes.find(n => n.id === edge.source)
-      if (parentNode && parentNode.type === 'prompt_template') {
-        tplNodes.push(parentNode)
-      }
-    }
-  })
-  return tplNodes.sort((a, b) => a.position.x - b.position.x)
-})
-
-const isUsingTemplate = computed(() => connectedTemplates.value.length > 0)
-
 const activeMediaType = computed(() => {
   if (props.data.source === 'generate') {
     return mode.value
@@ -302,7 +233,7 @@ const activeMediaType = computed(() => {
 
 const displayLabel = computed(() => {
   let label = activeMediaType.value === 'video' ? 'Video' : 'Image'
-  if (props.data.source === 'upload' && props.data.image_url) {
+  if (props.data.image_url) {
     const url = props.data.image_url
     const parts = url.split('/')
     const lastPart = parts[parts.length - 1] || ''
@@ -325,155 +256,21 @@ const displayLabel = computed(() => {
   return label
 })
 
-interface ParsedVar {
-  key: string
-  defaultValue: string
-  currentValue: string
-}
-
-function getVariablesForTemplate(tplNode: any) {
-  const vars: ParsedVar[] = []
-  const text = tplNode.data?.template_text || ''
-  const templateValues = props.data.template_values || {}
-  
-  const regex = /\{([^:]+):\s*([^}]+)\}/g
-  let match
-  while ((match = regex.exec(text)) !== null) {
-    const key = (match[1] || '').trim()
-    const defaultValue = (match[2] || '').trim()
-    if (key && !vars.some(v => v.key === key)) {
-      vars.push({
-        key,
-        defaultValue,
-        currentValue: templateValues[key] !== undefined ? templateValues[key] : defaultValue
-      })
-    }
+const generationTypeText = computed(() => {
+  const isVid = activeMediaType.value === 'video'
+  const hasRef = props.data.reference_images && props.data.reference_images.length > 0
+  if (isVid) {
+    return hasRef ? '图生视频' : '文生视频'
+  } else {
+    return hasRef ? '图生图' : '文生图'
   }
-  return vars
-}
-
-const editingKey = ref<string | null>(null)
-const editingValue = ref('')
-
-function startEditInline(key: string, currentValue: string) {
-  editingKey.value = key
-  editingValue.value = currentValue
-  nextTick(() => {
-    const inputs = document.querySelectorAll('.inline-capsule-input')
-    const input = Array.from(inputs).find(el => {
-      return (el as HTMLInputElement).value === currentValue
-    }) as HTMLInputElement || inputs[0] as HTMLInputElement
-    
-    if (input) {
-      input.focus()
-      input.select()
-    }
-  })
-}
-
-async function saveInlineEdit(key: string) {
-  if (editingKey.value !== key) return
-  const val = editingValue.value.trim()
-  editingKey.value = null
-  
-  const workspaceId = workspaceStore.selectedWorkspaceId
-  if (!workspaceId) return
-  
-  const newTemplateValues = {
-    ...(props.data.template_values || {}),
-    [key]: val
-  }
-  
-  const updatedData = {
-    ...props.data,
-    template_values: newTemplateValues
-  }
-  
-  const localNode = canvasStore.nodes.find(n => n.id === props.id)
-  if (localNode) {
-    localNode.data = updatedData
-    await canvasStore.saveNode(workspaceId, {
-      id: props.id,
-      type: 'image_card',
-      x: localNode.position.x,
-      y: localNode.position.y,
-      data: updatedData
-    })
-    
-    await canvasStore.recomputeTemplatePrompts(workspaceId)
-    await canvasStore.loadGraph(workspaceId)
-    canvasStore.pushHistory()
-    ElMessage.success(`变量 [ ${key} ] 已更新`)
-  }
-}
-
-function handleDisconnectTemplate(tplNodeId: string) {
-  const edge = canvasStore.edges.find(e => e.source === tplNodeId && e.target === props.id)
-  if (edge) {
-    emit('remove-edge', edge.id)
-    ElMessage.success('已断开该模板的连线')
-  }
-}
-
-const isPreviewDialogVisible = ref(false)
-const previewResolvedPrompt = computed(() => {
-  return props.data.prompt || ''
 })
-
-function openPromptPreview() {
-  isPreviewDialogVisible.value = true
-}
-
-function handleGenerate() {
-  const finalPrompt = isUsingTemplate.value ? (props.data.prompt || '') : prompt.value
-  if (!finalPrompt.trim()) {
-    ElMessage.warning('请输入提示词')
-    return
-  }
-  emit('generate', props.id, {
-    prompt: finalPrompt,
-    model: model.value,
-    ratio: ratio.value,
-    sizeLevel: sizeLevel.value,
-    mode: mode.value,
-    videoResolution: videoResolution.value,
-    videoDuration: videoDuration.value
-  })
-  isExpanded.value = false
-}
-
-const activeRefPreviewUrl = ref('')
-const refPreviewImage = ref<any>(null)
-
-function openRefImagePreview(url: string) {
-  activeRefPreviewUrl.value = url
-  nextTick(() => {
-    refPreviewImage.value?.showPreview?.()
-  })
-}
-
-function handleRemoveReference(imageUrl: string) {
-  const sourceNode = canvasStore.nodes.find(n => n.data?.image_url === imageUrl)
-  if (!sourceNode) {
-    ElMessage.warning('找不到该参考图的来源节点')
-    return
-  }
-  
-  const targetEdge = canvasStore.edges.find(e => e.source === sourceNode.id && e.target === props.id)
-  if (!targetEdge) {
-    ElMessage.warning('未找到对应的连接线')
-    return
-  }
-  
-  emit('remove-edge', targetEdge.id)
-}
 
 function handleOutsideClick(event: MouseEvent) {
   if (canvasStore.isConnectingOrJustConnected) return
   const target = event.target as HTMLElement
   if (!target) return
   
-  // Collapse generated editor if clicked outside of this node
   const nodeEl = document.querySelector(`.vue-flow__node[data-id="${props.id}"]`)
   if (nodeEl && !nodeEl.contains(target) && !target.closest('.vue-flow__handle') && !target.closest('.node-handle')) {
     isExpanded.value = false
@@ -482,6 +279,7 @@ function handleOutsideClick(event: MouseEvent) {
 
 onMounted(() => {
   document.addEventListener('click', handleOutsideClick)
+  collectionsStore.init()
   if (props.data.source === 'generate' && (!props.data.image_url || !hasValidMediaForCurrentMode.value) && props.data.status !== 'generating') {
     isExpanded.value = true
   }
@@ -490,10 +288,46 @@ onMounted(() => {
 onBeforeUnmount(() => {
   document.removeEventListener('click', handleOutsideClick)
 })
+
+const { findNode } = useVueFlow()
+function selectThisNode() {
+  const n = findNode(props.id)
+  if (n) {
+    n.selected = true
+  }
+}
+
+interface GenerateFormPayload {
+  prompt: string
+  model: string
+  ratio: string
+  sizeLevel: string
+  mode?: 'image' | 'video'
+  videoResolution?: string
+  videoDuration?: number
+}
+
+function handleGenerate(formPayload?: GenerateFormPayload) {
+  const finalForm = formPayload || {
+    prompt: props.data.prompt || '',
+    model: props.data.model || (mode.value === 'video' ? 'Seedance 2.0' : 'Seedream 5.0'),
+    ratio: props.data.ratio || (mode.value === 'video' ? 'adaptive' : '9:16'),
+    sizeLevel: props.data.sizeLevel || '2K',
+    mode: mode.value,
+    videoResolution: props.data.videoResolution || '720p',
+    videoDuration: props.data.videoDuration || 5
+  }
+  emit('generate', props.id, finalForm)
+  isExpanded.value = false
+}
+
+function handleRemoveEdge(edgeId: string) {
+  emit('remove-edge', edgeId)
+}
 </script>
 
 <template>
-  <div class="node-wrapper-outer">
+  <div class="node-wrapper-outer" @click.capture="selectThisNode">
     <!-- Floating Tab Ears on the right-bottom edge -->
     <div v-if="isExpanded && data.source === 'generate' && data.status !== 'generating'" class="node-tab-ears nodrag">
       <el-tooltip content="切换为图像生成" placement="right" :show-after="400">
@@ -521,28 +355,51 @@ onBeforeUnmount(() => {
       </el-tooltip>
     </div>
 
-    <!-- Display ID badge floating on top-left -->
+    <!-- Badge bar for IDs and labels -->
     <div class="node-top-badge-bar">
-      <div class="type-badge" :class="activeMediaType === 'video' ? 'video' : 'image'">
-        <el-icon class="badge-icon">
-          <Film v-if="activeMediaType === 'video'" />
-          <Picture v-else />
-        </el-icon>
-        <span class="badge-text" :title="displayLabel">{{ displayLabel }}</span>
-      </div>
+      <!-- For local upload node -->
+      <template v-if="data.source === 'upload'">
+        <span 
+          class="type-badge upload"
+          title="本地上传参考媒介"
+        >
+          <span class="badge-icon">
+            <el-icon>
+              <Film v-if="activeMediaType === 'video'" />
+              <Picture v-else />
+            </el-icon>
+          </span>
+          <span class="badge-text">{{ displayLabel }}</span>
+        </span>
+      </template>
+      <!-- For generated node -->
+      <template v-else>
+        <!-- Model Badge -->
+        <span 
+          class="type-badge model"
+          title="模型名称"
+        >
+          <span class="badge-icon">
+            <el-icon>
+              <Film v-if="activeMediaType === 'video'" />
+              <Picture v-else />
+            </el-icon>
+          </span>
+          <span class="badge-text">{{ data.model || (mode === 'video' ? 'Seedance 2.0' : 'Seedream 5.0') }}</span>
+        </span>
+        <!-- Generation Type Badge -->
+        <span 
+          class="type-badge gen-type"
+          :class="{ 'i2x': data.reference_images && data.reference_images.length > 0 }"
+        >
+          <span class="badge-text">{{ generationTypeText }}</span>
+        </span>
+      </template>
     </div>
 
-    <div 
-      class="image-card-node" 
-      :class="[
-        { 'is-expanded': isExpanded && data.source === 'generate' }, 
-        `is-${data.status || 'success'}`,
-        { 'is-morphing': isMorphing }
-      ]"
-    >
-      <!-- Ports (Input port only for generated nodes. Output port only if image_url exists) -->
+    <div class="image-card-node" :class="[`is-${data.status || 'success'}`, { 'is-expanded': isExpanded, 'is-morphing': isMorphing }]">
+      <!-- Ports (in / out) -->
       <Handle 
-        v-if="data.source === 'generate'"
         id="in" 
         type="target" 
         :position="Position.Left" 
@@ -555,7 +412,7 @@ onBeforeUnmount(() => {
         type="source" 
         :position="Position.Right" 
         class="node-handle handle-out"
-        :class="data.media_type === 'video' ? 'handle-video-color' : 'handle-image-color'"
+        :class="activeMediaType === 'video' ? 'handle-video-color' : 'handle-image-color'"
       />
 
       <div class="card-content">
@@ -569,7 +426,7 @@ onBeforeUnmount(() => {
           </div>
 
           <!-- Failed generation -->
-          <div v-else-if="data.status === 'failed'" class="media-overlay error" @click.stop="toggleExpand">
+          <div v-else-if="data.status === 'failed'" class="media-overlay error" @click="toggleExpand">
             <el-icon :size="28" color="#ef4444"><Warning /></el-icon>
             <span class="status-text text-danger">生成失败</span>
             <div class="error-detail" :title="data.error_message">{{ data.error_message || '接口调用异常' }}</div>
@@ -612,6 +469,18 @@ onBeforeUnmount(() => {
               @load="onImageLoad"
             />
             
+            <!-- Favorite Star Button (Only for successful generated nodes) -->
+            <button 
+              v-if="data.source === 'generate'"
+              class="node-favorite-star" 
+              :class="{ 'is-favorited': isFavorited }"
+              @click.stop="toggleFavorite"
+              title="收藏到收藏夹"
+            >
+              <el-icon v-if="isFavorited"><StarFilled /></el-icon>
+              <el-icon v-else><Star /></el-icon>
+            </button>
+
             <!-- Hover actions -->
             <div class="hover-actions-overlay">
               <el-tooltip content="大图预览" placement="top" v-if="!isVideo">
@@ -625,7 +494,7 @@ onBeforeUnmount(() => {
                 </button>
               </el-tooltip>
               <el-tooltip content="重新生成" placement="top" v-if="data.source === 'generate'">
-                <button class="hover-action-btn" @click.stop="handleGenerate">
+                <button class="hover-action-btn" @click.stop="handleGenerate()">
                   <el-icon><Refresh /></el-icon>
                 </button>
               </el-tooltip>
@@ -643,7 +512,7 @@ onBeforeUnmount(() => {
           </div>
 
           <!-- Empty placeholders -->
-          <div v-else class="media-overlay empty" @click.stop="data.source === 'generate' ? toggleExpand() : triggerFileSelect()">
+          <div v-else class="media-overlay empty" @click="data.source === 'generate' ? toggleExpand() : triggerFileSelect()">
             <el-icon :size="28" class="placeholder-icon">
               <Film v-if="activeMediaType === 'video'" />
               <Picture v-else />
@@ -659,186 +528,15 @@ onBeforeUnmount(() => {
 
         <!-- Lower Area: Parameter collapsible editor (Only for generate nodes) -->
         <transition name="slide-fade">
-          <div v-show="isExpanded && data.source === 'generate'" class="node-lower-editor">
-            <div class="editor-field">
-              <div class="field-title-row">
-                <label class="field-label">提示词</label>
-                <el-icon 
-                  v-if="isUsingTemplate" 
-                  class="preview-search-icon" 
-                  @click.stop="openPromptPreview"
-                  title="预览最终替换后的提示词"
-                >
-                  <Search />
-                </el-icon>
-              </div>
-              
-              <!-- Templates boxes -->
-              <div v-if="isUsingTemplate" class="templates-boxes nodrag">
-                <div 
-                  v-for="tpl in connectedTemplates" 
-                  :key="tpl.id" 
-                  class="template-box"
-                >
-                  <div class="template-box-header">
-                    <span class="tpl-name">{{ tpl.data.name || '未命名模板' }}</span>
-                    <button 
-                      class="tpl-disconnect-btn" 
-                      @click.stop="handleDisconnectTemplate(tpl.id)"
-                      title="断开模板连接"
-                    >
-                      <el-icon><Close /></el-icon>
-                    </button>
-                  </div>
-                  
-                  <div class="template-box-body">
-                    <div 
-                      v-for="v in getVariablesForTemplate(tpl)" 
-                      :key="v.key" 
-                      class="capsule-tag"
-                      @click.stop="startEditInline(v.key, v.currentValue)"
-                      :title="'点击编辑 ' + v.key"
-                    >
-                      <span class="capsule-label">🏷️ {{ v.key }}:</span>
-                      <input
-                        v-if="editingKey === v.key"
-                        class="inline-capsule-input nodrag"
-                        v-model="editingValue"
-                        @blur="saveInlineEdit(v.key)"
-                        @keyup.enter="saveInlineEdit(v.key)"
-                        @click.stop
-                      />
-                      <span v-else class="capsule-value">{{ v.currentValue }}</span>
-                    </div>
-                    <div v-if="getVariablesForTemplate(tpl).length === 0" class="no-variables-hint">
-                      无变量槽位
-                    </div>
-                  </div>
-                </div>
-              </div>
-              
-              <el-input
-                v-else
-                v-model="prompt"
-                type="textarea"
-                :rows="3"
-                placeholder="请输入提示词..."
-                class="editor-textarea nodrag"
-                resize="none"
-              />
-            </div>
-
-            <!-- Reference media lists -->
-            <div v-if="data.reference_images && data.reference_images.length > 0" class="editor-field">
-              <label class="field-label">连线参考图 ({{ data.reference_images.length }})</label>
-              <div class="editor-media-list">
-                <div 
-                  v-for="(img, idx) in data.reference_images" 
-                  :key="idx" 
-                  class="media-item"
-                  @click.stop="openRefImagePreview(img)"
-                >
-                  <img :src="img" class="media-thumb" />
-                  <div class="media-hover">
-                    <el-icon><ZoomIn /></el-icon>
-                  </div>
-                  <button class="remove-ref-btn" @click.stop="handleRemoveReference(img)">
-                    <el-icon><Close /></el-icon>
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            <div class="editor-row">
-              <div class="editor-field flex-1">
-                <label class="field-label">选择模型</label>
-                <el-select v-model="model" size="small" style="width: 100%">
-                  <el-option
-                    v-for="m in availableModels"
-                    :key="m.value"
-                    :label="m.label"
-                    :value="m.value"
-                  />
-                </el-select>
-              </div>
-            </div>
-
-            <template v-if="mode === 'image'">
-              <div class="editor-row grid-2">
-                <div class="editor-field">
-                  <label class="field-label">比例</label>
-                  <el-select v-model="ratio" size="small" style="width: 100%">
-                    <el-option
-                      v-for="r in availableRatios"
-                      :key="r.value"
-                      :label="r.label"
-                      :value="r.value"
-                    />
-                  </el-select>
-                </div>
-
-                <div class="editor-field">
-                  <label class="field-label">分辨率</label>
-                  <el-select v-model="sizeLevel" size="small" style="width: 100%">
-                    <el-option
-                      v-for="lvl in availableLevels"
-                      :key="lvl"
-                      :label="lvl"
-                      :value="lvl"
-                    />
-                  </el-select>
-                </div>
-              </div>
-            </template>
-
-            <template v-else-if="mode === 'video'">
-              <div class="editor-row grid-2">
-                <div class="editor-field">
-                  <label class="field-label">比例</label>
-                  <el-select v-model="ratio" size="small" style="width: 100%">
-                    <el-option
-                      v-for="r in availableRatios"
-                      :key="r.value"
-                      :label="r.label"
-                      :value="r.value"
-                    />
-                  </el-select>
-                </div>
-
-                <div class="editor-field">
-                  <label class="field-label">分辨率</label>
-                  <el-select v-model="videoResolution" size="small" style="width: 100%">
-                    <el-option
-                      v-for="res in availableVideoResolutions"
-                      :key="res.value"
-                      :label="res.label"
-                      :value="res.value"
-                    />
-                  </el-select>
-                </div>
-              </div>
-
-              <div class="editor-row">
-                <div class="editor-field flex-1">
-                  <label class="field-label">时长</label>
-                  <el-select v-model="videoDuration" size="small" style="width: 100%">
-                    <el-option
-                      v-for="dur in VIDEO_DURATION_OPTIONS"
-                      :key="dur.value"
-                      :label="dur.label"
-                      :value="dur.value"
-                    />
-                  </el-select>
-                </div>
-              </div>
-            </template>
-
-            <div class="editor-actions">
-              <el-button type="primary" size="small" class="generate-btn" @click.stop="handleGenerate">
-                <el-icon><Refresh /></el-icon>开始生成
-              </el-button>
-            </div>
-          </div>
+          <NodeParameterEditor
+            v-show="isExpanded && data.source === 'generate'"
+            :id="id"
+            :data="data"
+            node-type="image_card"
+            @generate="(nodeId, form) => handleGenerate(form)"
+            @delete="handleDelete"
+            @remove-edge="handleRemoveEdge"
+          />
         </transition>
       </div>
 
@@ -851,32 +549,6 @@ onBeforeUnmount(() => {
         @change="handleFileChange"
       />
     </div>
-
-    <!-- Hidden Ref Image preview element -->
-    <el-image
-      ref="refPreviewImage"
-      style="display: none;"
-      :src="activeRefPreviewUrl"
-      :preview-src-list="[activeRefPreviewUrl]"
-      preview-teleported
-    />
-
-    <!-- Template prompt preview dialog -->
-    <el-dialog
-      v-model="isPreviewDialogVisible"
-      title="预览最终提示词"
-      width="500px"
-      append-to-body
-    >
-      <div class="prompt-preview-box">
-        {{ previewResolvedPrompt || '(空)' }}
-      </div>
-      <template #footer>
-        <span class="dialog-footer">
-          <el-button type="primary" @click="isPreviewDialogVisible = false">确定</el-button>
-        </span>
-      </template>
-    </el-dialog>
   </div>
 </template>
 
@@ -900,56 +572,97 @@ onBeforeUnmount(() => {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  font-size: 11px;
-  font-weight: 500;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-size: 10px;
+  font-weight: 700;
   color: #64748b;
-  transition: all 0.2s ease;
-  max-width: 230px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  user-select: none;
 }
 
-.type-badge.image,
-.type-badge.video {
+.type-badge.upload {
+  background: #ffffff;
+  border-color: #e2e8f0;
   color: #64748b;
+}
+
+.type-badge.model {
+  background: #ffffff;
+  border-color: #cbd5e1;
+  color: #475569;
+}
+
+.type-badge.gen-type {
+  background: #eff6ff;
+  border-color: #bfdbfe;
+  color: #1d4ed8;
+}
+
+.type-badge.gen-type.i2x {
+  background: #f0fdf4;
+  border-color: #bbf7d0;
+  color: #15803d;
 }
 
 .type-badge:hover {
-  color: #475569;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.08);
 }
 
 .badge-icon {
-  font-size: 13px;
   display: flex;
   align-items: center;
-  color: #64748b;
-}
-
-.type-badge:hover .badge-icon {
-  color: #475569;
+  font-size: 11px;
 }
 
 .badge-text {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 210px;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  letter-spacing: 0.2px;
 }
 
 .image-card-node {
-  width: 240px;
+  width: 220px;
   background: #ffffff;
   border-radius: 12px;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.08);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
   overflow: visible;
-  position: relative;
+  display: flex;
+  flex-direction: column;
   box-sizing: border-box;
-  transition: transform 0.2s, box-shadow 0.2s;
-  border: 1px solid #cbd5e1;
+  transition: border-color 0.2s, box-shadow 0.2s, transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
+  transform-style: preserve-3d;
+  perspective: 1000px;
 }
 
 .image-card-node:hover {
   transform: translateY(-2px);
-  box-shadow: 0 8px 24px rgba(99, 102, 241, 0.15);
+  box-shadow: 0 6px 20px rgba(99, 102, 241, 0.1);
+}
+
+.image-card-node.is-morphing {
+  animation: cardFlipMorph 0.45s ease-in-out forwards;
+}
+
+@keyframes cardFlipMorph {
+  0% {
+    transform: rotateY(0deg) scale(1);
+    filter: brightness(1);
+  }
+  40% {
+    transform: rotateY(90deg) scale(0.95);
+    filter: brightness(1.2);
+  }
+  60% {
+    transform: rotateY(90deg) scale(0.95);
+    filter: brightness(1.2);
+  }
+  100% {
+    transform: rotateY(0deg) scale(1);
+    filter: brightness(1);
+  }
 }
 
 .image-card-node.is-generating {
@@ -961,26 +674,25 @@ onBeforeUnmount(() => {
 }
 
 .image-card-node.is-success {
-  border-color: #10b981;
+  border-color: #e2e8f0;
 }
 
 .card-content {
   width: 100%;
-  position: relative;
-  overflow: hidden;
+  height: 100%;
+  border: 1px solid #e2e8f0;
   border-radius: 12px;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
+  box-sizing: border-box;
 }
 
 .node-upper {
-  width: 100%;
   position: relative;
+  width: 100%;
   background: #f8fafc;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 150px;
+  transition: height 0.25s ease-out;
 }
 
 .media-overlay {
@@ -990,8 +702,8 @@ onBeforeUnmount(() => {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  box-sizing: border-box;
   position: relative;
+  cursor: pointer;
 }
 
 .node-media {
@@ -999,17 +711,14 @@ onBeforeUnmount(() => {
   height: 100%;
   object-fit: cover;
   display: block;
-  pointer-events: none;
 }
 
 :deep(.node-media .el-image__inner) {
   width: 100%;
   height: 100%;
   object-fit: cover;
-  pointer-events: none;
 }
 
-/* Hover Action Overlays */
 .hover-actions-overlay {
   position: absolute;
   top: 0;
@@ -1017,16 +726,17 @@ onBeforeUnmount(() => {
   right: 0;
   bottom: 0;
   background: linear-gradient(to bottom, rgba(0, 0, 0, 0) 50%, rgba(0, 0, 0, 0.7) 100%);
-  opacity: 0;
-  transition: opacity 0.25s ease;
   display: flex;
-  justify-content: flex-end;
   align-items: flex-end;
+  justify-content: flex-end;
+  gap: 6px;
   padding: 12px;
   box-sizing: border-box;
-  border-radius: 12px;
+  opacity: 0;
+  transition: opacity 0.25s ease;
+  z-index: 3;
   pointer-events: none;
-  z-index: 10;
+  border-radius: 12px;
 }
 
 .hover-actions-overlay * {
@@ -1038,53 +748,56 @@ onBeforeUnmount(() => {
 }
 
 .hover-action-btn {
+  background: rgba(255, 255, 255, 0.2);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  color: #fff;
   width: 30px;
   height: 30px;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.25);
-  backdrop-filter: blur(4px);
-  -webkit-backdrop-filter: blur(4px);
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #ffffff;
-  transition: transform 0.2s, background-color 0.2s;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-size: 14px;
+  padding: 0;
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
-  margin-left: 6px;
 }
 
 .hover-action-btn:hover {
-  transform: scale(1.1);
   background: rgba(255, 255, 255, 0.45);
+  transform: scale(1.1);
+  color: #ffffff;
 }
 
 .hover-action-btn.danger:hover {
   background: rgba(239, 68, 68, 0.85);
+  border-color: rgba(239, 68, 68, 0.85);
+  color: #ffffff;
 }
 
-/* Placeholder Empty States */
 .media-overlay.empty {
-  cursor: pointer;
-  padding: 16px;
-  gap: 8px;
-  transition: background-color 0.2s;
-}
-
-.media-overlay.empty:hover {
-  background-color: #f1f5f9;
-}
-
-.placeholder-icon {
+  background: #f8fafc;
   color: #94a3b8;
 }
 
+.media-overlay.empty:hover {
+  background: #f1f5f9;
+  color: #6366f1;
+}
+
+.placeholder-icon {
+  margin-bottom: 4px;
+  transition: transform 0.2s;
+}
+
 .placeholder-text {
-  font-size: 13px;
-  color: #64748b;
+  font-size: 11px;
   font-weight: 500;
   text-align: center;
+  padding: 0 8px;
 }
 
 .empty-delete-btn {
@@ -1101,43 +814,49 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: center;
   color: #64748b;
-  transition: background-color 0.2s, color 0.2s;
+  transition: background-color 0.2s, color 0.2s, transform 0.2s;
+  z-index: 10;
 }
 
 .empty-delete-btn:hover {
   background: rgba(239, 68, 68, 0.1);
   color: #ef4444;
+  transform: scale(1.1);
 }
 
 .status-text {
-  font-size: 12px;
-  color: #64748b;
-  margin-top: 8px;
+  font-size: 11px;
+  font-weight: 500;
+  margin-top: 6px;
 }
 
 .text-danger {
-  color: #ef4444 !important;
+  color: #ef4444;
 }
 
 .error-detail {
-  font-size: 10px;
-  color: #94a3b8;
-  width: 90%;
+  font-size: 9px;
+  color: #991b1b;
+  margin-top: 6px;
   text-align: center;
+  width: 100%;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  margin-top: 4px;
+  background: rgba(239, 68, 68, 0.05);
+  padding: 2px 4px;
+  border-radius: 4px;
 }
 
-/* Ports with customized theme coloring */
+/* Ports style overrides */
 .node-handle {
   width: 10px;
   height: 10px;
-  border: 2px solid #ffffff !important;
+  background: #94a3b8;
+  border: 2px solid #ffffff;
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
   transition: transform 0.2s;
-  z-index: 100;
+  z-index: 5;
 }
 
 .node-handle:hover {
@@ -1159,9 +878,9 @@ onBeforeUnmount(() => {
 }
 
 .handle-video-color {
-  /* Dynamic gradient purple-blue for video ports */
-  background: linear-gradient(135deg, #a855f7 0%, #3b82f6 100%) !important;
-  animation: handleGlow 3s infinite alternate;
+  background: linear-gradient(270deg, #a855f7, #3b82f6, #db2777, #a855f7) !important;
+  background-size: 600% 600% !important;
+  animation: handleGlow 3s infinite alternate, shiftingGradient 8s ease infinite !important;
 }
 
 @keyframes handleGlow {
@@ -1169,268 +888,10 @@ onBeforeUnmount(() => {
   100% { filter: drop-shadow(0 0 5px rgba(59, 130, 246, 0.9)); }
 }
 
-/* Lower config editor layout */
-.node-lower-editor {
-  padding: 12px;
-  background: #ffffff;
-  border-top: 1px solid #e2e8f0;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.editor-field {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.field-title-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.field-label {
-  font-size: 11px;
-  font-weight: 600;
-  color: #475569;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-
-.preview-search-icon {
-  font-size: 13px;
-  color: #6366f1;
-  cursor: pointer;
-}
-
-:deep(.editor-textarea .el-textarea__inner) {
-  padding: 6px 8px;
-  font-size: 12px;
-  border-radius: 6px;
-  border: 1px solid #cbd5e1;
-  background: #f8fafc;
-  line-height: 1.4;
-  color: #334155;
-  transition: all 0.2s;
-}
-
-:deep(.editor-textarea .el-textarea__inner:focus) {
-  border-color: #6366f1;
-  background: #ffffff;
-  box-shadow: 0 0 0 1px rgba(99, 102, 241, 0.2);
-}
-
-.editor-row {
-  display: flex;
-  gap: 10px;
-}
-
-.grid-2 {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-}
-
-.flex-1 {
-  flex: 1;
-}
-
-.editor-actions {
-  display: flex;
-  margin-top: 4px;
-}
-
-.generate-btn {
-  width: 100%;
-  height: 32px;
-  background: #6366f1;
-  border-color: #6366f1;
-  font-weight: 600;
-}
-
-.generate-btn:hover {
-  background: #4f46e5;
-  border-color: #4f46e5;
-}
-
-/* Templates layout */
-.templates-boxes {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-bottom: 4px;
-}
-
-.template-box {
-  background: #fbf7ff;
-  border: 1px solid #e9d5ff;
-  border-radius: 8px;
-  padding: 8px;
-  box-sizing: border-box;
-}
-
-.template-box-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 6px;
-}
-
-.tpl-name {
-  font-size: 11px;
-  font-weight: 700;
-  color: #7c3aed;
-}
-
-.tpl-disconnect-btn {
-  background: none;
-  border: none;
-  color: #cbd5e1;
-  cursor: pointer;
-  padding: 0;
-  font-size: 12px;
-  display: flex;
-  align-items: center;
-}
-
-.tpl-disconnect-btn:hover {
-  color: #ef4444;
-}
-
-.template-box-body {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-}
-
-.capsule-tag {
-  background: #ffffff;
-  border: 1px solid #e2e8f0;
-  padding: 1px 6px;
-  border-radius: 12px;
-  font-size: 10px;
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  max-width: 100%;
-}
-
-.capsule-tag:hover {
-  border-color: #7c3aed;
-  background: #fbf7ff;
-}
-
-.capsule-label {
-  color: #7c3aed;
-  font-weight: 600;
-}
-
-.capsule-value {
-  color: #475569;
-  text-overflow: ellipsis;
-  overflow: hidden;
-  white-space: nowrap;
-}
-
-.inline-capsule-input {
-  border: none;
-  background: #f3e8ff;
-  outline: none;
-  font-size: 10px;
-  color: #1f2937;
-  padding: 0 4px;
-  width: 60px;
-  border-radius: 4px;
-}
-
-.no-variables-hint {
-  font-size: 10px;
-  color: #94a3b8;
-  font-style: italic;
-}
-
-.editor-media-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.media-item {
-  width: 46px;
-  height: 46px;
-  position: relative;
-  cursor: pointer;
-  border-radius: 6px;
-  overflow: hidden;
-}
-
-.media-thumb {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  border: 1px solid #cbd5e1;
-  border-radius: 6px;
-}
-
-.media-hover {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: rgba(0, 0, 0, 0.4);
-  opacity: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: #ffffff;
-  transition: opacity 0.2s;
-}
-
-.media-item:hover .media-hover {
-  opacity: 1;
-}
-
-.remove-ref-btn {
-  position: absolute;
-  top: 2px;
-  right: 2px;
-  background: rgba(0, 0, 0, 0.6);
-  border: none;
-  border-radius: 50%;
-  width: 14px;
-  height: 14px;
-  color: #ffffff;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 8px;
-  cursor: pointer;
-  opacity: 0;
-  transition: opacity 0.2s;
-}
-
-.media-item:hover .remove-ref-btn {
-  opacity: 1;
-}
-
-.remove-ref-btn:hover {
-  background: rgba(239, 68, 68, 0.9);
-}
-
-.prompt-preview-box {
-  background: #f8fafc;
-  border: 1px solid #cbd5e1;
-  border-radius: 6px;
-  padding: 12px;
-  font-size: 13px;
-  color: #334155;
-  line-height: 1.5;
-  word-break: break-all;
-  max-height: 250px;
-  overflow-y: auto;
+@keyframes shiftingGradient {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
 }
 
 /* Animations */
@@ -1448,92 +909,99 @@ onBeforeUnmount(() => {
   opacity: 0;
 }
 
-/* --- Floating Tab Ears Switcher --- */
-.node-wrapper-outer {
-  perspective: 1000px; /* Enable 3D space for the card flip */
-}
-
+/* Node ears tabs */
 .node-tab-ears {
   position: absolute;
+  bottom: 12px;
   right: -32px;
-  bottom: 24px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  z-index: 10;
+  gap: 4px;
+  z-index: 99;
 }
 
 .tab-ear {
-  width: 28px;
+  width: 32px;
   height: 28px;
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.85);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-  border: 1px solid rgba(226, 232, 240, 0.8);
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.05);
+  background: #f1f5f9;
+  border: 1px solid #cbd5e1;
+  border-left: none;
+  border-radius: 0 6px 6px 0;
   display: flex;
   align-items: center;
   justify-content: center;
+  font-size: 14px;
   color: #64748b;
   cursor: pointer;
-  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: all 0.2s;
+  box-shadow: 2px 1px 3px rgba(0, 0, 0, 0.04);
 }
 
 .tab-ear:hover:not(.disabled) {
-  transform: scale(1.15) translateX(2px);
-  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);
-  color: #1e293b;
+  width: 36px;
+  color: #334155;
+  background: #e2e8f0;
 }
 
-/* Image Active Glow */
 .tab-ear.active.ear-image {
-  background: #fef08a; /* light yellow */
-  border-color: #f59e0b;
-  color: #b45309;
-  box-shadow: 0 0 8px rgba(245, 158, 11, 0.4);
+  background: #6366f1;
+  border-color: #6366f1;
+  color: #ffffff;
 }
 
-/* Video Active Glow */
 .tab-ear.active.ear-video {
-  background: #f3e8ff; /* light purple */
-  border-color: #a855f7;
-  color: #7e22ce;
-  box-shadow: 0 0 8px rgba(168, 85, 247, 0.4);
+  background: #db2777;
+  border-color: #db2777;
+  color: #ffffff;
 }
 
 .tab-ear.disabled {
-  opacity: 0.45;
+  opacity: 0.5;
   cursor: not-allowed;
-  background: rgba(241, 245, 249, 0.8);
-  border-color: #e2e8f0;
+  background: #f8fafc;
+}
+
+/* Favorite Star Overlay Button */
+.node-favorite-star {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  border: 1px solid rgba(0, 0, 0, 0.05);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  z-index: 10;
   color: #94a3b8;
+  opacity: 0;
+  transform: scale(0.8);
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  pointer-events: auto;
 }
 
-/* --- Card Flip Morphing Animation --- */
-.image-card-node {
-  transform-style: preserve-3d;
-  backface-visibility: hidden;
-  transition: box-shadow 0.3s;
+/* Hover or favorited state triggers visibility */
+.media-overlay:hover .node-favorite-star,
+.node-favorite-star.is-favorited {
+  opacity: 1;
+  transform: scale(1);
 }
 
-.image-card-node.is-morphing {
-  animation: cardFlipMorph 0.45s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+.node-favorite-star:hover {
+  transform: scale(1.1) !important;
+  color: #eab308;
+  background: #ffffff;
 }
 
-@keyframes cardFlipMorph {
-  0% {
-    transform: rotateY(0deg) scale(1);
-  }
-  40% {
-    transform: rotateY(90deg) scale(0.92);
-    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
-  }
-  60% {
-    transform: rotateY(90deg) scale(0.92);
-  }
-  100% {
-    transform: rotateY(0deg) scale(1);
-  }
+.node-favorite-star.is-favorited {
+  color: #eab308 !important;
+  background: #ffffff !important;
+  border-color: #f59e0b !important;
 }
 </style>
