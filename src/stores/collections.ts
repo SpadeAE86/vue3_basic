@@ -26,6 +26,9 @@ export const useCollectionsStore = defineStore('collections', () => {
   const items = ref<CollectionItem[]>([])
   const themeSpaces = ref<ThemeSpace[]>([])
   const loading = ref(false)
+  const taggingTasks = ref<Record<string, { status: string; error?: string }>>({})
+  const draggedItemIds = ref<string[]>([])
+  const showUnclassifiedOnly = ref(false)
 
   // 加载所有收藏记录
   async function loadCollections() {
@@ -221,10 +224,102 @@ export const useCollectionsStore = defineStore('collections', () => {
     return false
   }
 
+  // 批量移入/移出主题空间
+  async function batchMoveToSpace(itemIds: string[], spaceId: string | null) {
+    try {
+      const resp = await fetch('/api/collections/batch/space', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ item_ids: itemIds, space_id: spaceId })
+      })
+      const res = await resp.json()
+      if (res.success) {
+        await loadCollections()
+        return true
+      }
+    } catch (e) {
+      console.error('批量操作分类失败:', e)
+      ElMessage.error('批量分类归类失败')
+    }
+    return false
+  }
+
+  // 更新自定义标签
+  async function updateItemTags(itemId: string, tags: string[]) {
+    try {
+      const resp = await fetch(`/api/collections/${encodeURIComponent(itemId)}/tags`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tags })
+      })
+      const res = await resp.json()
+      if (res.success) {
+        await loadCollections()
+        return true
+      }
+    } catch (e) {
+      console.error('更新标签失败:', e)
+      ElMessage.error('标签更新失败')
+    }
+    return false
+  }
+
+  async function checkAutoTagStatus(itemId: string) {
+    try {
+      const resp = await fetch(`/api/collections/${encodeURIComponent(itemId)}/auto-tag/status`)
+      const res = await resp.json()
+      if (res.success) {
+        taggingTasks.value[itemId] = { status: res.status, error: res.error }
+        if (res.status === 'SUCCESS') {
+          await loadCollections()
+        }
+        return res.status
+      }
+    } catch (e) {
+      console.error('获取打标状态失败:', e)
+    }
+    return 'FAILED'
+  }
+
+  function pollTask(itemId: string) {
+    const interval = setInterval(async () => {
+      const status = await checkAutoTagStatus(itemId)
+      if (status === 'SUCCESS' || status === 'FAILED' || status === 'IDLE') {
+        clearInterval(interval)
+      }
+    }, 1500)
+  }
+
+  // 智能自动打标 (异步后台任务模式)
+  async function autoTagItem(itemId: string) {
+    try {
+      taggingTasks.value[itemId] = { status: 'PENDING' }
+      const resp = await fetch(`/api/collections/${encodeURIComponent(itemId)}/auto-tag`, {
+        method: 'POST'
+      })
+      const res = await resp.json()
+      if (res.success) {
+        pollTask(itemId)
+        return true
+      } else {
+        taggingTasks.value[itemId] = { status: 'FAILED', error: res.detail || '启动打标失败' }
+        ElMessage.error(res.detail || '启动打标失败')
+      }
+    } catch (e) {
+      console.error('自动打标失败:', e)
+      taggingTasks.value[itemId] = { status: 'FAILED', error: '自动打标请求失败' }
+      ElMessage.error('自动打标请求失败')
+    }
+    return false
+  }
+
   return {
     items,
     themeSpaces,
     loading,
+    taggingTasks,
+    draggedItemIds,
+    showUnclassifiedOnly,
     init,
     loadCollections,
     loadThemeSpaces,
@@ -233,6 +328,9 @@ export const useCollectionsStore = defineStore('collections', () => {
     createThemeSpace,
     updateThemeSpace,
     deleteThemeSpace,
-    moveToSpace
+    moveToSpace,
+    batchMoveToSpace,
+    updateItemTags,
+    autoTagItem
   }
 })

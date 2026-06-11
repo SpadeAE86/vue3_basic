@@ -1,123 +1,349 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, nextTick } from 'vue'
-import { useCollectionsStore, type CollectionItem, type ThemeSpace } from '@/stores/collections'
-import { ElMessage, ElMessageBox } from 'element-plus'
-import { copyToClipboard } from '@/utils/browser'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { useCollectionsStore, type CollectionItem } from '@/stores/collections'
 import MediaPreviewDialog from '@/components/image/MediaPreviewDialog.vue'
+import SidebarSpaces from '@/components/collections/SidebarSpaces.vue'
+import MediaCard from '@/components/collections/MediaCard.vue'
+import TemplateCard from '@/components/collections/TemplateCard.vue'
 
 const collectionsStore = useCollectionsStore()
 
 // 选中的大分类: 'media' | 'template'
 const activeCategory = ref<'media' | 'template'>('media')
 
-// 选中的空间ID (null/undefined 代表 "全部")
+// 选中的空间ID (null 代表 "全部")
 const selectedSpaceId = ref<string | null>(null)
 
-// ─── 大图预览 ───
+// ─── 选中高亮与多选 ───
+const selectedItemIds = ref<string[]>([])
+const lastSelectedIndex = ref<number | null>(null)
+
+function handleHeaderClick(item: CollectionItem, event: MouseEvent) {
+  const visibleItems = filteredItems.value
+  const index = visibleItems.findIndex(i => i.id === item.id)
+  if (index === -1) return
+
+  if (event.shiftKey && lastSelectedIndex.value !== null) {
+    const start = Math.min(lastSelectedIndex.value, index)
+    const end = Math.max(lastSelectedIndex.value, index)
+    for (let i = start; i <= end; i++) {
+      const it = visibleItems[i]
+      if (it && !selectedItemIds.value.includes(it.id)) {
+        selectedItemIds.value.push(it.id)
+      }
+    }
+  } else {
+    const idx = selectedItemIds.value.indexOf(item.id)
+    if (idx > -1) {
+      selectedItemIds.value.splice(idx, 1)
+    } else {
+      selectedItemIds.value.push(item.id)
+    }
+    lastSelectedIndex.value = index
+  }
+}
+
+watch([activeCategory, selectedSpaceId], () => {
+  selectedItemIds.value = []
+  lastSelectedIndex.value = null
+})
+
+// ─── 拖拽分类状态 ───
+const isDragging = ref(false)
+
+function setCustomDragImage(event: DragEvent, count: number, itemCoverUrl?: string) {
+  if (!event.dataTransfer) return
+  
+  const container = document.createElement('div')
+  container.style.position = 'absolute'
+  container.style.top = '-1000px'
+  container.style.left = '-1000px'
+  container.style.width = '80px'
+  container.style.height = '80px'
+  container.style.borderRadius = '12px'
+  container.style.background = 'rgba(30, 30, 38, 0.65)'
+  container.style.backdropFilter = 'blur(8px)'
+  container.style.setProperty('-webkit-backdrop-filter', 'blur(8px)')
+  container.style.border = '1px solid rgba(255, 255, 255, 0.2)'
+  container.style.boxShadow = '0 8px 16px rgba(0, 0, 0, 0.25)'
+  container.style.display = 'flex'
+  container.style.alignItems = 'center'
+  container.style.justifyContent = 'center'
+  container.style.overflow = 'hidden'
+  container.style.zIndex = '-9999'
+
+  if (itemCoverUrl) {
+    const img = document.createElement('img')
+    img.src = itemCoverUrl
+    img.style.width = '100%'
+    img.style.height = '100%'
+    img.style.objectFit = 'contain'
+    container.appendChild(img)
+  } else {
+    const text = document.createElement('span')
+    text.innerText = '📁'
+    text.style.fontSize = '24px'
+    container.appendChild(text)
+  }
+
+  const badge = document.createElement('div')
+  badge.innerText = String(count)
+  badge.style.position = 'absolute'
+  badge.style.top = '4px'
+  badge.style.right = '4px'
+  badge.style.background = '#ff4d4f'
+  badge.style.color = '#ffffff'
+  badge.style.fontSize = '11px'
+  badge.style.fontWeight = 'bold'
+  badge.style.minWidth = '18px'
+  badge.style.height = '18px'
+  badge.style.borderRadius = '9px'
+  badge.style.display = 'flex'
+  badge.style.alignItems = 'center'
+  badge.style.justifyContent = 'center'
+  badge.style.padding = '0 4px'
+  badge.style.boxSizing = 'border-box'
+  badge.style.boxShadow = '0 2px 4px rgba(0,0,0,0.2)'
+  container.appendChild(badge)
+
+  document.body.appendChild(container)
+  event.dataTransfer.setDragImage(container, 40, 40)
+  
+  setTimeout(() => {
+    document.body.removeChild(container)
+  }, 0)
+}
+
+function handleDragStart(item: CollectionItem, event: DragEvent) {
+  isDragging.value = true
+  if (!selectedItemIds.value.includes(item.id)) {
+    selectedItemIds.value = [item.id]
+  }
+  collectionsStore.draggedItemIds = selectedItemIds.value
+  const coverUrl = item.cover_url || item.data.url || item.data.image_url
+  setCustomDragImage(event, selectedItemIds.value.length, coverUrl)
+
+  if (event.dataTransfer) {
+    event.dataTransfer.setData('text/plain', JSON.stringify(selectedItemIds.value))
+    event.dataTransfer.effectAllowed = 'move'
+  }
+}
+
+function handleDragEnd() {
+  isDragging.value = false
+  setTimeout(() => {
+    collectionsStore.draggedItemIds = []
+  }, 200)
+}
+
+function clearSelectionIfBlank(event: MouseEvent) {
+  const target = event.target as HTMLElement
+  if (
+    !target.closest('.result-card') &&
+    !target.closest('.spaces-sidebar') &&
+    !target.closest('.category-tabs') &&
+    !target.closest('.el-dialog') &&
+    !target.closest('.el-dropdown') &&
+    !target.closest('.el-popper') &&
+    !target.closest('.el-overlay') &&
+    !target.closest('.el-message') &&
+    !target.closest('.el-message-box') &&
+    !target.closest('.floating-search-panel')
+  ) {
+    selectedItemIds.value = []
+    lastSelectedIndex.value = null
+  }
+}
+
+// ─── 悬浮搜索框拖拽与过滤状态 ───
+const searchQuery = ref('')
+const searchDragPosition = ref({ left: 0, top: 0, dragged: false })
+const isDraggingSearch = ref(false)
+const searchDragStartPos = { x: 0, y: 0 }
+const searchDragStartOffset = { left: 0, top: 0 }
+
+function startDragSearch(e: MouseEvent) {
+  const target = e.target as HTMLElement
+  if (
+    target.tagName === 'INPUT' ||
+    target.closest('input') ||
+    target.tagName === 'BUTTON' ||
+    target.closest('button') ||
+    target.classList.contains('el-input__clear') ||
+    target.closest('.el-input__clear')
+  ) {
+    return
+  }
+  e.preventDefault()
+  isDraggingSearch.value = true
+  const el = document.querySelector('.floating-search-panel') as HTMLElement
+  if (el) {
+    const rect = el.getBoundingClientRect()
+    searchDragPosition.value.left = rect.left
+    searchDragPosition.value.top = rect.top
+    searchDragPosition.value.dragged = true
+
+    searchDragStartPos.x = e.clientX
+    searchDragStartPos.y = e.clientY
+    searchDragStartOffset.left = rect.left
+    searchDragStartOffset.top = rect.top
+
+    window.addEventListener('mousemove', onDragSearch)
+    window.addEventListener('mouseup', stopDragSearch)
+  }
+}
+
+function onDragSearch(e: MouseEvent) {
+  if (!isDraggingSearch.value) return
+  const dx = e.clientX - searchDragStartPos.x
+  const dy = e.clientY - searchDragStartPos.y
+  searchDragPosition.value.left = searchDragStartOffset.left + dx
+  searchDragPosition.value.top = searchDragStartOffset.top + dy
+}
+
+function stopDragSearch() {
+  isDraggingSearch.value = false
+  window.removeEventListener('mousemove', onDragSearch)
+  window.removeEventListener('mouseup', stopDragSearch)
+}
+
+function startTouchDragSearch(e: TouchEvent) {
+  if (e.touches.length !== 1) return
+  const touch = e.touches[0]
+  if (!touch) return
+  const target = e.target as HTMLElement
+  if (
+    target.tagName === 'INPUT' ||
+    target.closest('input') ||
+    target.tagName === 'BUTTON' ||
+    target.closest('button') ||
+    target.classList.contains('el-input__clear') ||
+    target.closest('.el-input__clear')
+  ) {
+    return
+  }
+  isDraggingSearch.value = true
+  const el = document.querySelector('.floating-search-panel') as HTMLElement
+  if (el) {
+    const rect = el.getBoundingClientRect()
+    searchDragPosition.value.left = rect.left
+    searchDragPosition.value.top = rect.top
+    searchDragPosition.value.dragged = true
+
+    searchDragStartPos.x = touch.clientX
+    searchDragStartPos.y = touch.clientY
+    searchDragStartOffset.left = rect.left
+    searchDragStartOffset.top = rect.top
+
+    window.addEventListener('touchmove', onTouchDragSearch, { passive: false })
+    window.addEventListener('touchend', stopTouchDragSearch)
+  }
+}
+
+function onTouchDragSearch(e: TouchEvent) {
+  if (!isDraggingSearch.value) return
+  if (e.touches.length !== 1) return
+  const touch = e.touches[0]
+  if (!touch) return
+  const dx = touch.clientX - searchDragStartPos.x
+  const dy = touch.clientY - searchDragStartPos.y
+  searchDragPosition.value.left = searchDragStartOffset.left + dx
+  searchDragPosition.value.top = searchDragStartOffset.top + dy
+}
+
+function stopTouchDragSearch() {
+  isDraggingSearch.value = false
+  window.removeEventListener('touchmove', onTouchDragSearch)
+  window.removeEventListener('touchend', stopTouchDragSearch)
+}
+
+const searchBoxStyle = computed(() => {
+  if (searchDragPosition.value.dragged) {
+    return {
+      left: `${searchDragPosition.value.left}px`,
+      top: `${searchDragPosition.value.top}px`,
+      right: 'auto',
+      transform: 'none'
+    }
+  }
+  return {
+    top: '120px',
+    right: '40px',
+    position: 'fixed' as const
+  }
+})
+
+// ─── 大图/视频 弹窗预览 ───
 const previewVisible = ref(false)
 const previewUrl = ref('')
 const previewMediaType = ref('video')
 const previewPrompt = ref('')
-const viewerPromptVisible = ref(true)
+const previewTags = ref<string[]>([])
+const previewSpaceName = ref('')
+const previewItem = ref<CollectionItem | null>(null)
 
 function openPreview(item: CollectionItem) {
+  previewItem.value = item
   const url = item.data.url || item.data.image_url || ''
   const isVid = url.toLowerCase().endsWith('.mp4') || url.toLowerCase().endsWith('.webm')
-  if (!isVid) return
   previewUrl.value = url
   previewMediaType.value = item.data.media_type || (isVid ? 'video' : 'image')
   previewPrompt.value = item.data.prompt || ''
+  previewTags.value = item.tags || []
+  previewSpaceName.value = getSpaceName(item.space_id)
   previewVisible.value = true
 }
 
-function onImagePreviewShow() {
-  viewerPromptVisible.value = true
-}
-
-// ─── 新建/编辑主题空间 Dialog ───
-const spaceDialogVisible = ref(false)
-const spaceDialogMode = ref<'create' | 'edit'>('create')
-const editingSpaceId = ref<string | null>(null)
-const spaceForm = ref({
-  name: '',
-  description: '',
-  space_tags_input: ''   // will be turned into tag pills
-})
-
-// Tag pill management for space_tags
-const spaceTags = ref<string[]>([])
-const spaceTagInput = ref('')
-const spaceTagInputRef = ref<HTMLInputElement | null>(null)
-
-function addSpaceTag() {
-  const raw = spaceTagInput.value.trim()
-  if (!raw) return
-  const parts = raw.split(/[,，;；\s]+/).map(s => s.trim()).filter(Boolean)
-  for (const p of parts) {
-    if (!spaceTags.value.includes(p)) spaceTags.value.push(p)
+async function handleUpdateTags(tags: string[]) {
+  if (!previewItem.value) return
+  const success = await collectionsStore.updateItemTags(previewItem.value.id, tags)
+  if (success) {
+    previewTags.value = tags
+    previewItem.value.tags = tags
   }
-  spaceTagInput.value = ''
-}
-
-function removeSpaceTag(tag: string) {
-  spaceTags.value = spaceTags.value.filter(t => t !== tag)
-}
-
-function onSpaceTagKeydown(e: KeyboardEvent) {
-  if (e.key === 'Enter') {
-    e.preventDefault()
-    addSpaceTag()
-  } else if (e.key === 'Backspace' && !spaceTagInput.value && spaceTags.value.length > 0) {
-    spaceTags.value.pop()
-  }
-}
-
-function openCreateSpaceDialog() {
-  spaceDialogMode.value = 'create'
-  editingSpaceId.value = null
-  spaceForm.value = { name: '', description: '', space_tags_input: '' }
-  spaceTags.value = []
-  spaceDialogVisible.value = true
-  nextTick(() => spaceTagInputRef.value?.focus())
-}
-
-function openEditSpaceDialog(space: ThemeSpace) {
-  spaceDialogMode.value = 'edit'
-  editingSpaceId.value = space.id
-  spaceForm.value = { name: space.name, description: space.description || '', space_tags_input: '' }
-  spaceTags.value = [...(space.space_tags || [])]
-  spaceDialogVisible.value = true
-  nextTick(() => spaceTagInputRef.value?.focus())
 }
 
 onMounted(() => {
   collectionsStore.init()
+  document.addEventListener('click', clearSelectionIfBlank)
 })
 
-// 根据当前分类筛选主题空间
-const filteredSpaces = computed(() => {
-  return collectionsStore.themeSpaces.filter(s => {
-    if (activeCategory.value === 'media') {
-      return s.category === 'media'
-    } else {
-      return s.category === 'template' || s.category === 'prompt'
-    }
-  })
+onUnmounted(() => {
+  document.removeEventListener('click', clearSelectionIfBlank)
 })
 
 // 根据当前分类和选中的空间筛选收藏项
 const filteredItems = computed(() => {
-  return collectionsStore.items.filter(item => {
+  let filtered = collectionsStore.items.filter(item => {
     if (activeCategory.value === 'media') {
       if (item.item_type !== 'media') return false
     } else {
       if (item.item_type !== 'template' && item.item_type !== 'prompt') return false
     }
-    if (selectedSpaceId.value !== null) {
+    
+    // 如果选中的是全部，支持过滤未分类
+    if (selectedSpaceId.value === null) {
+      if (collectionsStore.showUnclassifiedOnly) {
+        return !item.space_id
+      }
+      return true
+    } else {
       return item.space_id === selectedSpaceId.value
     }
-    return true
   })
+
+  // 按搜索框搜索 tag/title/prompt
+  if (searchQuery.value.trim()) {
+    const q = searchQuery.value.trim().toLowerCase()
+    filtered = filtered.filter(item => {
+      const matchesTag = (item.tags || []).some(t => t.toLowerCase().includes(q))
+      const matchesTitle = (item.title || '').toLowerCase().includes(q)
+      const matchesPrompt = (item.data?.prompt || '').toLowerCase().includes(q)
+      return matchesTag || matchesTitle || matchesPrompt
+    })
+  }
+
+  return filtered
 })
 
 // 归属的主题空间名称映射
@@ -131,112 +357,6 @@ function getSpaceName(spaceId?: string) {
 function handleCategoryChange(category: 'media' | 'template') {
   activeCategory.value = category
   selectedSpaceId.value = null
-}
-
-async function handleCopyToCanvas(item: CollectionItem) {
-  const isTemplate = item.item_type === 'template' || !!(item.data.template_text || '').match(/\{([^:]+):\s*([^}]+)\}/g)
-  const payload = {
-    type: 'jottings-canvas-node',
-    node_type: isTemplate ? 'prompt_template' : 'image_card',
-    name: item.title || '收藏的提示词',
-    template_text: item.data.template_text || item.data.prompt || ''
-  }
-  const success = await copyToClipboard(JSON.stringify(payload))
-  if (success) {
-    ElMessage.success('已复制卡片数据，可在画布页面按 Ctrl+V 粘贴为节点')
-  } else {
-    ElMessage.error('复制失败')
-  }
-}
-
-// 新建主题空间
-async function handleCreateSpace() {
-  if (!spaceForm.value.name.trim()) {
-    ElMessage.warning('请输入主题空间名称')
-    return
-  }
-  // Flush any pending text in tag input
-  if (spaceTagInput.value.trim()) addSpaceTag()
-
-  const success = await collectionsStore.createThemeSpace(
-    spaceForm.value.name.trim(),
-    activeCategory.value,
-    spaceForm.value.description.trim() || undefined,
-    spaceTags.value
-  )
-
-  if (success) {
-    spaceDialogVisible.value = false
-    spaceForm.value = { name: '', description: '', space_tags_input: '' }
-    spaceTags.value = []
-  }
-}
-
-// 更新主题空间
-async function handleUpdateSpace() {
-  if (!editingSpaceId.value) return
-  if (!spaceForm.value.name.trim()) {
-    ElMessage.warning('请输入主题空间名称')
-    return
-  }
-  if (spaceTagInput.value.trim()) addSpaceTag()
-
-  const success = await collectionsStore.updateThemeSpace(
-    editingSpaceId.value,
-    spaceForm.value.name.trim(),
-    spaceForm.value.description.trim() || undefined,
-    spaceTags.value
-  )
-
-  if (success) {
-    spaceDialogVisible.value = false
-    editingSpaceId.value = null
-  }
-}
-
-// 删除主题空间
-async function handleDeleteSpace(space: ThemeSpace) {
-  try {
-    await ElMessageBox.confirm(`确定要删除空间 "${space.name}" 吗？其下的收藏项不会被删除，仅解绑分类。`, '提示', {
-      confirmButtonText: '确定',
-      cancelButtonText: '取消',
-      type: 'warning'
-    })
-    const success = await collectionsStore.deleteThemeSpace(space.id)
-    if (success && selectedSpaceId.value === space.id) {
-      selectedSpaceId.value = null
-    }
-  } catch {
-    // cancelled
-  }
-}
-
-// 取消收藏单个项目
-async function handleUnfavorite(item: CollectionItem) {
-  const payload = item.item_type === 'media' ? { url: item.data.url } : item.item_type === 'template' ? { template_text: item.data.template_text } : { prompt: item.data.prompt }
-  await collectionsStore.toggleFavorite(item.item_type, item.title, undefined, payload)
-}
-
-// 修改收藏项的分类空间
-async function handleMoveSpace(item: CollectionItem, spaceId: string | null) {
-  await collectionsStore.moveToSpace(item.id, spaceId)
-}
-
-// 复制提示词
-async function handleCopyPrompt(prompt: string) {
-  const success = await copyToClipboard(prompt)
-  if (success) ElMessage.success('提示词已复制到剪贴板')
-}
-
-// 格式化日期
-function formatDate(dateStr: string) {
-  const date = new Date(dateStr)
-  return date.toLocaleDateString('zh-CN', {
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit'
-  })
 }
 </script>
 
@@ -271,60 +391,12 @@ function formatDate(dateStr: string) {
 
     <div class="collections-content">
       <!-- 左边栏：主题空间 -->
-      <aside class="spaces-sidebar">
-        <div class="sidebar-header">
-          <span class="sidebar-title">📁 主题分类空间</span>
-          <el-button 
-            type="primary" 
-            link
-            size="small"
-            @click="openCreateSpaceDialog"
-            title="新建主题分类空间"
-          >
-            <el-icon><i-ep-plus /></el-icon> 新建
-          </el-button>
-        </div>
-
-        <ul class="spaces-list">
-          <li 
-            class="space-item" 
-            :class="{ active: selectedSpaceId === null }"
-            @click="selectedSpaceId = null"
-          >
-            <el-icon class="folder-icon"><i-ep-folder-opened /></el-icon>
-            <span class="space-name">全部收藏</span>
-            <span class="item-count">{{ collectionsStore.items.filter(i => i.item_type === activeCategory).length }}</span>
-          </li>
-          
-          <li 
-            v-for="space in filteredSpaces" 
-            :key="space.id"
-            class="space-item"
-            :class="{ active: selectedSpaceId === space.id }"
-            @click="selectedSpaceId = space.id"
-          >
-            <el-icon class="folder-icon"><i-ep-folder /></el-icon>
-            <span class="space-name" :title="space.name">{{ space.name }}</span>
-            
-            <div class="space-actions" @click.stop>
-              <el-tooltip content="编辑空间" placement="top">
-                <button class="space-action-btn" @click="openEditSpaceDialog(space)">
-                  <el-icon><i-ep-setting /></el-icon>
-                </button>
-              </el-tooltip>
-              <el-tooltip content="删除空间" placement="top">
-                <button class="space-action-btn danger" @click="handleDeleteSpace(space)">
-                  <el-icon><i-ep-delete /></el-icon>
-                </button>
-              </el-tooltip>
-            </div>
-          </li>
-
-          <li v-if="filteredSpaces.length === 0" class="sidebar-empty">
-            无自定义空间
-          </li>
-        </ul>
-      </aside>
+      <SidebarSpaces
+        v-model:selectedSpaceId="selectedSpaceId"
+        :active-category="activeCategory"
+        :selected-item-ids="selectedItemIds"
+        @clear-selection="selectedItemIds = []; lastSelectedIndex = null;"
+      />
 
       <!-- 主区域：瀑布流与卡片网格 -->
       <main class="main-gallery">
@@ -345,135 +417,16 @@ function formatDate(dateStr: string) {
               v-for="item in filteredItems" 
               :key="item.id" 
               class="masonry-item"
+              draggable="true"
+              @dragstart="handleDragStart(item, $event)"
+              @dragend="handleDragEnd"
             >
-              <div class="result-card">
-                <div class="result-header">
-                  <el-tag size="small" type="info">{{ item.data.model || '生成模型' }}</el-tag>
-                  <el-tag size="small" :type="item.data.media_type === 'video' ? 'danger' : 'primary'">
-                    {{ item.data.media_type === 'video' ? '视频' : '图片' }}
-                  </el-tag>
-                </div>
-
-                <div class="image-wrapper" @click="openPreview(item)">
-                  <video 
-                    v-if="item.data.url?.toLowerCase().endsWith('.mp4') || item.data.url?.toLowerCase().endsWith('.webm')" 
-                    :src="item.data.url" 
-                    class="generated-image"
-                    autoplay
-                    loop
-                    muted
-                    playsinline
-                  />
-                  <el-image
-                    v-else
-                    :src="item.data.url || item.data.image_url"
-                    fit="contain"
-                    class="generated-image-el"
-                    :preview-src-list="item.data.url || item.data.image_url ? [item.data.url || item.data.image_url] : []"
-                    preview-teleported
-                    @show="onImagePreviewShow"
-                  >
-                    <template #viewer>
-                      <div
-                        class="result-preview-prompt-dock"
-                        @mousedown.stop
-                        @touchstart.stop
-                      >
-                        <div v-show="viewerPromptVisible" class="result-preview-prompt-inner">
-                          <div class="result-preview-prompt-head">
-                            <span class="result-preview-label">提示词</span>
-                            <el-button
-                              type="info"
-                              link
-                              size="small"
-                              class="result-preview-toggle-link"
-                              @click.stop="viewerPromptVisible = false"
-                            >
-                              隐藏
-                            </el-button>
-                          </div>
-                          <p class="result-preview-text">{{ item.data.prompt?.trim() ? item.data.prompt : '—' }}</p>
-                          <div class="result-preview-actions">
-                            <el-button type="primary" link size="small" @click.stop="handleCopyPrompt(item.data.prompt || '')">
-                              复制全文
-                            </el-button>
-                          </div>
-                        </div>
-                        <el-button
-                          v-show="!viewerPromptVisible"
-                          type="primary"
-                          round
-                          size="small"
-                          class="result-preview-restore-btn"
-                          @click.stop="viewerPromptVisible = true"
-                        >
-                          显示提示词
-                        </el-button>
-                      </div>
-                    </template>
-                  </el-image>
-
-                  <!-- Star Button in top right corner -->
-                  <div 
-                    class="result-favorite-star is-favorited" 
-                    @click.stop="handleUnfavorite(item)"
-                    title="取消收藏"
-                  >
-                    <el-icon><i-ep-star-filled /></el-icon>
-                  </div>
-
-                  <!-- Hover Overlay -->
-                  <div class="result-overlay" @click.stop>
-                    <div class="overlay-top">
-                      <span v-if="item.space_id" class="space-badge">{{ getSpaceName(item.space_id) }}</span>
-                    </div>
-                    <div class="overlay-bottom">
-                      <div class="media-prompt-overlay" :title="item.data.prompt">
-                        {{ item.data.prompt || '(无提示词)' }}
-                      </div>
-                      <div class="overlay-bottom-row">
-                        <div class="time-info">{{ formatDate(item.created_at) }}</div>
-                        <div class="action-icons">
-                          <!-- Classify dropdown -->
-                          <el-dropdown trigger="click" size="small" @command="(id: string | null) => handleMoveSpace(item, id)">
-                            <div class="icon-btn" title="分类归属">
-                              <el-icon><i-ep-folder /></el-icon>
-                            </div>
-                            <template #dropdown>
-                              <el-dropdown-menu>
-                                <el-dropdown-item :command="null">未分类</el-dropdown-item>
-                                <el-dropdown-item 
-                                  v-for="s in collectionsStore.themeSpaces.filter(sp => sp.category === 'media')" 
-                                  :key="s.id" 
-                                  :command="s.id"
-                                >
-                                  {{ s.name }}
-                                </el-dropdown-item>
-                              </el-dropdown-menu>
-                            </template>
-                          </el-dropdown>
-
-                          <el-tooltip content="复制到画布" placement="top">
-                            <div class="icon-btn" @click="handleCopyToCanvas(item)">
-                              <el-icon><i-ep-copy-document /></el-icon>
-                            </div>
-                          </el-tooltip>
-                          <el-tooltip content="复制提示词" placement="top">
-                            <div class="icon-btn" @click="handleCopyPrompt(item.data.prompt)">
-                              <el-icon><i-ep-document-copy /></el-icon>
-                            </div>
-                          </el-tooltip>
-                          <el-tooltip content="取消收藏" placement="top">
-                            <div class="icon-btn danger" @click="handleUnfavorite(item)">
-                              <el-icon><i-ep-delete /></el-icon>
-                            </div>
-                          </el-tooltip>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
+              <MediaCard
+                :item="item"
+                :is-selected="selectedItemIds.includes(item.id)"
+                @click-header="handleHeaderClick(item, $event)"
+                @click-preview="openPreview"
+              />
             </div>
           </div>
 
@@ -483,76 +436,15 @@ function formatDate(dateStr: string) {
               v-for="item in filteredItems" 
               :key="item.id" 
               class="template-card-container"
+              draggable="true"
+              @dragstart="handleDragStart(item, $event)"
+              @dragend="handleDragEnd"
             >
-              <div class="result-card">
-                <div class="result-header">
-                  <el-tag size="small" type="info">{{ item.item_type === 'template' ? '插槽模板' : '纯提示词' }}</el-tag>
-                  <span class="tpl-header-title" :title="item.title">{{ item.title }}</span>
-                </div>
-
-                <div class="image-wrapper template-text-content-wrapper">
-                  <div class="template-text-display">
-                    {{ item.data.template_text || item.data.prompt }}
-                  </div>
-
-                  <!-- Star Button in top right corner -->
-                  <div 
-                    class="result-favorite-star is-favorited" 
-                    @click.stop="handleUnfavorite(item)"
-                    title="取消收藏"
-                  >
-                    <el-icon><i-ep-star-filled /></el-icon>
-                  </div>
-
-                  <!-- Hover Overlay -->
-                  <div class="result-overlay" @click.stop>
-                    <div class="overlay-top">
-                      <span v-if="item.space_id" class="space-badge">{{ getSpaceName(item.space_id) }}</span>
-                    </div>
-                    <div class="overlay-bottom">
-                      <div class="overlay-bottom-row">
-                        <div class="time-info">{{ formatDate(item.created_at) }}</div>
-                        <div class="action-icons">
-                          <!-- Classify dropdown -->
-                          <el-dropdown trigger="click" size="small" @command="(id: string | null) => handleMoveSpace(item, id)">
-                            <div class="icon-btn" title="分类归属">
-                              <el-icon><i-ep-folder /></el-icon>
-                            </div>
-                            <template #dropdown>
-                              <el-dropdown-menu>
-                                <el-dropdown-item :command="null">未分类</el-dropdown-item>
-                                <el-dropdown-item 
-                                  v-for="s in collectionsStore.themeSpaces.filter(sp => sp.category === 'template' || sp.category === 'prompt')" 
-                                  :key="s.id" 
-                                  :command="s.id"
-                                >
-                                  {{ s.name }}
-                                </el-dropdown-item>
-                              </el-dropdown-menu>
-                            </template>
-                          </el-dropdown>
-
-                          <el-tooltip content="复制到画布" placement="top">
-                            <div class="icon-btn" @click="handleCopyToCanvas(item)">
-                              <el-icon><i-ep-copy-document /></el-icon>
-                            </div>
-                          </el-tooltip>
-                          <el-tooltip content="复制提示词文本" placement="top">
-                            <div class="icon-btn" @click="handleCopyPrompt(item.data.template_text || item.data.prompt)">
-                              <el-icon><i-ep-document-copy /></el-icon>
-                            </div>
-                          </el-tooltip>
-                          <el-tooltip content="取消收藏" placement="top">
-                            <div class="icon-btn danger" @click="handleUnfavorite(item)">
-                              <el-icon><i-ep-delete /></el-icon>
-                            </div>
-                          </el-tooltip>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
+              <TemplateCard
+                :item="item"
+                :is-selected="selectedItemIds.includes(item.id)"
+                @click-header="handleHeaderClick(item, $event)"
+              />
             </div>
           </div>
         </div>
@@ -564,61 +456,36 @@ function formatDate(dateStr: string) {
       :url="previewUrl"
       :media-type="previewMediaType"
       :prompt="previewPrompt"
+      :tags="previewTags"
+      :space-name="previewSpaceName"
+      @update-tags="handleUpdateTags"
     />
 
-    <!-- ─── 新建/编辑主题分类空间 Dialog ─── -->
-    <el-dialog
-      v-model="spaceDialogVisible"
-      :title="spaceDialogMode === 'create' ? '新建主题分类空间' : '编辑主题分类空间'"
-      width="480px"
-      append-to-body
+    <!-- Floating Draggable Search Panel -->
+    <div
+      class="floating-search-panel"
+      :class="{ 'is-dragging': isDraggingSearch }"
+      :style="searchBoxStyle"
+      @mousedown="startDragSearch"
+      @touchstart="startTouchDragSearch"
     >
-      <el-form :model="spaceForm" label-position="top">
-        <el-form-item label="空间名称" required>
-          <el-input v-model="spaceForm.name" placeholder="请输入空间名称，如：娘化厂商、赛博朋克等" />
-        </el-form-item>
-        <el-form-item label="空间描述">
-          <el-input 
-            v-model="spaceForm.description" 
-            type="textarea" 
-            :rows="2" 
-            placeholder="描述此主题空间的具体收纳内容"
-          />
-        </el-form-item>
-        <el-form-item label="专属候选标准标签">
-          <!-- Tag pill input -->
-          <div class="tag-pill-input-box" @click="spaceTagInputRef?.focus()">
-            <span
-              v-for="tag in spaceTags"
-              :key="tag"
-              class="tag-pill"
-            >
-              {{ tag }}
-              <button class="tag-pill-remove" @click.stop="removeSpaceTag(tag)">×</button>
-            </span>
-            <input
-              ref="spaceTagInputRef"
-              v-model="spaceTagInput"
-              class="tag-pill-input"
-              placeholder="输入标签后按 Enter 或逗号确认"
-              @keydown="onSpaceTagKeydown"
-              @blur="addSpaceTag"
-            />
-          </div>
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <span class="dialog-footer">
-          <el-button @click="spaceDialogVisible = false">取消</el-button>
-          <el-button 
-            type="primary" 
-            @click="spaceDialogMode === 'create' ? handleCreateSpace() : handleUpdateSpace()"
-          >
-            {{ spaceDialogMode === 'create' ? '确认创建' : '保存修改' }}
-          </el-button>
-        </span>
-      </template>
-    </el-dialog>
+      <div class="search-panel-header">
+        <span class="search-title">🔍 搜索过滤</span>
+        <span class="drag-handle-dots">⋮⋮</span>
+      </div>
+      <div class="search-input-wrapper">
+        <el-input
+          v-model="searchQuery"
+          placeholder="搜索标签、标题或提示词..."
+          clearable
+          size="small"
+        >
+          <template #prefix>
+            <el-icon><i-ep-search /></el-icon>
+          </template>
+        </el-input>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -696,143 +563,6 @@ function formatDate(dateStr: string) {
   align-items: start;
 }
 
-/* Sidebar Spaces styling */
-.spaces-sidebar {
-  background: #ffffff;
-  border-radius: 12px;
-  border: 1px solid #e2e8f0;
-  padding: 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.02);
-}
-
-.sidebar-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.sidebar-title {
-  font-size: 12px;
-  font-weight: 700;
-  color: #475569;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-
-.spaces-list {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.space-item {
-  display: flex;
-  align-items: center;
-  padding: 8px 12px;
-  border-radius: 8px;
-  cursor: pointer;
-  transition: all 0.2s;
-  font-size: 13px;
-  color: #475569;
-  font-weight: 500;
-  position: relative;
-  gap: 8px;
-  overflow: hidden;
-}
-
-.space-item:hover {
-  background-color: #f8fafc;
-  color: #0f172a;
-}
-
-.space-item.active {
-  background-color: #eef2ff;
-  color: #6366f1;
-  font-weight: 600;
-}
-
-.folder-icon {
-  font-size: 16px;
-  color: #a78bfa;
-  flex-shrink: 0;
-}
-
-.space-item.active .folder-icon {
-  color: #6366f1;
-}
-
-.space-name {
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.item-count {
-  font-size: 11px;
-  background-color: #f1f5f9;
-  color: #64748b;
-  padding: 1px 6px;
-  border-radius: 10px;
-}
-
-.space-item.active .item-count {
-  background-color: #6366f1;
-  color: #ffffff;
-}
-
-/* Space action buttons (gear + delete) - hidden until hover */
-.space-actions {
-  display: none;
-  align-items: center;
-  gap: 2px;
-  flex-shrink: 0;
-}
-
-.space-item:hover .space-actions {
-  display: flex;
-}
-
-.space-action-btn {
-  width: 22px;
-  height: 22px;
-  border: none;
-  background: none;
-  border-radius: 4px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  color: #94a3b8;
-  font-size: 13px;
-  transition: all 0.2s;
-  padding: 0;
-}
-
-.space-action-btn:hover {
-  background: rgba(99, 102, 241, 0.1);
-  color: #6366f1;
-}
-
-.space-action-btn.danger:hover {
-  background: rgba(239, 68, 68, 0.1);
-  color: #ef4444;
-}
-
-.sidebar-empty {
-  font-size: 11px;
-  color: #94a3b8;
-  text-align: center;
-  padding: 20px 0;
-  font-style: italic;
-}
-
 /* Main gallery layout */
 .main-gallery {
   min-height: 400px;
@@ -876,255 +606,6 @@ function formatDate(dateStr: string) {
   margin-bottom: 16px;
 }
 
-.result-card {
-  border: 1px solid #ebeef5;
-  border-radius: 12px;
-  overflow: hidden;
-  background: #fff;
-  box-shadow: 0 2px 12px 0 rgba(0, 0, 0, 0.05);
-  transition: transform 0.3s cubic-bezier(0.25, 0.8, 0.25, 1), box-shadow 0.3s ease;
-  width: 100%;
-  position: relative;
-  display: flex;
-  flex-direction: column;
-}
-
-.result-card:hover {
-  transform: scale(1.02);
-  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.12);
-  z-index: 10;
-}
-
-.result-header {
-  padding: 10px 14px;
-  background: #fff;
-  border-bottom: 1px solid #ebeef5;
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  justify-content: flex-start;
-}
-
-.tpl-header-title {
-  font-size: 12px;
-  font-weight: 700;
-  color: #475569;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  flex: 1;
-}
-
-.image-wrapper {
-  width: 100%;
-  position: relative;
-  padding: 0;
-  background: #fafafa;
-  min-height: 120px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  overflow: hidden;
-}
-
-.generated-image {
-  width: 100%;
-  height: auto;
-  display: block;
-  border-radius: 0 0 12px 12px;
-}
-
-/* 与提示词对比页一致：图片使用 el-image 的 viewer 预览 */
-.generated-image-el {
-  width: 100%;
-  display: block;
-  border-radius: 0 0 12px 12px;
-}
-
-.generated-image-el :deep(.el-image__wrapper) {
-  width: 100% !important;
-}
-
-.generated-image-el :deep(.el-image__inner) {
-  position: relative;
-  width: 100% !important;
-  height: auto !important;
-  vertical-align: top;
-  border-radius: 0 0 12px 12px;
-}
-
-/* Template text display content styling */
-.template-text-content-wrapper {
-  background: #faf5ff;
-  min-height: 160px;
-  max-height: 240px;
-  padding: 20px;
-  box-sizing: border-box;
-  overflow: hidden;
-  cursor: default;
-}
-
-.template-text-display {
-  font-size: 13px;
-  line-height: 1.6;
-  color: #5b21b6;
-  font-style: italic;
-  text-align: center;
-  display: -webkit-box;
-  -webkit-line-clamp: 6;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-  margin: 0;
-  padding: 0 10px;
-  word-break: break-all;
-}
-
-/* Favorite Star Button */
-.result-favorite-star {
-  position: absolute;
-  top: 10px;
-  right: 10px;
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.85);
-  backdrop-filter: blur(4px);
-  -webkit-backdrop-filter: blur(4px);
-  border: 1px solid rgba(0, 0, 0, 0.05);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  z-index: 15;
-  color: #94a3b8;
-  opacity: 0;
-  transform: scale(0.8);
-  transition: all 0.2s ease;
-  pointer-events: auto;
-}
-
-.image-wrapper:hover .result-favorite-star,
-.result-favorite-star.is-favorited {
-  opacity: 1;
-  transform: scale(1);
-}
-
-.result-favorite-star:hover {
-  transform: scale(1.1) !important;
-  color: #eab308;
-}
-
-.result-favorite-star.is-favorited {
-  color: #eab308 !important;
-  background: #fff !important;
-  border-color: #f59e0b !important;
-}
-
-/* Hover Overlay */
-.result-overlay {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: linear-gradient(to bottom, rgba(0,0,0,0) 50%, rgba(0,0,0,0.75) 100%);
-  opacity: 0;
-  transition: opacity 0.3s ease;
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
-  padding: 16px;
-  pointer-events: none;
-  box-sizing: border-box;
-  z-index: 10;
-}
-
-.image-wrapper:hover .result-overlay {
-  opacity: 1;
-}
-
-.overlay-top {
-  display: flex;
-  justify-content: flex-start;
-  width: 100%;
-}
-
-.space-badge {
-  background: rgba(99, 102, 241, 0.7);
-  color: #fff;
-  font-size: 10px;
-  font-weight: 600;
-  padding: 2px 8px;
-  border-radius: 10px;
-  backdrop-filter: blur(4px);
-}
-
-.overlay-bottom {
-  pointer-events: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  width: 100%;
-}
-
-.media-prompt-overlay {
-  font-size: 11px;
-  color: rgba(255, 255, 255, 0.9);
-  line-height: 1.4;
-  margin: 0;
-  word-break: break-all;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-  text-shadow: 0 1px 2px rgba(0,0,0,0.6);
-}
-
-.overlay-bottom-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  width: 100%;
-}
-
-.time-info {
-  color: rgba(255, 255, 255, 0.9);
-  font-size: 11px;
-  text-shadow: 0 1px 2px rgba(0,0,0,0.5);
-}
-
-.action-icons {
-  display: flex;
-  gap: 8px;
-}
-
-.icon-btn {
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.2);
-  backdrop-filter: blur(4px);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: white;
-  cursor: pointer;
-  transition: all 0.2s;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-}
-
-.icon-btn:hover {
-  background: rgba(255, 255, 255, 0.4);
-  transform: scale(1.1);
-}
-
-.icon-btn.danger:hover {
-  background: rgba(245, 108, 108, 0.8);
-  border-color: rgba(245, 108, 108, 0.8);
-}
-
 /* Template Grid layout */
 .templates-grid {
   display: grid;
@@ -1137,154 +618,69 @@ function formatDate(dateStr: string) {
   width: 100%;
 }
 
-/* 大图预览提示词 dock：对齐提示词对比页的 viewer 交互 */
-.result-preview-prompt-dock {
+/* ─── Floating Draggable Search Panel Styles ─── */
+.floating-search-panel {
   position: fixed;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  z-index: 2;
-  pointer-events: none;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  padding: 0 16px;
-  box-sizing: border-box;
-}
-
-.result-preview-prompt-inner {
-  pointer-events: auto;
-  width: min(100%, 720px);
-  max-height: min(30vh, 240px);
-  overflow-y: auto;
-  margin-bottom: 100px;
-  padding: 12px 14px 10px;
-  background: rgba(30, 30, 38, 0.45);
+  z-index: 1000;
+  width: 240px;
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.75);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
-  border-radius: 14px;
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.25);
-}
-
-.result-preview-prompt-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 8px;
-}
-
-.result-preview-toggle-link {
-  flex-shrink: 0;
-  color: rgba(255, 255, 255, 0.75) !important;
-}
-
-.result-preview-label {
-  font-size: 11px;
-  font-weight: 500;
-  color: rgba(255, 255, 255, 0.55);
-  letter-spacing: 0.06em;
-}
-
-.result-preview-restore-btn {
-  pointer-events: auto;
-  margin-bottom: 100px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
-}
-
-.result-preview-text {
-  font-size: 13px;
-  line-height: 1.55;
-  color: rgba(255, 255, 255, 0.92);
-  white-space: pre-wrap;
-  word-break: break-word;
-  margin: 0 0 6px;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
-}
-
-.result-preview-actions {
-  display: flex;
-  justify-content: flex-end;
-}
-
-/* ─── Tag Pill Input ─── */
-.tag-pill-input-box {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 12px;
-  border: 1px solid #dcdfe6;
-  border-radius: 8px;
-  background: #fff;
-  cursor: text;
-  min-height: 38px;
-  transition: border-color 0.2s;
-  width: 100%;
+  border-radius: 16px;
+  border: 1px solid rgba(99, 102, 241, 0.15);
+  box-shadow: 0 8px 32px rgba(99, 102, 241, 0.1);
+  cursor: grab;
+  user-select: none;
+  transition: border-color 0.3s, box-shadow 0.3s;
   box-sizing: border-box;
 }
 
-.tag-pill-input-box:focus-within {
-  border-color: #409eff;
-  box-shadow: 0 0 0 2px rgba(64, 158, 255, 0.1);
+.floating-search-panel:hover {
+  border-color: rgba(99, 102, 241, 0.3);
+  box-shadow: 0 12px 40px rgba(99, 102, 241, 0.15);
 }
 
-.tag-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  background: #eef2ff;
-  border: 1px solid #c7d2fe;
-  color: #4f46e5;
-  border-radius: 20px;
-  padding: 2px 8px 2px 10px;
-  font-size: 12px;
-  font-weight: 600;
-  white-space: nowrap;
-  cursor: default;
-  transition: all 0.15s;
+.floating-search-panel.is-dragging {
+  cursor: grabbing;
+  border-color: #6366f1;
+  box-shadow: 0 16px 48px rgba(99, 102, 241, 0.25);
+  transition: none !important;
 }
 
-.tag-pill:hover {
-  background: #e0e7ff;
-}
-
-.tag-pill-remove {
-  background: none;
-  border: none;
-  color: #818cf8;
-  cursor: pointer;
-  font-size: 14px;
-  line-height: 1;
-  padding: 0;
-  width: 14px;
-  height: 14px;
+.search-panel-header {
   display: flex;
+  justify-content: space-between;
   align-items: center;
-  justify-content: center;
-  border-radius: 50%;
-  transition: all 0.15s;
-  flex-shrink: 0;
+  margin-bottom: 8px;
+  width: 100%;
 }
 
-.tag-pill-remove:hover {
-  background: #c7d2fe;
+.search-title {
+  font-size: 11px;
+  font-weight: 600;
   color: #4f46e5;
+  letter-spacing: 0.05em;
 }
 
-.tag-pill-input {
-  border: none;
-  outline: none;
-  font-size: 13px;
-  color: #374151;
-  background: transparent;
-  flex: 1;
-  min-width: 120px;
-  padding: 2px 0;
+.drag-handle-dots {
+  color: #94a3b8;
+  font-size: 12px;
+  letter-spacing: 1px;
 }
 
-.tag-pill-input::placeholder {
-  color: #9ca3af;
+.search-input-wrapper {
+  width: 100%;
+}
+
+.search-input-wrapper :deep(.el-input__wrapper) {
+  background-color: rgba(255, 255, 255, 0.6) !important;
+  border-radius: 8px;
+  border: 1px solid rgba(0, 0, 0, 0.05) !important;
+}
+
+.search-input-wrapper :deep(.el-input__wrapper.is-focus) {
+  border-color: #6366f1 !important;
+  box-shadow: 0 0 0 1px #6366f1 !important;
 }
 </style>
