@@ -3,22 +3,32 @@ import { onMounted, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { useChatStore } from '@/stores/chat'
+import { useCanvasStore } from '@/stores/canvas'
 import WorkspaceToolbar from '@/components/canvas/WorkspaceToolbar.vue'
 import CanvasBoard from '@/components/canvas/CanvasBoard.vue'
 import AgentSidebar from '@/components/canvas/AgentSidebar.vue'
 
 const workspaceStore = useWorkspaceStore()
 const chatStore = useChatStore()
+const canvasStore = useCanvasStore()
 const { selectedWorkspaceId } = storeToRefs(workspaceStore)
+const { chatLoading } = storeToRefs(chatStore)
 
 onMounted(() => {
   workspaceStore.loadWorkspaces()
 })
 
-// 当选中的 workspaceId 发生变化时，我们也需要重载聊天会话历史，保持 Agent 对话的同步
-watch(selectedWorkspaceId, (newId) => {
-  if (newId) {
-    chatStore.loadChatHistory(newId)
+// 当选中的 workspaceId 发生变化时，重载聊天会话历史，保持 Agent 对话的同步
+// watch(selectedWorkspaceId, (newId) => {
+//   if (newId) {
+//     chatStore.loadChatHistory(newId)
+//   }
+// })
+
+// AI 对话完成后，自动刷新工程画布（Agent 可能新增了节点/边）
+watch(chatLoading, async (loading) => {
+  if (!loading && selectedWorkspaceId.value) {
+    await canvasStore.loadGraph(selectedWorkspaceId.value)
   }
 })
 </script>

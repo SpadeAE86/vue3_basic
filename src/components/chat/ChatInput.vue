@@ -1,13 +1,19 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import MediaUploader, { type MediaFile } from '@/components/image/MediaUploader.vue'
+import { Plus } from '@element-plus/icons-vue'
+import { ElMessageBox, ElMessage } from 'element-plus'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   disabled?: boolean
-}>()
+  roleId?: string
+}>(), {
+  roleId: 'default'
+})
 
 const emit = defineEmits<{
   send: [text: string, referenceMedia: MediaFile[], model: string]
+  'update:roleId': [roleId: string]
 }>()
 
 const inputText = ref('')
@@ -15,14 +21,111 @@ const referenceMedia = ref<MediaFile[]>([])
 const isUploading = ref(false)
 const models = ref<{ display_name: string, real_name: string }[]>([])
 const selectedModel = ref('gpt-5.4')
+const roles = ref<{ id: string, name: string, description?: string, avatar_emoji?: string }[]>([])
+
+// 获取角色列表
+async function loadRoles() {
+  try {
+    const res = await fetch('/api/chat/roles')
+    if (res.ok) {
+      roles.value = await res.json()
+      // If parent has no roleId or it's invalid, default to CC or the first role
+      if (!props.roleId && roles.value[0]) {
+        emit('update:roleId', roles.value[0].id)
+      }
+    }
+  } catch (e) {
+    console.error('获取角色列表失败:', e)
+  }
+}
+
+// 角色头像文字 (第一个字)
+const selectedRoleInitial = computed(() => {
+  const current = roles.value.find(r => r.id === props.roleId)
+  if (current && current.name) {
+    return current.name.charAt(0).toUpperCase()
+  }
+  return 'C'
+})
+
+// 角色头像背景颜色分配
+const selectedRoleColor = computed(() => {
+  const id = props.roleId || 'default'
+  if (id === 'default') return '#6366f1' // CC purple
+  if (id === 'neuro') return '#ec4899'   // Pink
+  // Hash ID to generate a hue
+  let hash = 0
+  for (let i = 0; i < id.length; i++) {
+    hash = id.charCodeAt(i) + ((hash << 5) - hash)
+  }
+  const hue = Math.abs(hash % 360)
+  return `hsl(${hue}, 60%, 50%)`
+})
+
+function getRoleColor(id: string) {
+  if (id === 'default') return '#6366f1'
+  if (id === 'neuro') return '#ec4899'
+  let hash = 0
+  for (let i = 0; i < id.length; i++) {
+    hash = id.charCodeAt(i) + ((hash << 5) - hash)
+  }
+  const hue = Math.abs(hash % 360)
+  return `hsl(${hue}, 60%, 50%)`
+}
+
+function selectRole(id: string) {
+  emit('update:roleId', id)
+}
+
+async function handleCreateRole() {
+  try {
+    const { value: name } = await ElMessageBox.prompt(
+      '请输入新角色的名称',
+      '新建角色',
+      {
+        confirmButtonText: '确定',
+        cancelButtonText: '取消',
+        inputPattern: /\S+/,
+        inputErrorMessage: '角色名称不能为空',
+      }
+    )
+    if (!name) return
+
+    const res = await fetch('/api/chat/roles', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ name })
+    })
+
+    if (res.ok) {
+      const data = await res.json()
+      if (data.ok && data.role) {
+        ElMessage.success(`角色「${name}」新建成功`)
+        await loadRoles()
+        selectRole(data.role.id)
+      } else {
+        ElMessage.error(`新建失败: ${data.error || '未知错误'}`)
+      }
+    } else {
+      ElMessage.error('新建角色接口响应异常')
+    }
+  } catch (err) {
+    if (err !== 'cancel') {
+      console.error('Failed to create role:', err)
+      ElMessage.error('新建角色出现异常')
+    }
+  }
+}
 
 // 自动获取后端支持的模型列表
 onMounted(async () => {
+  await loadRoles()
   try {
     const res = await fetch('/api/chat/models')
     if (res.ok) {
       models.value = await res.json()
-      // 默认选择第一个包含默认字样的或者第一个模型
       const defaultModel = models.value.find(m => m.real_name === 'gpt-5.4')
       if (defaultModel) {
         selectedModel.value = defaultModel.real_name
@@ -50,7 +153,6 @@ function handleSend() {
 
   emit('send', text, media, selectedModel.value)
   
-  // 发送后清空输入和媒体资源
   inputText.value = ''
   referenceMedia.value = []
 }
@@ -80,7 +182,6 @@ async function handlePaste(e: ClipboardEvent) {
 }
 
 function handleKeydown(e: KeyboardEvent) {
-  // Enter 发送, Shift+Enter 换行
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault()
     handleSend()
@@ -117,8 +218,49 @@ function handleKeydown(e: KeyboardEvent) {
         />
       </div>
 
-      <!-- 右侧/底部控制栏（模型选择、发送按钮） -->
+      <!-- 右侧/底部控制栏（角色选择、模型选择、发送按钮） -->
       <div class="right-controls">
+        <!-- 角色选择 -->
+        <el-popover
+          placement="top"
+          :width="220"
+          trigger="click"
+          popper-class="role-select-popover"
+        >
+          <template #reference>
+            <div class="role-avatar-trigger" :style="{ backgroundColor: selectedRoleColor }" title="选择角色">
+              <span class="role-avatar-text">{{ selectedRoleInitial }}</span>
+            </div>
+          </template>
+
+          <div class="role-popover-content">
+            <div class="role-popover-header" @click="handleCreateRole">
+              <el-icon><Plus /></el-icon>
+              <span>新建角色</span>
+            </div>
+            <div class="role-divider"></div>
+            <el-scrollbar max-height="200px">
+              <div class="role-list">
+                <div
+                  v-for="r in roles"
+                  :key="r.id"
+                  class="role-item"
+                  :class="{ 'is-active': r.id === roleId }"
+                  @click="selectRole(r.id)"
+                >
+                  <div class="role-item-avatar" :style="{ backgroundColor: getRoleColor(r.id) }">
+                    {{ r.name.charAt(0).toUpperCase() }}
+                  </div>
+                  <div class="role-item-info">
+                    <div class="role-item-name">{{ r.name }}</div>
+                    <div class="role-item-desc">{{ r.description || '自定义人设角色' }}</div>
+                  </div>
+                </div>
+              </div>
+            </el-scrollbar>
+          </div>
+        </el-popover>
+
         <!-- 模型选择 -->
         <el-select v-model="selectedModel" class="model-select" placeholder="选择模型" size="small">
           <el-option
@@ -203,7 +345,6 @@ function handleKeydown(e: KeyboardEvent) {
   align-items: center;
 }
 
-/* 强制定制 MediaUploader 里面的 + 按钮，呈现类似 Gemini 的极简圆圈效果 */
 :deep(.media-uploader-wrapper .upload-btn) {
   width: 32px;
   height: 32px;
@@ -325,5 +466,125 @@ function handleKeydown(e: KeyboardEvent) {
   border-bottom: 1px solid #f1f5f9;
   pointer-events: none;
   width: 100%;
+}
+
+/* 角色选择样式 */
+.role-avatar-trigger {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: bold;
+  cursor: pointer;
+  font-size: 14px;
+  user-select: none;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
+  flex-shrink: 0;
+}
+
+.role-avatar-trigger:hover {
+  transform: scale(1.08);
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.15);
+}
+
+.role-popover-content {
+  display: flex;
+  flex-direction: column;
+}
+
+.role-popover-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+  color: #6366f1;
+  font-weight: 600;
+  font-size: 13px;
+  transition: background 0.2s;
+  border-radius: 6px;
+}
+
+.role-popover-header:hover {
+  background: rgba(99, 102, 241, 0.05);
+}
+
+.role-divider {
+  height: 1px;
+  background: #f1f5f9;
+  margin: 4px 0;
+}
+
+.role-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 2px 0;
+}
+
+.role-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  cursor: pointer;
+  border-radius: 6px;
+  transition: all 0.2s;
+}
+
+.role-item:hover {
+  background: #f1f5f9;
+}
+
+.role-item.is-active {
+  background: rgba(99, 102, 241, 0.06);
+}
+
+.role-item-avatar {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: bold;
+  color: white;
+  flex-shrink: 0;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+}
+
+.role-item-info {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+
+.role-item-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: #1e293b;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.role-item.is-active .role-item-name {
+  color: #6366f1;
+  font-weight: 600;
+}
+
+.role-item-desc {
+  font-size: 11px;
+  color: #64748b;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-top: 1px;
 }
 </style>

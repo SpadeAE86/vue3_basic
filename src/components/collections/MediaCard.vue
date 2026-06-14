@@ -33,9 +33,16 @@ function getSpaceName(spaceId?: string) {
   return space ? space.name : ''
 }
 
-// 修改收藏项的分类空间
-async function handleMoveSpace(spaceId: string | null) {
-  await collectionsStore.moveToSpace(props.item.id, spaceId)
+// 下载媒体文件
+function downloadMedia(url: string) {
+  if (!url) return
+  const a = document.createElement('a')
+  a.href = url
+  a.download = isVideoItem.value ? `download_${new Date().getTime()}.mp4` : `download_${new Date().getTime()}.png`
+  a.target = '_blank'
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
 }
 
 // 取消收藏单个项目
@@ -198,24 +205,11 @@ const isVideoItem = computed(() => {
           <div class="overlay-bottom-row">
             <div class="time-info">{{ formatDate(item.created_at) }}</div>
             <div class="action-icons">
-              <!-- Classify dropdown -->
-              <el-dropdown trigger="click" size="small" @command="handleMoveSpace">
-                <div class="icon-btn" title="分类归属">
-                  <el-icon><i-ep-folder /></el-icon>
+              <el-tooltip :content="isVideoItem ? '下载视频' : '下载图片'" placement="top">
+                <div class="icon-btn" @click="downloadMedia(item.data.url || item.data.image_url)">
+                  <el-icon><i-ep-download /></el-icon>
                 </div>
-                <template #dropdown>
-                  <el-dropdown-menu>
-                    <el-dropdown-item :command="null">未分类</el-dropdown-item>
-                    <el-dropdown-item
-                      v-for="s in collectionsStore.themeSpaces.filter(sp => sp.category === 'media')"
-                      :key="s.id"
-                      :command="s.id"
-                    >
-                      {{ s.name }}
-                    </el-dropdown-item>
-                  </el-dropdown-menu>
-                </template>
-              </el-dropdown>
+              </el-tooltip>
 
               <el-tooltip content="复制到画布" placement="top">
                 <div class="icon-btn" @click="handleCopyToCanvas">

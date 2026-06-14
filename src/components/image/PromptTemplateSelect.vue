@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { useCollectionsStore } from '@/stores/collections'
+import { usePromptTemplates } from '@/composables/image/usePromptTemplates'
 
 interface TemplateInfo {
   name: string
@@ -25,6 +27,9 @@ const emit = defineEmits<{
   (e: 'delete', name: string): void
   (e: 'refresh'): void
 }>()
+
+const collectionsStore = useCollectionsStore()
+const { localTemplates, getTemplateContent } = usePromptTemplates()
 
 const value = computed({
   get: () => props.modelValue,
@@ -61,6 +66,20 @@ function handleDelete(e: MouseEvent, name: string) {
   e.stopPropagation()
   emit('delete', name)
 }
+
+function isTemplateFavorited(name: string): boolean {
+  return collectionsStore.isFavorited('template', name)
+}
+
+async function handleToggleFavorite(e: MouseEvent, name: string) {
+  e.preventDefault()
+  e.stopPropagation()
+  
+  const content = localTemplates.get(name) || await getTemplateContent(name) || ''
+  const payload = { name: name, template_text: content }
+  
+  await collectionsStore.toggleFavorite('template', name, undefined, payload)
+}
 </script>
 
 <template>
@@ -80,6 +99,18 @@ function handleDelete(e: MouseEvent, name: string) {
     <el-option v-for="tpl in currentTemplates" :key="tpl.name" :label="tpl.name" :value="tpl.name">
       <div class="opt-row">
         <span class="opt-label">{{ tpl.name }}</span>
+        
+        <el-button
+          class="opt-fav"
+          :class="{ 'is-active': isTemplateFavorited(tpl.name) }"
+          link
+          @click="(e: any) => handleToggleFavorite(e, tpl.name)"
+          :title="isTemplateFavorited(tpl.name) ? '取消收藏' : '收藏'"
+        >
+          <el-icon v-if="isTemplateFavorited(tpl.name)"><i-ep-star-filled /></el-icon>
+          <el-icon v-else><i-ep-star /></el-icon>
+        </el-button>
+
         <el-button
           class="opt-del"
           link
@@ -119,7 +150,7 @@ function handleDelete(e: MouseEvent, name: string) {
   width: 100%;
   display: flex;
   align-items: center;
-  gap: 0;
+  gap: 4px;
 }
 
 .opt-label {
@@ -130,12 +161,44 @@ function handleDelete(e: MouseEvent, name: string) {
   white-space: nowrap;
 }
 
+.opt-fav {
+  color: #a8abb2;
+  padding: 0;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s;
+  width: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: auto !important;
+}
+
+.opt-fav.is-active {
+  color: #fadb14 !important;
+  opacity: 1 !important;
+  pointer-events: auto !important;
+}
+
+.opt-row:hover .opt-fav {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.opt-fav:hover {
+  color: #eab308;
+}
+
 .opt-del {
-  margin-left: auto;
   color: #a8abb2;
   opacity: 0;
   pointer-events: none;
   padding: 0;
+  width: 18px;
+  transition: opacity 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .opt-row:hover .opt-del {
@@ -144,7 +207,28 @@ function handleDelete(e: MouseEvent, name: string) {
 }
 
 .opt-del:hover {
-  color: #606266;
+  color: #ef4444;
+}
+
+/* Eliminate default margins/paddings on buttons inside opt-row */
+.opt-row :deep(.el-button) {
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+/* Force the el-option inner container to span full width of the dropdown item */
+:deep(.el-select-dropdown__item) {
+  display: flex !important;
+  align-items: center;
+  padding: 0 12px !important;
+}
+
+:deep(.el-select-dropdown__item > span) {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  width: 100%;
 }
 
 /* 底部标签切换栏 */

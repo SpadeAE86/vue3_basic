@@ -291,10 +291,10 @@ export const useCollectionsStore = defineStore('collections', () => {
   }
 
   // 智能自动打标 (异步后台任务模式)
-  async function autoTagItem(itemId: string) {
+  async function autoTagItem(itemId: string, useRecall = true) {
     try {
       taggingTasks.value[itemId] = { status: 'PENDING' }
-      const resp = await fetch(`/api/collections/${encodeURIComponent(itemId)}/auto-tag`, {
+      const resp = await fetch(`/api/collections/${encodeURIComponent(itemId)}/auto-tag?use_recall=${useRecall}`, {
         method: 'POST'
       })
       const res = await resp.json()

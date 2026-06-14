@@ -2,7 +2,6 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { getSessionHistory } from '@/api/chat.api'
 import { useWorkspaceStore } from './workspace'
-import { useCanvasStore } from './canvas'
 import type { ChatEvent, SSEEventPayload } from '@/types/chat'
 import { mapSSEtoChatEvent } from '@/types/chat'
 import type { MediaFile } from '@/components/image/MediaUploader.vue'
@@ -11,10 +10,10 @@ export const useChatStore = defineStore('chat', () => {
   const events = ref<ChatEvent[]>([])
   const chatLoading = ref(false)
   const debugMode = ref(false)
+  const activeSessionId = ref<string | null>(null)
   const API_BASE = '/api'
 
   const workspaceStore = useWorkspaceStore()
-  const canvasStore = useCanvasStore()
 
   async function loadChatHistory(workspaceId: string) {
     try {
@@ -53,10 +52,13 @@ export const useChatStore = defineStore('chat', () => {
   async function handleSend(
     text: string, 
     referenceMedia: MediaFile[] = [], 
-    model: string = 'gpt-5.4'
+    model: string = 'gpt-5.4',
+    customSessionId?: string,
+    activeWorkspaceId?: string,
+    activeGraphName?: string
   ) {
-    const workspaceId = workspaceStore.selectedWorkspaceId
-    if (!workspaceId) return
+    const session_id = customSessionId || workspaceStore.selectedWorkspaceId
+    if (!session_id) return
 
     pushEvent({ 
       event_type: 'user_message', 
@@ -66,9 +68,7 @@ export const useChatStore = defineStore('chat', () => {
     
     chatLoading.value = true
     try {
-      await connectSSE(workspaceId, text, referenceMedia, model)
-      // SSE 对话完毕后，自动加载图以更新 Agent 生成出的新节点 and 进化线
-      await canvasStore.loadGraph(workspaceId)
+      await connectSSE(session_id, text, referenceMedia, model, activeWorkspaceId, activeGraphName)
     } finally {
       chatLoading.value = false
     }
@@ -78,7 +78,9 @@ export const useChatStore = defineStore('chat', () => {
     workspaceId: string,
     userText: string, 
     referenceMedia: MediaFile[] = [], 
-    model: string = 'gpt-5.4'
+    model: string = 'gpt-5.4',
+    activeWorkspaceId?: string,
+    activeGraphName?: string
   ) {
     try {
       const resp = await fetch(`${API_BASE}/chat`, {
@@ -91,6 +93,8 @@ export const useChatStore = defineStore('chat', () => {
           reference_image_list: referenceMedia.filter(m => m.type === 'image').map(m => m.url),
           session_id: workspaceId,
           max_iterations: 10,
+          active_workspace_id: activeWorkspaceId,
+          active_graph_name: activeGraphName
         }),
       })
 
@@ -123,7 +127,9 @@ export const useChatStore = defineStore('chat', () => {
             try {
               const raw: SSEEventPayload = JSON.parse(dataStr)
               
-              if (raw.event_type === 'text_chunk') {
+              if (raw.event_type === 'session_id') {
+                activeSessionId.value = raw.session_id
+              } else if (raw.event_type === 'text_chunk') {
                 appendToLast('assistant', raw.content ?? '')
               } else if (raw.event_type === 'agent_thought') {
                 appendToLast('thinking', raw.content ?? '')
@@ -151,6 +157,7 @@ export const useChatStore = defineStore('chat', () => {
     events,
     chatLoading,
     debugMode,
+    activeSessionId,
     loadChatHistory,
     pushEvent,
     handleSend

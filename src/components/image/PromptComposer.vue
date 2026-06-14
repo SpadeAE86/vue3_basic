@@ -4,6 +4,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import PromptTemplateSelect from './PromptTemplateSelect.vue'
 import MediaUploader, { type MediaFile } from './MediaUploader.vue'
 import PromptSlotDialog from './PromptSlotDialog.vue'
+import PromptPreviewDialog from './PromptPreviewDialog.vue'
 import { usePromptTemplates } from '@/composables/image/usePromptTemplates'
 import { saveTemplateApi } from '@/api/generate'
 import { useCollectionsStore } from '@/stores/collections'
@@ -174,7 +175,7 @@ const parsedSections = computed<PromptSection[]>(() => {
 // 最终渲染的干净提示词（发送给模型）
 const renderedPrompt = computed(() => {
   let clean = props.prompt.replace(SLOT_REGEX, (_match, _key, val) => val.trim())
-  clean = clean.replace(/--split--/g, '\n')
+  clean = clean.replace(/\s*--split--\s*/g, '\n\n')
   return clean.trim()
 })
 
@@ -196,6 +197,12 @@ watch(hasSlots, (newVal) => {
 watch(renderedPrompt, (newVal) => {
   emit('update:renderedPrompt', newVal)
 }, { immediate: true })
+
+function getSectionPreviewText(secText: string): string {
+  if (!secText) return ''
+  const clean = secText.replace(SLOT_REGEX, (_match, _key, val) => val.trim())
+  return clean.trim()
+}
 
 // 同步更新段落中的特定插槽值并合成完整 prompt
 function updateSlotValueInSection(secIdx: number, slotIdx: number, newValue: string) {
@@ -227,6 +234,70 @@ async function handleSelectSlotTemplate(name: string) {
     }
   }
 }
+
+async function handleBeautifyOrInsert() {
+  if (activeTab.value === 'slots') {
+    if (!selectedSlotTemplate.value) {
+      ElMessage.warning('请选择一个插槽模板')
+      return
+    }
+    const content = localTemplates.get(selectedSlotTemplate.value) || await getTemplateContent(selectedSlotTemplate.value)
+    if (content) {
+      const current = props.prompt
+      if (current.trim()) {
+        emit('update:prompt', current + '\n--split--\n' + content)
+      } else {
+        emit('update:prompt', content)
+      }
+      ElMessage.success('已成功插入插槽模板')
+    }
+  } else {
+    emit('beautify')
+  }
+}
+
+function removeSection(secIdx: number) {
+  const rawSections = props.prompt.split('--split--')
+  rawSections.splice(secIdx, 1)
+  const newSections = rawSections.map(s => s.trim()).filter(Boolean)
+  const updatedPrompt = newSections.join('\n--split--\n')
+  emit('update:prompt', updatedPrompt)
+  ElMessage.success('已移除该插槽模板段落')
+}
+
+const editingSecIdx = ref<number | null>(null)
+const textareaRefs = ref<any[]>([])
+
+function startEditSection(secIdx: number) {
+  editingSecIdx.value = secIdx
+  nextTick(() => {
+    const component = textareaRefs.value[secIdx]
+    if (component) {
+      const textareaEl = component.$el?.querySelector('textarea') || component.querySelector?.('textarea')
+      if (textareaEl) {
+        textareaEl.focus()
+      }
+    }
+  })
+}
+
+function updateSectionRawText(secIdx: number, newText: string) {
+  const rawSections = props.prompt.split('--split--')
+  rawSections[secIdx] = newText
+  const updatedPrompt = rawSections.join('--split--')
+  emit('update:prompt', updatedPrompt)
+}
+
+const previewVisible = ref(false)
+const previewContent = ref('')
+const previewTitle = ref('')
+
+function openSectionPreview(text: string, title = '段落提示词预览') {
+  previewContent.value = getSectionPreviewText(text)
+  previewTitle.value = title
+  previewVisible.value = true
+}
+
 // 插槽模板 Dialog 高级变量提取器
 const isSlotDialogVisible = ref(false)
 const isNewSlotTemplate = ref(true)
@@ -330,14 +401,23 @@ function handleKeydown(e: KeyboardEvent) {
     <div class="composer-body-row">
       <div class="composer-input-container">
         <!-- 仅在胶囊填槽模式下显示插槽视图，移除了原有的 composer-header-bar-simple -->
-        <div v-if="isTemplateMode && hasSlots" class="template-tag-view">
+        <div v-if="isTemplateMode" class="template-tag-view">
           <!-- 虚线框列表：按 --split-- 分割的多组插槽 -->
           <div class="dashed-boxes-list">
             <template v-for="(section, secIdx) in parsedSections" :key="secIdx">
+              <!-- 有插槽的模板段落 -->
               <div
                 v-if="section.slots.length > 0"
                 class="tags-container-dashed"
               >
+                <button
+                  class="section-remove-btn"
+                  @click="removeSection(secIdx)"
+                  title="移除此插槽模板段落"
+                >
+                  <el-icon><i-ep-close /></el-icon>
+                </button>
+
                 <div class="tags-grid">
                   <div
                     v-for="(slot, slotIdx) in section.slots"
@@ -358,6 +438,88 @@ function handleKeydown(e: KeyboardEvent) {
                     />
                   </div>
                 </div>
+
+                <!-- Preview magnifier icon with popover -->
+                <el-popover
+                  placement="right"
+                  :width="400"
+                  trigger="hover"
+                  popper-class="preview-popover"
+                  :teleported="true"
+                >
+                  <template #reference>
+                    <button
+                      class="section-search-btn"
+                      title="预览段落内容"
+                      @click.stop="openSectionPreview(section.rawText, '段落提示词预览')"
+                    >
+                      <el-icon class="preview-search-icon"><i-ep-search /></el-icon>
+                    </button>
+                  </template>
+                  <div class="final-prompt-preview">
+                    <div class="preview-title">当前插槽块发送内容</div>
+                    <div class="preview-content scrollable-preview">{{ getSectionPreviewText(section.rawText) }}</div>
+                  </div>
+                </el-popover>
+              </div>
+
+              <!-- 无插槽的纯文本段落 -->
+              <div
+                v-else-if="section.rawText.trim()"
+                class="tags-container-dashed"
+              >
+                <button
+                  class="section-remove-btn"
+                  @click="removeSection(secIdx)"
+                  title="移除此文本段落"
+                >
+                  <el-icon><i-ep-close /></el-icon>
+                </button>
+
+                <div class="tags-grid" style="width: 100%;">
+                  <el-input
+                    v-if="editingSecIdx === secIdx"
+                    :ref="(el: any) => { if (el) textareaRefs[secIdx] = el }"
+                    :model-value="section.rawText"
+                    @update:model-value="(val: string) => updateSectionRawText(secIdx, val)"
+                    @blur="editingSecIdx = null"
+                    type="textarea"
+                    :autosize="{ minRows: 1, maxRows: 4 }"
+                    class="plain-text-el-textarea"
+                    placeholder="输入段落内容..."
+                  />
+                  <span
+                    v-else
+                    class="plain-text-display-val"
+                    @dblclick="startEditSection(secIdx)"
+                    title="双击编辑此段落"
+                  >
+                    {{ section.rawText.trim() }}
+                  </span>
+                </div>
+
+                <!-- Preview magnifier icon with popover -->
+                <el-popover
+                  placement="right"
+                  :width="400"
+                  trigger="hover"
+                  popper-class="preview-popover"
+                  :teleported="true"
+                >
+                  <template #reference>
+                    <button
+                      class="section-search-btn"
+                      title="预览段落内容"
+                      @click.stop="openSectionPreview(section.rawText, '段落提示词预览')"
+                    >
+                      <el-icon class="preview-search-icon"><i-ep-search /></el-icon>
+                    </button>
+                  </template>
+                  <div class="final-prompt-preview">
+                    <div class="preview-title">当前插槽块发送内容</div>
+                    <div class="preview-content scrollable-preview">{{ getSectionPreviewText(section.rawText) }}</div>
+                  </div>
+                </el-popover>
               </div>
             </template>
           </div>
@@ -365,7 +527,7 @@ function handleKeydown(e: KeyboardEvent) {
 
         <!-- 文本框模式，增加了 keydown Interceptor -->
         <el-input
-          v-if="!isTemplateMode || !hasSlots"
+          v-if="!isTemplateMode"
           :model-value="prompt"
           @update:model-value="(v: string) => emit('update:prompt', v)"
           @keydown="handleKeydown"
@@ -410,15 +572,6 @@ function handleKeydown(e: KeyboardEvent) {
             >
               <el-icon><i-ep-download /></el-icon>
             </el-button>
-            <el-button
-              size="small"
-              class="ghost-btn"
-              :disabled="!prompt.trim()"
-              @click="toggleFavoritePrompt"
-              title="收藏提示词"
-            >
-              <el-icon><i-ep-folder-add /></el-icon>
-            </el-button>
           </el-button-group>
 
         <PromptTemplateSelect
@@ -428,22 +581,20 @@ function handleKeydown(e: KeyboardEvent) {
           :beautify-templates="beautifyTemplates"
           :slot-templates="slotTemplates"
           :templates="templates"
-          @select-slot-template="handleSelectSlotTemplate"
           @create="handleCreateTemplate"
           @delete="(name) => emit('deleteTemplate', name)"
           @refresh="emit('refreshTemplates')"
         />
 
         <el-button
-          v-if="activeTab !== 'slots'"
           class="beautify-btn"
           circle
           size="small"
           :color="actionColor ?? '#6366f1'"
           :loading="beautifying"
-          :disabled="!selectedTemplate"
-          @click="emit('beautify')"
-          title="美化提示词"
+          :disabled="activeTab === 'slots' ? !selectedSlotTemplate : !selectedTemplate"
+          @click="handleBeautifyOrInsert"
+          :title="activeTab === 'slots' ? '插入插槽模板' : '美化提示词'"
         >
           <el-icon v-if="!beautifying"><i-ep-magic-stick /></el-icon>
         </el-button>
@@ -457,6 +608,12 @@ function handleKeydown(e: KeyboardEvent) {
       :is-new="isNewSlotTemplate"
       :initial-name="slotTemplateName"
       @saved="onSlotTemplateSaved"
+    />
+
+    <PromptPreviewDialog
+      v-model="previewVisible"
+      :title="previewTitle"
+      :content="previewContent"
     />
   </div>
 </template>
@@ -593,6 +750,7 @@ function handleKeydown(e: KeyboardEvent) {
 
 /* 虚线边框容器 */
 .tags-container-dashed {
+  position: relative;
   border: 1.5px dashed rgba(139, 92, 246, 0.25);
   border-radius: 8px;
   padding: 10px;
@@ -603,6 +761,32 @@ function handleKeydown(e: KeyboardEvent) {
 .tags-container-dashed:hover {
   border-color: rgba(139, 92, 246, 0.45);
   box-shadow: 0 2px 8px rgba(139, 92, 246, 0.05);
+}
+
+.section-remove-btn {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  background: transparent;
+  border: none;
+  color: #94a3b8;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.2s, color 0.2s;
+  padding: 2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+}
+
+.tags-container-dashed:hover .section-remove-btn {
+  opacity: 1;
+}
+
+.section-remove-btn:hover {
+  color: #ef4444;
+  background: #f1f5f9;
 }
 
 /* 胶囊 Tag 列表 */
@@ -772,4 +956,108 @@ function handleKeydown(e: KeyboardEvent) {
   transform: translateY(-1px);
 }
 
+.plain-text-capsule {
+  background: #f8fafc !important;
+  border: 1px solid #cbd5e1 !important;
+}
+
+.plain-text-capsule .tag-label {
+  color: #64748b !important;
+}
+
+.plain-text-capsule .tag-divider {
+  color: #94a3b8 !important;
+}
+
+.plain-text-value {
+  color: #334155;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 180px;
+  display: inline-block;
+  vertical-align: middle;
+}
+
+.section-search-btn {
+  position: absolute;
+  bottom: 6px;
+  right: 6px;
+  background: transparent;
+  border: none;
+  color: #94a3b8;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.2s, color 0.2s;
+  padding: 2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+}
+
+.tags-container-dashed:hover .section-search-btn {
+  opacity: 1;
+}
+
+.section-search-btn:hover {
+  color: #6366f1;
+  background: #f1f5f9;
+}
+
+.scrollable-preview {
+  max-height: 250px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  font-size: 12px;
+  color: #4b5563;
+  line-height: 1.5;
+  word-break: break-all;
+  padding-right: 4px;
+}
+
+.plain-text-display-val {
+  font-size: 13px;
+  color: #475569;
+  line-height: 1.6;
+  cursor: pointer;
+  white-space: pre-wrap;
+  word-break: break-word;
+  padding: 6px 10px;
+  border-radius: 6px;
+  transition: background-color 0.2s, color 0.2s;
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  text-align: left;
+}
+
+.plain-text-display-val:hover {
+  background-color: #f1f5f9;
+  color: #1e293b;
+}
+
+:deep(.plain-text-el-textarea) {
+  width: 100%;
+}
+
+:deep(.plain-text-el-textarea .el-textarea__inner) {
+  font-size: 13px;
+  color: #334155;
+  line-height: 1.6;
+  border: 1px solid #dcdfe6 !important;
+  box-shadow: none !important;
+  background: #fff !important;
+  padding: 6px 10px !important;
+  resize: none !important;
+  border-radius: 6px !important;
+  font-family: inherit !important;
+  text-align: left;
+}
+
+:deep(.plain-text-el-textarea .el-textarea__inner:focus) {
+  border-color: #8b5cf6 !important;
+  box-shadow: 0 0 0 2px rgba(139, 92, 246, 0.1) !important;
+}
 </style>

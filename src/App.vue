@@ -3,13 +3,15 @@ import { ref, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { checkBackendStatusApi } from '@/api/generate'
 import { getVideoAnalysisTaskBadgesApi } from '@/api/video_analysis'
+import { useChatStore } from '@/stores/chat'
 
 const VA_BADGE_BASELINE_KEY = 'va_sidebar_task_badge_baseline'
 
-const defaultMenuOpeneds = ['menu-smart-mix']
+const defaultMenuOpeneds = ['menu-smart-mix', 'menu-creator-helper']
 
 const isCollapsed = ref(false)
 const route = useRoute()
+const chatStore = useChatStore()
 const isBackendConnected = ref(false)
 /** 后端从「未连接」变为「已连接」时递增，强制重挂当前路由以拉取数据（无需用户切换子页） */
 const routerViewKey = ref(0)
@@ -69,6 +71,11 @@ watch(isBackendConnected, (now, was) => {
   if (now && was === false) {
     if (suppressReconnectRouterRemount) {
       suppressReconnectRouterRemount = false
+      return
+    }
+    // 如果是对话、画布或力导图等富交互页面，或者当前对话正在进行中，避免重挂路由以防丢失临时状态
+    const path = route.path
+    if (path === '/chat' || path === '/canvas' || path === '/graph' || chatStore.chatLoading) {
       return
     }
     routerViewKey.value += 1
@@ -144,20 +151,24 @@ onUnmounted(() => {
           <template #title>Agent 调试</template>
         </el-menu-item>
 
-        <el-menu-item index="/canvas">
-          <el-icon><i-ep-grid /></el-icon>
-          <template #title>工程画布</template>
-        </el-menu-item>
-
-        <el-menu-item index="/image">
-          <el-icon><i-ep-picture /></el-icon>
-          <template #title>提示词对比</template>
-        </el-menu-item>
-
-        <el-menu-item index="/collections">
-          <el-icon><i-ep-star /></el-icon>
-          <template #title>收藏空间</template>
-        </el-menu-item>
+        <el-sub-menu index="menu-creator-helper">
+          <template #title>
+            <el-icon><i-ep-magic-stick /></el-icon>
+            <span>创作助手</span>
+          </template>
+          <el-menu-item index="/canvas">
+            <el-icon><i-ep-grid /></el-icon>
+            <template #title>工程画布</template>
+          </el-menu-item>
+          <el-menu-item index="/image">
+            <el-icon><i-ep-picture /></el-icon>
+            <template #title>提示词对比</template>
+          </el-menu-item>
+          <el-menu-item index="/collections">
+            <el-icon><i-ep-star /></el-icon>
+            <template #title>收藏空间</template>
+          </el-menu-item>
+        </el-sub-menu>
 
         <el-sub-menu index="menu-smart-mix">
           <template #title>

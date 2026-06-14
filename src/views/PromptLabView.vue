@@ -4,6 +4,7 @@ import PromptComposer from '@/components/image/PromptComposer.vue'
 import ResultGrid from '@/components/image/ResultGrid.vue'
 import TemplateEditDialog from '@/components/image/TemplateEditDialog.vue'
 import VsGenerate from '@/components/image/VsGenerate.vue'
+import PromptPreviewDialog from '@/components/image/PromptPreviewDialog.vue'
 import type { MediaFile } from '@/components/image/MediaUploader.vue'
 import type { GenerateMode } from '@/types/generate'
 
@@ -70,6 +71,16 @@ const isTemplateMode = ref(false)
 const hasSlots = ref(false)
 const renderedPrompt = ref('')
 
+const previewVisible = ref(false)
+const previewContent = ref('')
+const previewTitle = ref('')
+
+function openFullPromptPreview() {
+  previewContent.value = renderedPrompt.value
+  previewTitle.value = '完整提示词预览'
+  previewVisible.value = true
+}
+
 async function handleTemplateSelected(name: string) {
   selectedTemplate.value = name
   if (name) {
@@ -86,7 +97,7 @@ async function handleTemplateSelected(name: string) {
 function handleBeautify() {
   const cleanPrompt = form.prompt
     .replace(/\{([^:]+):\s*([^}]+)\}/g, (_match, _key, val) => val.trim())
-    .replace(/--split--/g, '\n')
+    .replace(/\s*--split--\s*/g, '\n\n')
   beautifyPrompt(cleanPrompt, (newPrompt) => {
     form.prompt = newPrompt
   }, {
@@ -151,22 +162,29 @@ function handleGenerate() {
       <template v-if="!isVsMode">
         <div class="form-section">
           <el-form :model="form" label-width="100px">
-            <el-form-item>
-              <template #label>
+            <div class="custom-form-row">
+              <div class="custom-row-label">
                 <div class="custom-prompt-label">
                   <div class="label-top-row">
                     <span>提示词</span>
-                    <el-popover v-if="hasSlots" placement="top" :width="320" trigger="hover" popper-class="preview-popover">
-                      <template #reference>
-                        <el-icon class="preview-search-icon"><i-ep-search /></el-icon>
-                      </template>
-                      <div class="final-prompt-preview">
-                        <div class="preview-title">当前渲染提示词（发送给模型）</div>
-                        <div class="preview-content">{{ renderedPrompt }}</div>
-                      </div>
+                    <el-popover placement="right" :width="400" trigger="hover" popper-class="preview-popover" :teleported="true">
+                       <template #reference>
+                         <button 
+                           class="preview-search-button-raw" 
+                           style="background: transparent; border: none; cursor: pointer; display: inline-flex; align-items: center; padding: 2px; outline: none;"
+                           title="点击查看完整提示词"
+                           @click="openFullPromptPreview"
+                         >
+                           <el-icon class="preview-search-icon"><i-ep-search /></el-icon>
+                         </button>
+                       </template>
+                       <div class="final-prompt-preview">
+                         <div class="preview-title">当前渲染提示词（发送给模型）</div>
+                         <div class="preview-content scrollable-preview">{{ renderedPrompt }}</div>
+                       </div>
                     </el-popover>
                   </div>
-                  <div v-if="hasSlots" class="label-bottom-row">
+                  <div class="label-bottom-row">
                     <div 
                       class="view-switch-link-simple" 
                       @click="isTemplateMode = !isTemplateMode" 
@@ -176,35 +194,37 @@ function handleGenerate() {
                         <i-ep-edit v-if="isTemplateMode" />
                         <i-ep-menu v-else />
                       </el-icon>
-                      <span>{{ isTemplateMode ? '编辑文本' : '查看插槽' }}</span>
+                      <span>{{ isTemplateMode ? '查看文本' : '查看插槽' }}</span>
                     </div>
                   </div>
                 </div>
-              </template>
-              <PromptComposer
-                :prompt="form.prompt"
-                @update:prompt="(v: string) => (form.prompt = v)"
-                v-model:is-template-mode="isTemplateMode"
-                @update:has-slots="(v: boolean) => hasSlots = v"
-                @update:rendered-prompt="(v: string) => renderedPrompt = v"
-                :templates="templates"
-                :selected-template="selectedTemplate"
-                @update:selected-template="handleTemplateSelected"
-                :reference-media="form.referenceMedia"
-                @update:reference-media="(v: MediaFile[]) => (form.referenceMedia = v)"
-                @update:is-uploading="(v: boolean) => (isUploadingImage = v)"
-                :beautifying="beautifying"
-                :action-color="TEMPLATE_ACTION_COLOR"
-                :accept-types="currentMode === 'image' ? ['image'] : ['image', 'video', 'audio']"
-                :disable-media="disableMediaUpload"
-                @create-template="openNewTemplate"
-                @edit-template="openEditTemplate"
-                @download-template="downloadSelectedTemplate"
-                @delete-template="deleteTemplateByName"
-                @refresh-templates="handleTemplateRefresh"
-                @beautify="handleBeautify"
-              />
-            </el-form-item>
+              </div>
+              <div class="custom-row-content">
+                <PromptComposer
+                  :prompt="form.prompt"
+                  @update:prompt="(v: string) => (form.prompt = v)"
+                  v-model:is-template-mode="isTemplateMode"
+                  @update:has-slots="(v: boolean) => hasSlots = v"
+                  @update:rendered-prompt="(v: string) => renderedPrompt = v"
+                  :templates="templates"
+                  :selected-template="selectedTemplate"
+                  @update:selected-template="handleTemplateSelected"
+                  :reference-media="form.referenceMedia"
+                  @update:reference-media="(v: MediaFile[]) => (form.referenceMedia = v)"
+                  @update:is-uploading="(v: boolean) => (isUploadingImage = v)"
+                  :beautifying="beautifying"
+                  :action-color="TEMPLATE_ACTION_COLOR"
+                  :accept-types="currentMode === 'image' ? ['image'] : ['image', 'video', 'audio']"
+                  :disable-media="disableMediaUpload"
+                  @create-template="openNewTemplate"
+                  @edit-template="openEditTemplate"
+                  @download-template="downloadSelectedTemplate"
+                  @delete-template="deleteTemplateByName"
+                  @refresh-templates="handleTemplateRefresh"
+                  @beautify="handleBeautify"
+                />
+              </div>
+            </div>
 
           <!-- Image Specific Settings -->
           <template v-if="currentMode === 'image'">
@@ -346,6 +366,12 @@ function handleGenerate() {
       v-model:content="editingTemplate.content"
       @save="saveTemplate"
     />
+
+    <PromptPreviewDialog
+      v-model="previewVisible"
+      :title="previewTitle"
+      :content="previewContent"
+    />
   </div>
 </template>
 
@@ -481,5 +507,33 @@ function handleGenerate() {
 .preview-search-icon:hover {
   transform: scale(1.15);
   color: #4f46e5;
+}
+
+.scrollable-preview {
+  max-height: 250px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  font-size: 12px;
+  color: #4b5563;
+  line-height: 1.5;
+  word-break: break-all;
+  padding-right: 4px;
+}
+
+.custom-form-row {
+  display: flex;
+  margin-bottom: 22px;
+  width: 100%;
+}
+
+.custom-row-label {
+  width: 100px;
+  flex-shrink: 0;
+  box-sizing: border-box;
+}
+
+.custom-row-content {
+  flex: 1;
+  min-width: 0;
 }
 </style>

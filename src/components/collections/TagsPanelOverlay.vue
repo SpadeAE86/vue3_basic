@@ -219,7 +219,7 @@ const isAiTagging = computed(() => {
 
 async function handleAiAutoTag() {
   if (isAiTagging.value) return
-  const success = await collectionsStore.autoTagItem(props.item.id)
+  const success = await collectionsStore.autoTagItem(props.item.id, true)
   if (success) {
     nextTick(() => {
       updateTagsPosition()

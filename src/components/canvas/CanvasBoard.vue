@@ -370,10 +370,17 @@ function handleSelectAll() {
 const lastContainerMousePos = ref({ x: 200, y: 200 })
 
 // 全局按键与粘贴防打扰
+let lastModifierTime = 0
+
 async function handleGlobalKeydown(e: KeyboardEvent) {
   const target = e.target as HTMLElement
   if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
     return
+  }
+
+  // 记录修饰键被按下的时间，以防止 Ctrl+V 粘贴释放时的 keydown 重复触发单字符快捷键
+  if (e.ctrlKey || e.metaKey || e.altKey || e.key === 'Control' || e.key === 'Meta' || e.key === 'Alt') {
+    lastModifierTime = Date.now()
   }
 
   // 拦截 Backspace 和 Delete 键删除选中节点或连线以确保可靠的持久化
@@ -435,6 +442,7 @@ async function handleGlobalKeydown(e: KeyboardEvent) {
   // 快捷键创建节点以鼠标位置生成
   if (!selectedWorkspaceId.value) return
   if (e.ctrlKey || e.metaKey || e.altKey) return
+  if (Date.now() - lastModifierTime < 500) return
   const key = e.key.toLowerCase()
   if (key === 'g' || key === 'm' || key === 'v' || key === 't' || key === 'x') {
     // 投影坐标

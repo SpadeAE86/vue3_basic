@@ -238,6 +238,16 @@ const displayAllCount = computed(() => {
   }
   return categoryItems.length
 })
+
+function getSpaceCount(spaceId: string) {
+  return collectionsStore.items.filter(i => {
+    if (props.activeCategory === 'media') {
+      return i.item_type === 'media'
+    } else {
+      return i.item_type === 'template' || i.item_type === 'prompt'
+    }
+  }).filter(i => i.space_id === spaceId).length
+}
 </script>
 
 <template>
@@ -301,6 +311,8 @@ const displayAllCount = computed(() => {
       >
         <el-icon class="folder-icon"><i-ep-folder /></el-icon>
         <span class="space-name" :title="space.name">{{ space.name }}</span>
+        
+        <span class="item-count">{{ getSpaceCount(space.id) }}</span>
         
         <div class="space-actions" @click.stop>
           <el-tooltip content="编辑空间" placement="top">
@@ -479,6 +491,10 @@ const displayAllCount = computed(() => {
 
 .space-item:hover .space-actions {
   display: flex;
+}
+
+.space-item:hover:has(.space-actions) .item-count {
+  display: none;
 }
 
 .space-action-btn {

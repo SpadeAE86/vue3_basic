@@ -1,12 +1,17 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
+import { useRouter } from 'vue-router'
 import type { ChatEvent } from '@/types/chat'
 import ResultCard from '@/components/image/ResultCard.vue'
+import MiniGraph from './MiniGraph.vue'
 import { useChatStore } from '@/stores/chat'
+import { useWorkspaceStore } from '@/stores/workspace'
 
 const props = defineProps<{ event: ChatEvent }>()
 
 const chatStore = useChatStore()
+const workspaceStore = useWorkspaceStore()
+const router = useRouter()
 const showArgs = ref(false)
 
 // 终端类工具用黑底等宽字体
@@ -15,6 +20,7 @@ const isTerminal = computed(() => terminalTools.includes(props.event.toolName ??
 
 const isResult = computed(() => props.event.type === 'tool_result')
 const isGenerateImage = computed(() => props.event.toolName === 'generate_image')
+const isMakeGraph = computed(() => props.event.toolName === 'make_graph')
 
 const parsedResult = computed(() => {
   if (!isResult.value || !isGenerateImage.value || !props.event.content) return null
@@ -25,6 +31,22 @@ const parsedResult = computed(() => {
     return null
   }
 })
+
+const parsedGraphResult = computed(() => {
+  if (!isResult.value || !isMakeGraph.value || !props.event.content) return null
+  try {
+    return JSON.parse(props.event.content)
+  } catch (e) {
+    console.warn('解析力导图工具结果失败:', e)
+    return null
+  }
+})
+
+function goToGraphPage(name: string) {
+  if (!name) return
+  workspaceStore.selectedWorkspaceId = name
+  router.push({ name: 'graph' })
+}
 
 // 缩短 URL
 function cleanValue(val: any): string {
@@ -119,6 +141,26 @@ const cleanedContent = computed(() => {
     <template v-if="isResult && event.content">
       <div v-if="isGenerateImage && parsedResult" class="image-card-output">
         <ResultCard :item="parsedResult" :model-label="parsedResult.model || 'Seedream 5.0'" />
+      </div>
+      <div v-else-if="isMakeGraph && parsedGraphResult" class="mini-graph-card-container">
+        <div class="mini-graph-card" @click="goToGraphPage(parsedGraphResult.graph_name || parsedGraphResult.graph_id)">
+          <div class="mini-graph-header">
+            <span class="mini-graph-title-row">
+              <el-icon class="graph-icon"><i-ep-share /></el-icon>
+              <span class="title-text">{{ parsedGraphResult.graph_name || parsedGraphResult.graph_id || '力导向图' }}</span>
+            </span>
+            <el-tag size="small" type="info" round>
+              {{ parsedGraphResult.node_count }} 节点 / {{ parsedGraphResult.edge_count }} 边
+            </el-tag>
+          </div>
+          
+          <MiniGraph :nodes="parsedGraphResult.nodes || []" :edges="parsedGraphResult.edges || []" />
+          
+          <div class="mini-graph-footer">
+            <span>点击跳转至力导图详情页面</span>
+            <el-icon><i-ep-right /></el-icon>
+          </div>
+        </div>
       </div>
       <pre v-else-if="isTerminal" class="terminal-output">{{ event.content }}</pre>
       <div v-else class="text-output">{{ cleanedContent }}</div>
@@ -243,5 +285,61 @@ const cleanedContent = computed(() => {
   border-radius: 8px;
   overflow: hidden;
   box-shadow: 0 2px 12px 0 rgba(0, 0, 0, 0.08);
+}
+
+/* Mini Graph Card styles */
+.mini-graph-card-container {
+  margin-top: 8px;
+}
+
+.mini-graph-card {
+  max-width: 320px;
+  background: #ffffff;
+  border-radius: 8px;
+  border: 1px solid #cbd5e1;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+  cursor: pointer;
+  overflow: hidden;
+  transition: transform 0.25s ease, box-shadow 0.25s ease, border-color 0.25s ease;
+}
+
+.mini-graph-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(99, 102, 241, 0.15);
+  border-color: #a5b4fc;
+}
+
+.mini-graph-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background: #f8fafc;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.mini-graph-title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  color: #1e293b;
+  font-size: 13px;
+}
+
+.mini-graph-title-row .graph-icon {
+  color: #6366f1;
+}
+
+.mini-graph-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px;
+  background: #f8fafc;
+  border-top: 1px solid #e2e8f0;
+  font-size: 11px;
+  color: #6366f1;
+  font-weight: 500;
 }
 </style>

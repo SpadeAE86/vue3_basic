@@ -303,8 +303,87 @@ async function handleUpdateTags(tags: string[]) {
   }
 }
 
+const tagTree = ref<any>(null)
+const expandedCategoryPath = ref<string | null>(null)
+const filterMode = ref<'text' | 'tag'>('text')
+const selectedTags = ref<string[]>([])
+const tagInputVal = ref('')
+
+async function fetchTagTree() {
+  try {
+    const resp = await fetch('/api/collections/tag-tree')
+    const res = await resp.json()
+    if (res.success) {
+      tagTree.value = res.tag_tree
+    }
+  } catch (e) {
+    console.error('加载标签树失败:', e)
+  }
+}
+
+interface FlatCategoryItem {
+  name: string
+  path: string
+  tags: string[]
+  isLeaf: boolean
+  depth: number
+}
+
+const flatCategories = computed(() => {
+  const list: FlatCategoryItem[] = []
+  if (!tagTree.value) return list
+  
+  function traverse(tree: any, depth = 0) {
+    for (const key in tree) {
+      const node = tree[key]
+      list.push({
+        name: key,
+        path: node.path,
+        tags: node.tags || [],
+        isLeaf: node.is_leaf,
+        depth
+      })
+      if (node.children) {
+        traverse(node.children, depth + 1)
+      }
+    }
+  }
+  traverse(tagTree.value)
+  return list
+})
+
+function toggleCategory(path: string) {
+  if (expandedCategoryPath.value === path) {
+    expandedCategoryPath.value = null
+  } else {
+    expandedCategoryPath.value = path
+    filterMode.value = 'tag' // 展开类目时自动切换至标签过滤模式
+  }
+}
+
+function addFilterTag(tag: string) {
+  if (!selectedTags.value.includes(tag)) {
+    selectedTags.value.push(tag)
+  }
+}
+
+function addTagFromInput() {
+  const val = tagInputVal.value.trim()
+  if (val) {
+    if (!selectedTags.value.includes(val)) {
+      selectedTags.value.push(val)
+    }
+    tagInputVal.value = ''
+  }
+}
+
+function removeFilterTag(tag: string) {
+  selectedTags.value = selectedTags.value.filter(t => t !== tag)
+}
+
 onMounted(() => {
   collectionsStore.init()
+  fetchTagTree()
   document.addEventListener('click', clearSelectionIfBlank)
 })
 
@@ -332,15 +411,27 @@ const filteredItems = computed(() => {
     }
   })
 
-  // 按搜索框搜索 tag/title/prompt
-  if (searchQuery.value.trim()) {
-    const q = searchQuery.value.trim().toLowerCase()
-    filtered = filtered.filter(item => {
-      const matchesTag = (item.tags || []).some(t => t.toLowerCase().includes(q))
-      const matchesTitle = (item.title || '').toLowerCase().includes(q)
-      const matchesPrompt = (item.data?.prompt || '').toLowerCase().includes(q)
-      return matchesTag || matchesTitle || matchesPrompt
-    })
+  if (filterMode.value === 'text') {
+    // 文本搜索模式：按输入内容实时搜索
+    if (searchQuery.value.trim()) {
+      const q = searchQuery.value.trim().toLowerCase()
+      filtered = filtered.filter(item => {
+        const matchesTag = (item.tags || []).some(t => t.toLowerCase().includes(q))
+        const matchesTitle = (item.title || '').toLowerCase().includes(q)
+        const matchesPrompt = (item.data?.prompt || '').toLowerCase().includes(q)
+        return matchesTag || matchesTitle || matchesPrompt
+      })
+    }
+  } else {
+    // 标签过滤模式：必须同时包含选中的所有 selectedTags
+    if (selectedTags.value.length > 0) {
+      filtered = filtered.filter(item => {
+        const itemTags = (item.tags || []).map(t => t.toLowerCase())
+        return selectedTags.value.every(filterTag => 
+          itemTags.includes(filterTag.toLowerCase())
+        )
+      })
+    }
   }
 
   return filtered
@@ -466,15 +557,39 @@ function handleCategoryChange(category: 'media' | 'template') {
       class="floating-search-panel"
       :class="{ 'is-dragging': isDraggingSearch }"
       :style="searchBoxStyle"
-      @mousedown="startDragSearch"
-      @touchstart="startTouchDragSearch"
     >
-      <div class="search-panel-header">
+      <div
+        class="search-panel-header"
+        @mousedown="startDragSearch"
+        @touchstart="startTouchDragSearch"
+      >
         <span class="search-title">🔍 搜索过滤</span>
         <span class="drag-handle-dots">⋮⋮</span>
       </div>
+
+      <!-- Mode Toggle Switch -->
+      <div class="filter-mode-toggle">
+        <button 
+          class="mode-toggle-btn" 
+          :class="{ active: filterMode === 'text' }"
+          @click="filterMode = 'text'"
+        >
+          文本搜索
+        </button>
+        <button 
+          class="mode-toggle-btn" 
+          :class="{ active: filterMode === 'tag' }"
+          @click="filterMode = 'tag'"
+        >
+          标签过滤
+        </button>
+      </div>
+
+      <!-- Search Input Section -->
       <div class="search-input-wrapper">
+        <!-- Text Search Input -->
         <el-input
+          v-if="filterMode === 'text'"
           v-model="searchQuery"
           placeholder="搜索标签、标题或提示词..."
           clearable
@@ -484,6 +599,67 @@ function handleCategoryChange(category: 'media' | 'template') {
             <el-icon><i-ep-search /></el-icon>
           </template>
         </el-input>
+
+        <!-- Tag Capsules Filtering Input -->
+        <div v-else class="tag-filter-bar">
+          <div class="tag-capsules-container">
+            <span 
+              v-for="tag in selectedTags" 
+              :key="tag" 
+              class="tag-capsule-filter"
+            >
+              #{{ tag }}
+              <span class="remove-btn" @click.stop="removeFilterTag(tag)">×</span>
+            </span>
+            <input
+              v-model="tagInputVal"
+              type="text"
+              placeholder="输入标签并回车..."
+              class="tag-text-input"
+              @keydown.enter.stop="addTagFromInput"
+            />
+          </div>
+        </div>
+      </div>
+
+      <!-- Accordion Tag Tree (Only shown in Tag Mode) -->
+      <div v-if="filterMode === 'tag' && tagTree" class="tag-tree-container">
+        <div 
+          v-for="cat in flatCategories" 
+          :key="cat.path" 
+          class="tree-category-node"
+        >
+          <div 
+            class="category-node-header" 
+            :class="{ 'is-expanded': expandedCategoryPath === cat.path }"
+            @click.stop="toggleCategory(cat.path)"
+          >
+            <span class="category-name">
+              <span class="tree-indent" :style="{ width: `${cat.depth * 8}px` }"></span>
+              <span class="folder-icon">{{ cat.isLeaf ? '🏷️' : (expandedCategoryPath === cat.path ? '📂' : '📁') }}</span>
+              <span class="cat-label">{{ cat.name }}</span>
+            </span>
+            <span v-if="cat.tags.length > 0" class="tag-count-badge">
+              {{ cat.tags.length }}
+            </span>
+          </div>
+          
+          <!-- Expanded Capsules Pills List -->
+          <div 
+            v-if="expandedCategoryPath === cat.path && cat.tags.length > 0" 
+            class="category-tags-pills"
+          >
+            <button
+              v-for="tag in cat.tags"
+              :key="tag"
+              class="tag-pill-btn"
+              :class="{ 'is-active': selectedTags.includes(tag) }"
+              @click.stop="addFilterTag(tag)"
+            >
+              # {{ tag }}
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -622,29 +798,30 @@ function handleCategoryChange(category: 'media' | 'template') {
 .floating-search-panel {
   position: fixed;
   z-index: 1000;
-  width: 240px;
-  padding: 12px;
+  width: 280px; /* Slightly wider to accommodate tags tree nicely */
+  max-height: 500px;
+  display: flex;
+  flex-direction: column;
+  padding: 14px;
   background: rgba(255, 255, 255, 0.75);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  border-radius: 16px;
-  border: 1px solid rgba(99, 102, 241, 0.15);
-  box-shadow: 0 8px 32px rgba(99, 102, 241, 0.1);
-  cursor: grab;
-  user-select: none;
-  transition: border-color 0.3s, box-shadow 0.3s;
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border-radius: 20px;
+  border: 1px solid rgba(99, 102, 241, 0.18);
+  box-shadow: 0 10px 36px rgba(99, 102, 241, 0.08);
+  cursor: default;
+  transition: border-color 0.3s, box-shadow 0.3s, max-height 0.3s;
   box-sizing: border-box;
 }
 
 .floating-search-panel:hover {
-  border-color: rgba(99, 102, 241, 0.3);
-  box-shadow: 0 12px 40px rgba(99, 102, 241, 0.15);
+  border-color: rgba(99, 102, 241, 0.35);
+  box-shadow: 0 14px 44px rgba(99, 102, 241, 0.14);
 }
 
 .floating-search-panel.is-dragging {
-  cursor: grabbing;
   border-color: #6366f1;
-  box-shadow: 0 16px 48px rgba(99, 102, 241, 0.25);
+  box-shadow: 0 18px 56px rgba(99, 102, 241, 0.24);
   transition: none !important;
 }
 
@@ -652,25 +829,63 @@ function handleCategoryChange(category: 'media' | 'template') {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 8px;
+  margin-bottom: 10px;
   width: 100%;
+  flex-shrink: 0;
+  cursor: grab;
+  user-select: none;
+}
+
+.floating-search-panel.is-dragging .search-panel-header {
+  cursor: grabbing;
 }
 
 .search-title {
   font-size: 11px;
-  font-weight: 600;
+  font-weight: 700;
   color: #4f46e5;
   letter-spacing: 0.05em;
+  text-transform: uppercase;
 }
 
 .drag-handle-dots {
   color: #94a3b8;
-  font-size: 12px;
-  letter-spacing: 1px;
+  font-size: 14px;
+  letter-spacing: 1.5px;
+}
+
+/* Mode Switch Toggle Button */
+.filter-mode-toggle {
+  display: flex;
+  background-color: rgba(226, 232, 240, 0.5);
+  border-radius: 10px;
+  padding: 3px;
+  margin-bottom: 10px;
+  flex-shrink: 0;
+}
+
+.mode-toggle-btn {
+  flex: 1;
+  padding: 6px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #64748b;
+  border: none;
+  background: none;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.mode-toggle-btn.active {
+  background-color: #ffffff;
+  color: #4f46e5;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
 }
 
 .search-input-wrapper {
   width: 100%;
+  flex-shrink: 0;
 }
 
 .search-input-wrapper :deep(.el-input__wrapper) {
@@ -682,5 +897,204 @@ function handleCategoryChange(category: 'media' | 'template') {
 .search-input-wrapper :deep(.el-input__wrapper.is-focus) {
   border-color: #6366f1 !important;
   box-shadow: 0 0 0 1px #6366f1 !important;
+}
+
+/* Tag filter capsules bar */
+.tag-filter-bar {
+  background: rgba(255, 255, 255, 0.8);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 10px;
+  padding: 6px 8px;
+  min-height: 32px;
+  box-sizing: border-box;
+}
+
+.tag-capsules-container {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.tag-capsule-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: linear-gradient(135deg, #e0e7ff 0%, #e0f2fe 100%);
+  color: #4338ca;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: 999px;
+  box-shadow: 0 1px 2px rgba(99, 102, 241, 0.05);
+  animation: scaleUp 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.tag-capsule-filter .remove-btn {
+  cursor: pointer;
+  color: #6366f1;
+  font-weight: bold;
+  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  transition: background 0.2s, color 0.2s;
+}
+
+.tag-capsule-filter .remove-btn:hover {
+  background: #4f46e5;
+  color: #ffffff;
+}
+
+.tag-text-input {
+  border: none;
+  background: transparent;
+  outline: none;
+  font-size: 11px;
+  color: #1e293b;
+  flex: 1;
+  min-width: 80px;
+  padding: 2px 0;
+}
+
+/* Accordion Tag Tree Styles */
+.tag-tree-container {
+  margin-top: 12px;
+  overflow-y: auto;
+  max-height: 330px; /* Constrain tree container height to enforce scrolling */
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-right: 4px;
+}
+
+/* Custom scrollbar for tree */
+.tag-tree-container::-webkit-scrollbar {
+  width: 6px;
+}
+.tag-tree-container::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.02);
+}
+.tag-tree-container::-webkit-scrollbar-thumb {
+  background: rgba(99, 102, 241, 0.25);
+  border-radius: 3px;
+}
+.tag-tree-container::-webkit-scrollbar-thumb:hover {
+  background: rgba(99, 102, 241, 0.45);
+}
+
+
+.tree-category-node {
+  background: rgba(248, 250, 252, 0.5);
+  border-radius: 10px;
+  border: 1px solid rgba(0, 0, 0, 0.02);
+  overflow: hidden;
+  transition: all 0.2s ease;
+}
+
+.tree-category-node:hover {
+  background: rgba(248, 250, 252, 0.8);
+}
+
+.category-node-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 10px;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.category-node-header:hover {
+  background-color: rgba(99, 102, 241, 0.05);
+}
+
+.category-node-header.is-expanded {
+  background-color: rgba(99, 102, 241, 0.08);
+  border-bottom: 1px solid rgba(99, 102, 241, 0.05);
+}
+
+.category-name {
+  display: flex;
+  align-items: center;
+  font-size: 12px;
+  font-weight: 600;
+  color: #334155;
+}
+
+.tree-indent {
+  display: inline-block;
+  flex-shrink: 0;
+}
+
+.folder-icon {
+  margin-right: 6px;
+  font-size: 13px;
+}
+
+.cat-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tag-count-badge {
+  background-color: rgba(99, 102, 241, 0.12);
+  color: #4f46e5;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 999px;
+}
+
+/* Capsules pills for tags */
+.category-tags-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 10px;
+  background: rgba(255, 255, 255, 0.6);
+  border-top: 1px dashed rgba(99, 102, 241, 0.08);
+  animation: fadeInSlide 0.2s ease-out forwards;
+}
+
+.tag-pill-btn {
+  border: 1px solid rgba(203, 213, 225, 0.6);
+  background: #ffffff;
+  color: #475569;
+  font-size: 11px;
+  font-weight: 500;
+  padding: 4px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.02);
+}
+
+.tag-pill-btn:hover {
+  background: rgba(99, 102, 241, 0.05);
+  border-color: rgba(99, 102, 241, 0.3);
+  color: #4f46e5;
+}
+
+.tag-pill-btn.is-active {
+  background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
+  color: #ffffff;
+  border-color: transparent;
+  box-shadow: 0 2px 6px rgba(99, 102, 241, 0.25);
+}
+
+/* Keyframes for animations */
+@keyframes scaleUp {
+  0% { transform: scale(0.9); opacity: 0; }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+@keyframes fadeInSlide {
+  0% { opacity: 0; transform: translateY(-8px); }
+  100% { opacity: 1; transform: translateY(0); }
 }
 </style>

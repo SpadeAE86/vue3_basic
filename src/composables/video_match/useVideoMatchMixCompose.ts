@@ -5,7 +5,7 @@ import { startMixComposeApi, getMixComposeApi, type VideoMatchShotDto } from '@/
 export function useVideoMatchMixCompose(
   composing: any,
 currentJobId: import('vue').Ref<string | null>, shots: import('vue').Ref<VideoMatchShotDto[]>, canMixCompose: import('vue').Ref<boolean>, mixComposeDisabledHint: import('vue').Ref<string>) {
-let composePollTimer: ReturnType<typeof setInterval> | null = null
+let composePollTimer: any = null
 
 const mixPreferSrt = ref(false)
 

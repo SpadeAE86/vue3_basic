@@ -1,14 +1,15 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, watch } from 'vue'
 import { ArrowLeft, ArrowRight, ChatLineRound, MoreFilled, Download, Delete, Plus } from '@element-plus/icons-vue'
 import { ElMessageBox, ElMessage } from 'element-plus'
 
 const props = defineProps<{
   currentSessionId: string | null
+  roleId: string
 }>()
 
 const emit = defineEmits<{
-  (e: 'select-session', sessionId: string): void
+  (e: 'select-session', sessionId: string, roleId: string): void
   (e: 'delete-session', sessionId: string): void
 }>()
 
@@ -16,6 +17,7 @@ interface Session {
   session_id: string
   title: string
   updated_at: number
+  role_id: string
 }
 
 const sessions = ref<Session[]>([])
@@ -36,11 +38,10 @@ async function fetchSessions(reset = false) {
   
   loading.value = true
   try {
-    const res = await fetch(`/api/chat/sessions?page=${targetPage}&page_size=20`)
+    const res = await fetch(`/api/chat/sessions?page=${targetPage}&page_size=20&role_id=${props.roleId}`)
     if (res.ok) {
       const data = await res.json()
       if (reset) {
-        // 查找当前活跃的会话项（防止刚生成的临时会话被后端的延迟加载覆盖导致消失）
         const activeSession = sessions.value.find((s: Session) => s.session_id === props.currentSessionId)
         sessions.value = data.sessions
         if (activeSession && !data.sessions.some((s: any) => s.session_id === props.currentSessionId)) {
@@ -60,6 +61,10 @@ async function fetchSessions(reset = false) {
   }
 }
 
+watch(() => props.roleId, () => {
+  fetchSessions(true)
+})
+
 function handleScroll(scrollInfo: { scrollTop: number, scrollHeight: number, clientHeight: number }) {
   if (loading.value || !hasMore.value) return
   const { scrollTop, scrollHeight, clientHeight } = scrollInfo
@@ -69,7 +74,8 @@ function handleScroll(scrollInfo: { scrollTop: number, scrollHeight: number, cli
 }
 
 function selectSession(sessionId: string) {
-  emit('select-session', sessionId)
+  const sess = sessions.value.find(s => s.session_id === sessionId)
+  emit('select-session', sessionId, sess?.role_id || 'default')
 }
 
 function toggleSidebar() {
@@ -91,7 +97,6 @@ function formatTime(timestamp: number): string {
 }
 
 function handleExport(sessionId: string) {
-  // 浏览器直接触发接口下载文件
   window.open(`/api/chat/sessions/${sessionId}/export`, '_blank')
 }
 
@@ -132,7 +137,7 @@ async function handleDelete(sessionId: string) {
 }
 
 function selectNewChat() {
-  emit('select-session', '')
+  emit('select-session', '', props.roleId)
 }
 
 function addTemporarySession(sid: string, title: string) {
@@ -140,7 +145,8 @@ function addTemporarySession(sid: string, title: string) {
   sessions.value.unshift({
     session_id: sid,
     title: title,
-    updated_at: Math.floor(Date.now() / 1000)
+    updated_at: Math.floor(Date.now() / 1000),
+    role_id: props.roleId
   })
 }
 
@@ -150,7 +156,8 @@ onMounted(() => {
 
 defineExpose({
   refresh: () => fetchSessions(true),
-  addTemporarySession
+  addTemporarySession,
+  sessions
 })
 </script>
 

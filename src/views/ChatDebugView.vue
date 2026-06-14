@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, watch } from 'vue'
 import type { ChatEvent, SSEEventPayload } from '@/types/chat'
 import { mapSSEtoChatEvent } from '@/types/chat'
 import EventStream from '@/components/chat/EventStream.vue'
@@ -11,6 +11,19 @@ const events = ref<ChatEvent[]>([])
 const loading = ref(false)
 const sessionId = ref<string | null>(null)
 const sidebarRef = ref<InstanceType<typeof HistorySidebar> | null>(null)
+const activeRoleId = ref(localStorage.getItem('agent_debug_active_role_id') || 'default')
+
+watch(activeRoleId, (newRole) => {
+  localStorage.setItem('agent_debug_active_role_id', newRole)
+  if (sessionId.value) {
+    const currentSess = sidebarRef.value?.sessions?.find((s: any) => s.session_id === sessionId.value)
+    if (currentSess && currentSess.role_id !== newRole) {
+      sessionId.value = null
+      events.value = []
+      localStorage.removeItem('agent_debug_active_session_id')
+    }
+  }
+})
 
 // ─── 模式切换: Mock / 真实后端 ────────────────────────────────────
 const useMock = ref(false)
@@ -56,7 +69,7 @@ async function handleSend(text: string, referenceMedia: MediaFile[] = [], model:
   loading.value = false
 }
 
-async function handleSelectSession(sid: string) {
+async function handleSelectSession(sid: string, roleId = 'default') {
   if (!sid) {
     sessionId.value = null
     events.value = []
@@ -66,6 +79,10 @@ async function handleSelectSession(sid: string) {
   
   sessionId.value = sid
   localStorage.setItem('agent_debug_active_session_id', sid)
+  if (activeRoleId.value !== roleId) {
+    activeRoleId.value = roleId
+    localStorage.setItem('agent_debug_active_role_id', roleId)
+  }
   events.value = []
   loading.value = true
   
@@ -221,6 +238,7 @@ async function connectSSE(userText: string, referenceMedia: MediaFile[] = [], mo
         reference_image_list: referenceMedia.filter(m => m.type === 'image').map(m => m.url),
         session_id: sessionId.value || undefined,
         max_iterations: 10,
+        role_id: activeRoleId.value,
       }),
     })
 
@@ -308,13 +326,14 @@ async function connectSSE(userText: string, referenceMedia: MediaFile[] = [], mo
       <EventStream :events="events" />
 
       <!-- 输入框 -->
-      <ChatInput :disabled="loading" @send="handleSend" />
+      <ChatInput :disabled="loading" v-model:role-id="activeRoleId" @send="handleSend" />
     </div>
 
     <!-- 历史会话栏 (右侧) -->
     <HistorySidebar
       ref="sidebarRef"
       :current-session-id="sessionId"
+      :role-id="activeRoleId"
       @select-session="handleSelectSession"
       @delete-session="handleDeleteSession"
     />

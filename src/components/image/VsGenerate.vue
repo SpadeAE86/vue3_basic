@@ -199,7 +199,7 @@ async function handleGenerateBoth() {
     // 替换插槽与分隔符以发送纯净提示词
     const cleanRawPrompt = rawPrompt.value
       .replace(/\{([^:]+):\s*([^}]+)\}/g, (_match, _key, val) => val.trim())
-      .replace(/--split--/g, '\n')
+      .replace(/\s*--split--\s*/g, '\n\n')
 
     // 1. 提示词美化阶段
     let finalPromptA = cleanRawPrompt
@@ -353,7 +353,7 @@ async function handleTemplateSelected(name: string) {
 function handleBeautifyRawPrompt() {
   const cleanRawPrompt = rawPrompt.value
     .replace(/\{([^:]+):\s*([^}]+)\}/g, (_match, _key, val) => val.trim())
-    .replace(/--split--/g, '\n')
+    .replace(/\s*--split--\s*/g, '\n\n')
   beautifyPrompt(cleanRawPrompt, (newPrompt: string) => {
     rawPrompt.value = newPrompt
   }, {
