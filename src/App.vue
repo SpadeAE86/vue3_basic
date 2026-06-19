@@ -151,6 +151,11 @@ onUnmounted(() => {
           <template #title>Agent 调试</template>
         </el-menu-item>
 
+        <el-menu-item index="/role-cards">
+          <el-icon><i-ep-postcard /></el-icon>
+          <template #title>角色卡</template>
+        </el-menu-item>
+
         <el-sub-menu index="menu-creator-helper">
           <template #title>
             <el-icon><i-ep-magic-stick /></el-icon>

@@ -7,6 +7,8 @@ import type { ChatEvent } from '@/types/chat'
 const props = defineProps<{
   event: ChatEvent
   isExpanded: boolean
+  avatarUrl?: string
+  avatarName?: string
 }>()
 
 const emit = defineEmits<{
@@ -50,7 +52,11 @@ onMounted(() => {
 
 <template>
   <div class="bubble assistant-bubble">
-    <div class="avatar">A</div>
+    <div class="avatar">
+      <img v-if="avatarUrl" :src="avatarUrl" class="avatar-img" />
+      <template v-else-if="avatarName">{{ avatarName.charAt(0).toUpperCase() }}</template>
+      <template v-else>A</template>
+    </div>
     <div
       ref="bubbleBodyRef"
       class="bubble-body"
@@ -89,7 +95,7 @@ onMounted(() => {
   flex-shrink: 0;
   width: 30px;
   height: 30px;
-  border-radius: 8px;
+  border-radius: 50%;
   background: linear-gradient(135deg, #6366f1, #8b5cf6);
   color: #fff;
   display: flex;
@@ -97,6 +103,13 @@ onMounted(() => {
   justify-content: center;
   font-size: 13px;
   font-weight: 700;
+  overflow: hidden;
+}
+
+.avatar-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 
 .bubble-body {

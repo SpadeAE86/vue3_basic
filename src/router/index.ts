@@ -35,6 +35,18 @@ const router = createRouter({
       meta: { title: 'Agent 调试' },
     },
     {
+      path: '/role-cards',
+      name: 'role-cards',
+      component: () => import('../views/RoleCardsView.vue'),
+      meta: { title: '角色卡' },
+    },
+    {
+      path: '/roles/:role_id',
+      name: 'role-space',
+      component: () => import('../views/RoleSpaceView.vue'),
+      meta: { title: '角色空间' },
+    },
+    {
       path: '/image',
       name: 'image',
       component: () => import('../views/PromptLabView.vue'),

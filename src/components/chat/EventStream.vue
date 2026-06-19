@@ -9,6 +9,7 @@ import { useChatStore } from '@/stores/chat'
 
 const props = defineProps<{
   events: ChatEvent[]
+  activeRole?: { id: string; name: string; avatar_emoji?: string; avatar_url?: string }
 }>()
 
 const chatStore = useChatStore()
@@ -170,6 +171,8 @@ watch(
           v-else-if="event.type === 'assistant'"
           :event="event"
           :is-expanded="expandedEventId === event.id"
+          :avatar-url="activeRole?.avatar_url"
+          :avatar-name="activeRole?.name"
           @toggle-expand="toggleExpand(event.id)"
         />
 

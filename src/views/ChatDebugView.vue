@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, watch } from 'vue'
+import { ref, onMounted, watch, computed } from 'vue'
 import type { ChatEvent, SSEEventPayload } from '@/types/chat'
 import { mapSSEtoChatEvent } from '@/types/chat'
 import EventStream from '@/components/chat/EventStream.vue'
@@ -12,16 +12,56 @@ const loading = ref(false)
 const sessionId = ref<string | null>(null)
 const sidebarRef = ref<InstanceType<typeof HistorySidebar> | null>(null)
 const activeRoleId = ref(localStorage.getItem('agent_debug_active_role_id') || 'default')
+const roles = ref<{ id: string; name: string; description?: string; avatar_emoji?: string }[]>([])
 
-watch(activeRoleId, (newRole) => {
-  localStorage.setItem('agent_debug_active_role_id', newRole)
-  if (sessionId.value) {
-    const currentSess = sidebarRef.value?.sessions?.find((s: any) => s.session_id === sessionId.value)
-    if (currentSess && currentSess.role_id !== newRole) {
-      sessionId.value = null
-      events.value = []
-      localStorage.removeItem('agent_debug_active_session_id')
+async function fetchRoles() {
+  try {
+    const res = await fetch(`${API_BASE}/chat/roles?t=${Date.now()}`)
+    if (res.ok) {
+      roles.value = await res.json()
     }
+  } catch (err) {
+    console.error('Failed to fetch roles:', err)
+  }
+}
+
+const activeRole = computed(() => {
+  return roles.value.find(r => r.id === activeRoleId.value) || { id: 'default', name: 'CC', avatar_emoji: '⚡' }
+})
+
+let skipAutoLoad = false
+
+watch(activeRoleId, async (newRole) => {
+  localStorage.setItem('agent_debug_active_role_id', newRole)
+  
+  if (!roles.value.some(r => r.id === newRole)) {
+    await fetchRoles()
+  }
+
+  if (skipAutoLoad) {
+    skipAutoLoad = false
+    return
+  }
+
+  // 切换角色时，自动加载该角色最近的一个会话
+  try {
+    const res = await fetch(`${API_BASE}/chat/sessions?page=1&page_size=1&role_id=${newRole}`)
+    if (res.ok) {
+      const data = await res.json()
+      if (data.sessions && data.sessions.length > 0) {
+        const lastSession = data.sessions[0]
+        if (sessionId.value !== lastSession.session_id) {
+          handleSelectSession(lastSession.session_id, newRole)
+        }
+      } else {
+        // 该角色暂无会话，清空当前聊天
+        sessionId.value = null
+        events.value = []
+        localStorage.removeItem('agent_debug_active_session_id')
+      }
+    }
+  } catch (err) {
+    console.error('Failed to auto-load last session for role:', err)
   }
 })
 
@@ -80,6 +120,7 @@ async function handleSelectSession(sid: string, roleId = 'default') {
   sessionId.value = sid
   localStorage.setItem('agent_debug_active_session_id', sid)
   if (activeRoleId.value !== roleId) {
+    skipAutoLoad = true
     activeRoleId.value = roleId
     localStorage.setItem('agent_debug_active_role_id', roleId)
   }
@@ -125,11 +166,30 @@ function handleDeleteSession(sid: string) {
 }
 
 onMounted(() => {
+  fetchRoles()
   const saved = localStorage.getItem('agent_debug_active_session_id')
   if (saved) {
     handleSelectSession(saved)
+  } else {
+    // 首次载入如果没有保存的 Session，也自动加载当前角色的最后一个 Session
+    watchActiveRoleOnce()
   }
 })
+
+async function watchActiveRoleOnce() {
+  try {
+    const res = await fetch(`${API_BASE}/chat/sessions?page=1&page_size=1&role_id=${activeRoleId.value}`)
+    if (res.ok) {
+      const data = await res.json()
+      if (data.sessions && data.sessions.length > 0) {
+        const lastSession = data.sessions[0]
+        handleSelectSession(lastSession.session_id, activeRoleId.value)
+      }
+    }
+  } catch (err) {
+    console.error('Failed to init last session:', err)
+  }
+}
 
 // ═══════════════════════════════════════════════════════════════
 //  流式文本输出工具函数
@@ -288,11 +348,15 @@ async function connectSSE(userText: string, referenceMedia: MediaFile[] = [], mo
               // 其他事件 (tool_call, tool_result, status_update 等) 直接 push
               finishStreaming()
               pushEvent(raw)
+              if (raw.event_type === 'tool_result' && raw.tool_name === 'rename_role') {
+                fetchRoles()
+              }
             }
 
             // task_complete / error → 结束
             if (raw.event_type === 'task_complete' || raw.event_type === 'error') {
               finishStreaming()
+              fetchRoles()
               return
             }
           } catch (e) {
@@ -323,7 +387,7 @@ async function connectSSE(userText: string, referenceMedia: MediaFile[] = [], mo
       </div>
 
       <!-- 事件流 -->
-      <EventStream :events="events" />
+      <EventStream :events="events" :active-role="activeRole" />
 
       <!-- 输入框 -->
       <ChatInput :disabled="loading" v-model:role-id="activeRoleId" @send="handleSend" />
