@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
+import { ElMessage } from 'element-plus'
 import { checkBackendStatusApi } from '@/api/generate'
 import { getVideoAnalysisTaskBadgesApi } from '@/api/video_analysis'
 import { useChatStore } from '@/stores/chat'
@@ -99,17 +100,198 @@ function onVaTasksSubmitted() {
   void refreshVaBadge()
 }
 
+// Daily Notification Bell State
+interface DailyNote {
+  id: number
+  agent_id: string
+  date_str: string
+  content: string
+  created_at: string | null
+}
+
+const recentNotes = ref<DailyNote[]>([])
+const loadingNotes = ref(false)
+const hasUnreadNotes = ref(false)
+const LATEST_SEEN_NOTE_ID_KEY = 'latest_seen_daily_note_id'
+let notesTimer: number
+
+async function fetchNotificationNotes() {
+  loadingNotes.value = true
+  try {
+    const res = await fetch(`/api/agent/daily-messages?limit=5&t=${Date.now()}`)
+    if (res.ok) {
+      const data = await res.json()
+      if (data.success && data.data) {
+        recentNotes.value = data.data
+        
+        if (data.data.length > 0) {
+          const latestId = data.data[0].id
+          const lastSeenIdStr = localStorage.getItem(LATEST_SEEN_NOTE_ID_KEY)
+          if (!lastSeenIdStr || parseInt(lastSeenIdStr, 10) < latestId) {
+            hasUnreadNotes.value = true
+          } else {
+            hasUnreadNotes.value = false
+          }
+        } else {
+          hasUnreadNotes.value = false
+        }
+      }
+    }
+  } catch (err) {
+    console.error('Failed to fetch daily notes for notifications:', err)
+  } finally {
+    loadingNotes.value = false
+  }
+}
+
+function markNotificationsAsRead() {
+  const firstNote = recentNotes.value[0]
+  if (firstNote) {
+    const latestId = firstNote.id
+    localStorage.setItem(LATEST_SEEN_NOTE_ID_KEY, String(latestId))
+    hasUnreadNotes.value = false
+  }
+}
+
+function getAgentName(agentId: string) {
+  if (agentId === 'neuro') return '欣怡'
+  if (agentId === 'default' || agentId === 'cc') return 'CC'
+  return agentId
+}
+
+function getAgentAvatar(agentId: string) {
+  if (agentId === 'neuro') return '🌸'
+  if (agentId === 'default' || agentId === 'cc') return '⚡'
+  return '👤'
+}
+
+// TTS Playback State for Notifications
+const activeNotificationAudio = ref<HTMLAudioElement | null>(null)
+const playingNotificationId = ref<number | null>(null)
+const loadingNotificationId = ref<number | null>(null)
+const ttsUrlCache: Record<string, string> = {}
+
+async function playNotificationTTS(note: DailyNote) {
+  const text = note.content
+  let voice = 'Vivi'
+  try {
+    const rolesRes = await fetch(`/api/chat/roles?t=${Date.now()}`)
+    if (rolesRes.ok) {
+      const allRoles = await rolesRes.json()
+      const foundRole = allRoles.find((r: any) => r.id === note.agent_id)
+      if (foundRole && foundRole.voice_character) {
+        voice = foundRole.voice_character
+      }
+    }
+  } catch (e) {
+    console.error('Failed to resolve role voice, fallback to Vivi', e)
+  }
+
+  const cacheKey = `${text}_${voice}`
+
+  if (activeNotificationAudio.value) {
+    activeNotificationAudio.value.pause()
+    activeNotificationAudio.value = null
+  }
+
+  if (playingNotificationId.value === note.id) {
+    playingNotificationId.value = null
+    return
+  }
+
+  loadingNotificationId.value = note.id
+
+  try {
+    let url: string | undefined = ttsUrlCache[cacheKey]
+    if (!url) {
+      const res = await fetch('/api/chat/tts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text, voice, speed: 1.0, disable_segmentation: true, byte_stream: true })
+      })
+      if (!res.ok) throw new Error('TTS 请求失败')
+      
+      const reader = res.body?.getReader()
+      if (!reader) throw new Error('无法读取响应流')
+      
+      const decoder = new TextDecoder()
+      let buffer = ''
+      
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        
+        buffer += decoder.decode(value, { stream: true })
+        const parts = buffer.split('\n\n')
+        buffer = parts.pop() ?? ''
+        
+        for (const part of parts) {
+          const lines = part.split('\n').filter(l => l.startsWith('data: '))
+          for (const line of lines) {
+            const dataStr = line.slice(6)
+            if (dataStr === '[DONE]') continue
+            
+            try {
+              const raw = JSON.parse(dataStr)
+              if (raw.event_type === 'merged_audio' && raw.url) {
+                url = raw.url
+              } else if (raw.event_type === 'error') {
+                throw new Error(raw.message || 'TTS 生成错误')
+              }
+            } catch (e) {
+              // 忽略其他事件的解析错误
+            }
+          }
+        }
+      }
+
+      if (url) {
+        ttsUrlCache[cacheKey] = url
+      }
+    }
+
+    if (!url) {
+      throw new Error('未获取到有效的音频链接')
+    }
+
+    loadingNotificationId.value = null
+    playingNotificationId.value = note.id
+
+    const audio = new Audio(url)
+    activeNotificationAudio.value = audio
+    audio.onended = () => {
+      if (playingNotificationId.value === note.id) {
+        playingNotificationId.value = null
+      }
+    }
+    audio.onerror = () => {
+      ElMessage.error('音频加载或播放失败')
+      playingNotificationId.value = null
+    }
+    audio.play()
+  } catch (err: any) {
+    console.error(err)
+    ElMessage.error(err.message || '语音合成失败')
+    loadingNotificationId.value = null
+    playingNotificationId.value = null
+  }
+}
+
+
 onMounted(() => {
   checkStatus()
   statusCheckTimer = window.setInterval(checkStatus, 10000)
   void refreshVaBadge()
   vaBadgeTimer = window.setInterval(refreshVaBadge, 15000)
+  void fetchNotificationNotes()
+  notesTimer = window.setInterval(fetchNotificationNotes, 300000)
   window.addEventListener('va-tasks-submitted', onVaTasksSubmitted)
 })
 
 onUnmounted(() => {
   clearInterval(statusCheckTimer)
   clearInterval(vaBadgeTimer)
+  clearInterval(notesTimer)
   window.removeEventListener('va-tasks-submitted', onVaTasksSubmitted)
 })
 </script>
@@ -239,16 +421,24 @@ onUnmounted(() => {
             <el-icon><i-ep-compass /></el-icon>
             <template #title>素材匹配</template>
           </el-menu-item>
+          <el-menu-item index="/task-board/lora">
+            <el-icon><i-ep-setting /></el-icon>
+            <template #title>LoRA 看板</template>
+          </el-menu-item>
         </el-sub-menu>
 
         <el-sub-menu index="menu-tools">
           <template #title>
             <el-icon><i-ep-setting /></el-icon>
-            <span>工具</span>
+            <span>系统管理</span>
           </template>
+          <el-menu-item index="/scheduler">
+            <el-icon><i-ep-clock /></el-icon>
+            <template #title>定时任务</template>
+          </el-menu-item>
           <el-menu-item index="/tools/settings">
             <el-icon><i-ep-operation /></el-icon>
-            <template #title>设置</template>
+            <template #title>全局设置</template>
           </el-menu-item>
         </el-sub-menu>
       </el-menu>
@@ -270,6 +460,76 @@ onUnmounted(() => {
           <span class="page-title">{{ route.meta.title || '首页' }}</span>
         </div>
         <div class="header-right">
+          <!-- Agent 晚间留言板 消息中心 -->
+          <el-popover
+            placement="bottom-end"
+            :width="350"
+            trigger="click"
+            popper-style="padding: 0; border-radius: 12px; overflow: hidden; box-shadow: 0 10px 30px rgba(0,0,0,0.15); border: 1px solid rgba(220, 223, 230, 0.6);"
+            @before-enter="markNotificationsAsRead"
+          >
+            <template #reference>
+              <div class="bell-notification-trigger">
+                <el-badge :is-dot="hasUnreadNotes" class="notification-badge">
+                  <el-icon :size="20" class="header-bell-icon"><i-ep-bell /></el-icon>
+                </el-badge>
+              </div>
+            </template>
+            
+            <div class="notification-popover-content">
+              <div class="popover-header">
+                <span class="popover-title">Agent 晚间留言</span>
+                <el-button 
+                  v-if="recentNotes.length > 0"
+                  type="primary" 
+                  link 
+                  size="small"
+                  @click="markNotificationsAsRead"
+                >
+                  清除红点
+                </el-button>
+              </div>
+              <div v-loading="loadingNotes" class="popover-body">
+                <div v-if="recentNotes.length === 0" class="empty-notifications">
+                  <el-empty :image-size="60" description="暂无留言" />
+                </div>
+                <div v-else class="notification-list">
+                  <div 
+                    v-for="note in recentNotes" 
+                    :key="note.id" 
+                    class="notification-item"
+                  >
+                    <div class="notification-item-header">
+                      <div class="agent-avatar-mini">{{ getAgentAvatar(note.agent_id) }}</div>
+                      <span class="agent-name-mini">{{ getAgentName(note.agent_id) }}</span>
+                      <span class="notification-date">{{ note.date_str }}</span>
+                      
+                      <!-- TTS Read Aloud Icon -->
+                      <div 
+                        class="tts-play-btn" 
+                        :class="{ 'is-active': loadingNotificationId === note.id || playingNotificationId === note.id }" 
+                        @click.stop="playNotificationTTS(note)"
+                        title="朗读此条留言"
+                      >
+                        <el-icon v-if="loadingNotificationId === note.id" class="is-loading"><i-ep-loading /></el-icon>
+                        <el-icon v-else-if="playingNotificationId === note.id"><i-ep-video-pause /></el-icon>
+                        <el-icon v-else><i-ep-microphone /></el-icon>
+                      </div>
+                    </div>
+                    <div class="notification-item-body">
+                      {{ note.content }}
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="popover-footer">
+                <router-link to="/scheduler" class="view-all-link">
+                  进入系统管理查看全部日程与留言
+                </router-link>
+              </div>
+            </div>
+          </el-popover>
+
           <el-tooltip
             :content="isBackendConnected ? '后端已连接' : '后端未连接'"
             placement="bottom"
@@ -475,5 +735,161 @@ onUnmounted(() => {
 :deep(.el-backtop:hover) {
   background-color: #f5f7fa !important;
   color: #6366f1 !important;
+}
+/* --- Notification Bell Styles --- */
+.bell-notification-trigger {
+  margin-right: 15px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  transition: all 0.3s;
+}
+
+.bell-notification-trigger:hover {
+  background: rgba(99, 102, 241, 0.08);
+}
+
+.header-bell-icon {
+  color: #606266;
+  transition: color 0.3s;
+}
+
+.bell-notification-trigger:hover .header-bell-icon {
+  color: #6366f1;
+}
+
+.notification-popover-content {
+  display: flex;
+  flex-direction: column;
+  background: #ffffff;
+}
+
+.popover-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  border-bottom: 1px solid #f2f2f6;
+  background: #fdfdfd;
+}
+
+.popover-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: #303133;
+}
+
+.popover-body {
+  max-height: 300px;
+  overflow-y: auto;
+  padding: 8px 16px;
+}
+
+.empty-notifications {
+  padding: 30px 0;
+}
+
+.notification-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.notification-item {
+  padding: 8px 0;
+  border-bottom: 1px solid #f2f2f6;
+}
+
+.notification-item:last-child {
+  border-bottom: none;
+}
+
+.notification-item-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.agent-avatar-mini {
+  font-size: 16px;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: #f5f7fa;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.agent-name-mini {
+  font-size: 12px;
+  font-weight: 600;
+  color: #303133;
+}
+
+.notification-date {
+  font-size: 11px;
+  font-family: Consolas, Monaco, monospace;
+  color: #909399;
+  margin-left: auto;
+}
+
+.notification-item-body {
+  font-size: 12px;
+  line-height: 1.5;
+  color: #606266;
+  white-space: pre-wrap;
+  text-align: justify;
+}
+
+.popover-footer {
+  padding: 10px 16px;
+  border-top: 1px solid #f2f2f6;
+  background: #fbfbfb;
+  text-align: center;
+}
+
+.view-all-link {
+  font-size: 11.5px;
+  color: #6366f1;
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.view-all-link:hover {
+  text-decoration: underline;
+}
+
+/* --- TTS Read Aloud Button --- */
+.tts-play-btn {
+  margin-left: 8px;
+  cursor: pointer;
+  color: #909399;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  border-radius: 50%;
+  transition: all 0.2s;
+  background: #f1f5f9;
+  width: 20px;
+  height: 20px;
+}
+.tts-play-btn:hover {
+  color: #6366f1;
+  background: rgba(99, 102, 241, 0.12);
+}
+.notification-item:hover .tts-play-btn {
+  display: inline-flex;
+}
+.tts-play-btn.is-active {
+  display: inline-flex;
+  color: #6366f1;
+  background: rgba(99, 102, 241, 0.12);
 }
 </style>

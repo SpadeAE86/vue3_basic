@@ -76,7 +76,11 @@ async function handleToggleFavorite(e: MouseEvent, name: string) {
   e.stopPropagation()
   
   const content = localTemplates.get(name) || await getTemplateContent(name) || ''
-  const payload = { name: name, template_text: content }
+  const payload = { 
+    name: name, 
+    template_text: content,
+    subtype: props.activeTab === 'beautify' ? 'beautify' : 'prompt'
+  }
   
   await collectionsStore.toggleFavorite('template', name, undefined, payload)
 }

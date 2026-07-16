@@ -1,17 +1,22 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElImageViewer } from 'element-plus'
+import { useRouter } from 'vue-router'
 import type { GeneratedItem } from '@/types/generate'
 import { copyToClipboard } from '@/utils/browser'
 import { useCollectionsStore } from '@/stores/collections'
 import MediaPreviewDialog from './MediaPreviewDialog.vue'
+import PromptDock from './PromptDock.vue'
 
 const props = defineProps<{
   item: GeneratedItem
   modelLabel: string
+  previewList?: GeneratedItem[]
+  previewIndex?: number
 }>()
 
 const collectionsStore = useCollectionsStore()
+const router = useRouter()
 
 const isFavorited = computed(() => {
   if (!props.item.url) return false
@@ -30,14 +35,124 @@ function toggleFavorite() {
       prompt: props.item.prompt || '',
       model: props.item.model || '',
       type: props.item.type || 't2i',
-      time: props.item.time || ''
+      time: props.item.time || '',
+      ratio: props.item.ratio || '',
+      size: props.item.size || '',
+      resolution: props.item.resolution || '',
+      duration: props.item.duration || undefined,
+      referenceMedia: props.item.referenceMedia || []
     }
   )
+}
+
+const activePreviewIndex = ref(0)
+const activeVideoPreviewIndex = ref(0)
+
+const isVideoItem = computed(() => {
+  return props.item.type.includes('v')
+})
+
+const imagePreviewItems = computed(() => {
+  if (!props.previewList) return [props.item]
+  return props.previewList.filter(item => {
+    return !item.type.includes('v')
+  })
+})
+
+const previewUrlList = computed(() => {
+  return imagePreviewItems.value.map(item => item.url || '')
+})
+
+const initialPreviewIndex = computed(() => {
+  const idx = imagePreviewItems.value.findIndex(item => item.id === props.item.id)
+  return idx > -1 ? idx : 0
+})
+
+function onImagePreviewShow() {
+  viewerPromptVisible.value = true
+  activePreviewIndex.value = initialPreviewIndex.value
+}
+
+function handleSwitch(index: number) {
+  activePreviewIndex.value = index
+}
+
+const activePreviewItem = computed(() => {
+  return imagePreviewItems.value[activePreviewIndex.value] || props.item
+})
+
+const videoPreviewItems = computed(() => {
+  if (!props.previewList) return [props.item]
+  return props.previewList.filter(item => {
+    return item.type.includes('v')
+  })
+})
+
+const initialVideoPreviewIndex = computed(() => {
+  const idx = videoPreviewItems.value.findIndex(item => item.id === props.item.id)
+  return idx > -1 ? idx : 0
+})
+
+function onVideoPreviewShow() {
+  activeVideoPreviewIndex.value = initialVideoPreviewIndex.value
+}
+
+const activeVideoPreviewItem = computed(() => {
+  return videoPreviewItems.value[activeVideoPreviewIndex.value] || props.item
+})
+
+function handlePrevVideo() {
+  if (activeVideoPreviewIndex.value > 0) {
+    activeVideoPreviewIndex.value--
+  } else {
+    activeVideoPreviewIndex.value = videoPreviewItems.value.length - 1
+  }
+}
+
+function handleNextVideo() {
+  if (activeVideoPreviewIndex.value < videoPreviewItems.value.length - 1) {
+    activeVideoPreviewIndex.value++
+  } else {
+    activeVideoPreviewIndex.value = 0
+  }
 }
 
 onMounted(() => {
   collectionsStore.init()
 })
+
+const refPreviewUrl = ref<string | null>(null)
+const refPreviewType = ref<string>('image')
+
+function openRefPreview(url: string, type: string = 'image') {
+  refPreviewUrl.value = url
+  refPreviewType.value = type
+}
+
+function handlePrefill() {
+  const item = previewOpen.value ? activeVideoPreviewItem.value : activePreviewItem.value
+  const detail = {
+    type: item.type,
+    prompt: item.prompt || '',
+    model: item.model || '',
+    resolution: item.resolution || item.size || '',
+    ratio: item.ratio || '',
+    duration: item.duration,
+    referenceMedia: item.referenceMedia || []
+  }
+  window.dispatchEvent(new CustomEvent('imagegen:prefill', { detail }))
+  
+  // Close Element Plus's viewer
+  const closeBtn = document.querySelector('.el-image-viewer__wrapper .el-image-viewer__close') as HTMLElement
+  if (closeBtn) {
+    closeBtn.click()
+  }
+  
+  // Also close previewOpen if it was a video dialog preview
+  previewOpen.value = false
+  
+  router.push('/image')
+}
 
 const previewOpen = ref(false)
 /** 文生图/图生图：仅用 el-image 内嵌的 ElImageViewer（可缩放拖动）；勿再叠 MediaPreviewDialog */
@@ -46,6 +161,7 @@ const elImageRef = ref<{ showPreview?: () => void } | null>(null)
 function openPreview() {
   if (!props.item.url || props.item.loading || props.item.error) return
   if (props.item.type.includes('v')) {
+    onVideoPreviewShow()
     previewOpen.value = true
     return
   }
@@ -68,10 +184,6 @@ const emit = defineEmits<{
 
 /** 大图预览内提示词条显隐（关闭预览再打开会重置为显示） */
 const viewerPromptVisible = ref(true)
-
-function onImagePreviewShow() {
-  viewerPromptVisible.value = true
-}
 
 async function copyPrompt(prompt: string) {
   const success = await copyToClipboard(prompt)
@@ -125,9 +237,14 @@ function pauseVideo(e: Event) {
     <MediaPreviewDialog
       v-if="item.url && item.type.includes('v')"
       v-model="previewOpen"
-      :url="item.url"
-      :media-type="item.type"
-      :prompt="item.prompt"
+      :url="activeVideoPreviewItem.url"
+      :media-type="activeVideoPreviewItem.type"
+      :prompt="activeVideoPreviewItem.prompt"
+      :reference-media="activeVideoPreviewItem.referenceMedia"
+      :show-carousel="videoPreviewItems.length > 1"
+      @prefill="handlePrefill"
+      @prev="handlePrevVideo"
+      @next="handleNextVideo"
     />
 
     <div class="result-header">
@@ -177,50 +294,42 @@ function pauseVideo(e: Event) {
           :src="item.url"
           fit="contain"
           class="generated-image-el"
-          :preview-src-list="item.url ? [item.url] : []"
+          :preview-src-list="previewUrlList"
+          :initial-index="initialPreviewIndex"
           preview-teleported
           @show="onImagePreviewShow"
+          @switch="handleSwitch"
         >
           <!-- 预览层插槽：与缩放/拖拽共存；右上角关闭与底部旋转/缩放等为 Element Plus 内置 -->
           <template #viewer>
-            <div
-              class="result-preview-prompt-dock"
-              @mousedown.stop
-              @touchstart.stop
-            >
-              <div v-show="viewerPromptVisible" class="result-preview-prompt-inner">
-                <div class="result-preview-prompt-head">
-                  <span class="result-preview-label">提示词</span>
-                  <el-button
-                    type="info"
-                    link
-                    size="small"
-                    class="result-preview-toggle-link"
-                    @click.stop="viewerPromptVisible = false"
-                  >
-                    隐藏
-                  </el-button>
-                </div>
-                <p class="result-preview-text">{{ item.prompt?.trim() ? item.prompt : '—' }}</p>
-                <div class="result-preview-actions">
-                  <el-button type="primary" link size="small" @click.stop="copyPrompt(item.prompt)">
-                    复制全文
-                  </el-button>
-                </div>
-              </div>
-              <el-button
-                v-show="!viewerPromptVisible"
-                type="primary"
-                round
-                size="small"
-                class="result-preview-restore-btn"
-                @click.stop="viewerPromptVisible = true"
-              >
-                显示提示词
-              </el-button>
-            </div>
+            <PromptDock
+              v-model:visible="viewerPromptVisible"
+              :prompt="activePreviewItem.prompt"
+              :reference-media="activePreviewItem.referenceMedia"
+              @prefill="handlePrefill"
+              @click-reference="payload => openRefPreview(payload.url, payload.type)"
+            />
           </template>
         </el-image>
+
+        <!-- 外部弹窗，解决二次预览挂载 -->
+        <ElImageViewer
+          v-if="refPreviewUrl && refPreviewType === 'image'"
+          :url-list="[refPreviewUrl]"
+          @close="refPreviewUrl = null"
+          teleported
+        />
+        <el-dialog
+          v-else-if="refPreviewUrl && refPreviewType === 'video'"
+          :model-value="true"
+          append-to-body
+          align-center
+          width="fit-content"
+          class="video-preview-inner-dialog"
+          @close="refPreviewUrl = null"
+        >
+          <video :src="refPreviewUrl" controls autoplay style="max-width: 90vw; max-height: 90vh;" />
+        </el-dialog>
         
         <!-- Star Button -->
         <div 
@@ -503,76 +612,7 @@ function pauseVideo(e: Event) {
   background: rgba(245, 108, 108, 0.8);
 }
 
-/* 大图预览内嵌：固定底部，留白避开 Element Plus 底部工具条 */
-.result-preview-prompt-dock {
-  position: fixed;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  z-index: 2;
-  pointer-events: none;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  padding: 0 16px;
-  box-sizing: border-box;
-}
-
-.result-preview-prompt-inner {
-  pointer-events: auto;
-  width: min(100%, 720px);
-  max-height: min(30vh, 240px);
-  overflow-y: auto;
-  margin-bottom: 100px;
-  padding: 12px 14px 10px;
-  background: rgba(30, 30, 38, 0.45);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  border-radius: 14px;
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.25);
-}
-
-.result-preview-prompt-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 8px;
-}
-
-.result-preview-toggle-link {
-  flex-shrink: 0;
-  color: rgba(255, 255, 255, 0.75) !important;
-}
-
-.result-preview-label {
-  font-size: 11px;
-  font-weight: 500;
-  color: rgba(255, 255, 255, 0.55);
-  letter-spacing: 0.06em;
-}
-
-.result-preview-restore-btn {
-  pointer-events: auto;
-  margin-bottom: 100px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
-}
-
-.result-preview-text {
-  font-size: 13px;
-  line-height: 1.55;
-  color: rgba(255, 255, 255, 0.92);
-  white-space: pre-wrap;
-  word-break: break-word;
-  margin: 0 0 6px;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
-}
-
-.result-preview-actions {
-  display: flex;
-  justify-content: flex-end;
-}
+/* 收藏按钮 */
 
 .result-favorite-star {
   position: absolute;
@@ -613,5 +653,45 @@ function pauseVideo(e: Event) {
   color: #eab308 !important;
   background: #fff !important;
   border-color: #f59e0b !important;
+}
+
+.preview-reference-media-list {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+
+.preview-reference-media-wrapper {
+  position: relative;
+}
+
+.preview-reference-media-item {
+  width: 40px;
+  height: 40px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  cursor: pointer;
+  object-fit: cover;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+  background: #000;
+  display: block;
+}
+
+.preview-reference-media-item:hover {
+  transform: scale(1.4);
+  z-index: 10;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+  border-color: #a78bfa;
+}
+
+.audio-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
 }
 </style>

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 
@@ -9,7 +9,15 @@ const loading = ref(false)
 
 const createDialogVisible = ref(false)
 const newRoleName = ref('')
+const newRoleDescription = ref('')
 const createLoading = ref(false)
+
+watch(createDialogVisible, (val) => {
+  if (!val) {
+    newRoleName.value = ''
+    newRoleDescription.value = ''
+  }
+})
 
 async function fetchRoles() {
   loading.value = true
@@ -36,13 +44,17 @@ async function handleCreateRole() {
     const res = await fetch('/api/chat/roles', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: newRoleName.value.trim() })
+      body: JSON.stringify({ 
+        name: newRoleName.value.trim(),
+        description: newRoleDescription.value.trim()
+      })
     })
     const data = await res.json()
     if (data.ok && data.role) {
       ElMessage.success('角色创建成功')
       createDialogVisible.value = false
       newRoleName.value = ''
+      newRoleDescription.value = ''
       // 跳转到该角色的角色空间
       router.push(`/roles/${data.role.id}`)
     } else {
@@ -152,6 +164,16 @@ onMounted(() => {
       <el-form label-position="top">
         <el-form-item label="角色名称" required>
           <el-input v-model="newRoleName" placeholder="例如：我的傲娇伙伴、编程助手" maxlength="20" show-word-limit />
+        </el-form-item>
+        <el-form-item label="角色简介">
+          <el-input 
+            v-model="newRoleDescription" 
+            type="textarea" 
+            :rows="3" 
+            placeholder="请输入角色简介..." 
+            maxlength="200" 
+            show-word-limit 
+          />
         </el-form-item>
       </el-form>
       <template #footer>

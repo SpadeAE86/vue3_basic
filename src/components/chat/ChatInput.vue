@@ -7,8 +7,14 @@ import { ElMessageBox, ElMessage } from 'element-plus'
 const props = withDefaults(defineProps<{
   disabled?: boolean
   roleId?: string
+  tokenInfo?: {
+    token_count: number
+    threshold: number
+    percent: number
+  } | null
 }>(), {
-  roleId: 'default'
+  roleId: 'default',
+  tokenInfo: null
 })
 
 const emit = defineEmits<{
@@ -22,6 +28,21 @@ const isUploading = ref(false)
 const models = ref<{ display_name: string, real_name: string }[]>([])
 const selectedModel = ref('gpt-5.4')
 const roles = ref<{ id: string, name: string, description?: string, avatar_emoji?: string }[]>([])
+
+const strokeDasharray = 62.83
+const strokeDashoffset = computed(() => {
+  if (!props.tokenInfo) return strokeDasharray
+  const pct = Math.max(0, Math.min(100, props.tokenInfo.percent))
+  return strokeDasharray * (1 - pct / 100)
+})
+
+const circleColor = computed(() => {
+  if (!props.tokenInfo) return '#cbd5e1'
+  const pct = props.tokenInfo.percent
+  if (pct < 50) return '#10b981'
+  if (pct < 80) return '#eab308'
+  return '#ef4444'
+})
 
 // 获取角色列表
 async function loadRoles() {
@@ -220,6 +241,42 @@ function handleKeydown(e: KeyboardEvent) {
 
       <!-- 右侧/底部控制栏（角色选择、模型选择、发送按钮） -->
       <div class="right-controls">
+        <!-- 上下文 Token 压缩监控环 -->
+        <el-tooltip
+          v-if="tokenInfo"
+          placement="top"
+          :content="`上下文长度: ${tokenInfo.token_count} / ${tokenInfo.threshold} tokens (已用 ${tokenInfo.percent}%)`"
+        >
+          <div class="context-token-circle">
+            <svg class="progress-ring" width="28" height="28">
+              <!-- 背景圆环 -->
+              <circle
+                class="progress-ring__background"
+                stroke="rgba(0, 0, 0, 0.08)"
+                stroke-width="2.5"
+                fill="transparent"
+                r="10"
+                cx="14"
+                cy="14"
+              />
+              <!-- 进度圆环 -->
+              <circle
+                class="progress-ring__circle"
+                :stroke="circleColor"
+                stroke-width="2.5"
+                fill="transparent"
+                r="10"
+                cx="14"
+                cy="14"
+                :stroke-dasharray="strokeDasharray"
+                :stroke-dashoffset="strokeDashoffset"
+                stroke-linecap="round"
+              />
+            </svg>
+            <span class="circle-inner-dot" :style="{ backgroundColor: circleColor }"></span>
+          </div>
+        </el-tooltip>
+
         <!-- 角色选择 -->
         <el-popover
           placement="top"
@@ -348,17 +405,10 @@ function handleKeydown(e: KeyboardEvent) {
 :deep(.media-uploader-wrapper .upload-btn) {
   width: 32px;
   height: 32px;
-  border-radius: 50%;
-  border: none !important;
-  background: transparent !important;
+  border-radius: 6px;
   color: #64748b;
   transition: all 0.2s;
   box-shadow: none !important;
-}
-
-:deep(.media-uploader-wrapper .upload-btn:hover:not(.is-disabled)) {
-  background: rgba(99, 102, 241, 0.08) !important;
-  color: #6366f1;
 }
 
 .right-controls {
@@ -586,5 +636,42 @@ function handleKeydown(e: KeyboardEvent) {
   text-overflow: ellipsis;
   white-space: nowrap;
   margin-top: 1px;
+}
+
+.context-token-circle {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  position: relative;
+  margin-right: 4px;
+}
+
+.progress-ring {
+  transform: rotate(-90deg);
+}
+
+.progress-ring__background {
+  stroke: rgba(0, 0, 0, 0.08);
+}
+
+.chat-input-box:focus-within .progress-ring__background {
+  stroke: rgba(0, 0, 0, 0.05);
+}
+
+.progress-ring__circle {
+  transition: stroke-dashoffset 0.35s;
+  transform-origin: 50% 50%;
+}
+
+.circle-inner-dot {
+  position: absolute;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  top: 12px;
+  left: 12px;
 }
 </style>

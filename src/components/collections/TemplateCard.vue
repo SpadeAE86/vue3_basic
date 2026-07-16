@@ -1,19 +1,231 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { ref, computed, onBeforeUnmount } from 'vue'
 import { useCollectionsStore, type CollectionItem } from '@/stores/collections'
 import { copyToClipboard } from '@/utils/browser'
 import { ElMessage } from 'element-plus'
+import { useRouter } from 'vue-router'
+
+function getAgentAvatar(roleId?: string) {
+  const base = window.location.protocol === 'file:' ? 'http://127.0.0.1:8004' : ''
+  if (!roleId) return `${base}/api/chat/roles/default/avatar`
+  return `${base}/api/chat/roles/${roleId}/avatar`
+}
+
+function getAgentName(roleId?: string) {
+  if (roleId === 'neuro') return '欣怡'
+  if (roleId === 'default' || roleId === 'cc') return 'CC'
+  return roleId || '欣怡'
+}
+
+function getTtsText(content: string): string {
+  const bothMatch = content.match(/<both>([\s\S]*?)<\/both>/)
+  const speakMatch = content.match(/<speak>([\s\S]*?)<\/speak>/)
+  const summaryMatch = content.match(/<summary>([\s\S]*?)<\/summary>/)
+  
+  let bothText = bothMatch && bothMatch[1] ? bothMatch[1].trim() : ''
+  let speakText = speakMatch && speakMatch[1] ? speakMatch[1].trim() : ''
+  let summaryText = summaryMatch && summaryMatch[1] ? summaryMatch[1].trim() : ''
+  
+  bothText = bothText.replace(/<\/?[a-zA-Z]+>/g, '').trim()
+  speakText = speakText.replace(/<\/?[a-zA-Z]+>/g, '').trim()
+  summaryText = summaryText.replace(/<\/?[a-zA-Z]+>/g, '').trim()
+  
+  const parts = [bothText, speakText, summaryText].filter(Boolean)
+  if (parts.length > 0) {
+    return parts.join('\n')
+  }
+  return content.replace(/<\/?[a-zA-Z]+>/g, '').trim().substring(0, 500)
+}
+
+const isPlaying = ref(false)
+const isLoading = ref(false)
+let audioEl: HTMLAudioElement | null = null
+
+onBeforeUnmount(() => {
+  if (audioEl) {
+    audioEl.pause()
+    audioEl = null
+  }
+})
+
+async function playTTS() {
+  if (isPlaying.value) {
+    if (audioEl) {
+      audioEl.pause()
+      isPlaying.value = false
+    }
+    return
+  }
+
+  const text = getTtsText(props.item.data.prompt || props.item.data.template_text || '')
+  if (!text) return
+
+  let voice = 'Vivi'
+  const roleId = props.item.data.role_id
+  if (roleId) {
+    try {
+      const rolesRes = await fetch(`/api/chat/roles?t=${Date.now()}`)
+      if (rolesRes.ok) {
+        const allRoles = await rolesRes.json()
+        const foundRole = allRoles.find((r: any) => r.id === roleId)
+        if (foundRole && foundRole.voice_character) {
+          voice = foundRole.voice_character
+        }
+      }
+    } catch (e) {
+      console.error('Failed to resolve role voice, fallback to Vivi', e)
+    }
+  }
+
+  isLoading.value = true
+  isPlaying.value = true
+
+  try {
+    const res = await fetch('/api/chat/tts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        text,
+        voice,
+        speed: 1.0,
+        disable_segmentation: true,
+        byte_stream: false
+      })
+    })
+
+    if (!res.ok) throw new Error('TTS 请求失败')
+    const reader = res.body?.getReader()
+    if (!reader) throw new Error('无法读取响应流')
+
+    const decoder = new TextDecoder()
+    let buffer = ''
+    let audioUrl = ''
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() || ''
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          const dataStr = line.slice(6).trim()
+          if (dataStr === '[DONE]') continue
+          try {
+            const raw = JSON.parse(dataStr)
+            if (raw.event_type === 'merged_audio' && raw.url) {
+              audioUrl = raw.url
+            }
+          } catch(e) {}
+        }
+      }
+    }
+
+    if (!audioUrl) throw new Error('未获取到合成音频 URL')
+
+    audioEl = new Audio(audioUrl)
+    audioEl.onended = () => {
+      isPlaying.value = false
+    }
+    audioEl.onerror = () => {
+      isPlaying.value = false
+    }
+    isLoading.value = false
+    audioEl.play().catch(() => {
+      isPlaying.value = false
+    })
+
+  } catch (err: any) {
+    console.error(err)
+    ElMessage.error(err.message || '语音合成失败')
+    isLoading.value = false
+    isPlaying.value = false
+  }
+}
 
 const props = defineProps<{
   item: CollectionItem
   isSelected: boolean
+  selectedSpaceId?: string | null
 }>()
 
 const emit = defineEmits<{
   (e: 'click-header', event: MouseEvent): void
 }>()
 
+const router = useRouter()
+
+function goToDiscuss(sessionId: string, roleId: string) {
+  router.push(`/chat?role_id=${roleId || 'default'}&session_id=${sessionId}`)
+}
+
 const collectionsStore = useCollectionsStore()
+
+// Compute item sub-type
+const itemSubType = computed(() => {
+  const item = props.item
+  if (item.data?.subtype === 'inspiration') return 'inspiration'
+  if (item.data?.subtype === 'beautify' || (item.title && item.title.includes('大纲'))) return 'beautify'
+  
+  // Dynamic fallback for templates/prompts without slots
+  const content = item.data?.template_text || item.data?.content || item.data?.prompt || ''
+  const hasSlots = /\{([^:]+):\s*([^}]+)\}/g.test(content)
+  if (item.item_type === 'template' && !hasSlots) {
+    return 'beautify'
+  }
+  
+  return 'prompt'
+})
+
+function getSubTypeLabel(subType: string) {
+  if (subType === 'inspiration') return '灵感'
+  if (subType === 'beautify') return '美化'
+  return '提示词'
+}
+
+function getInspirationSummary(item: CollectionItem): string {
+  // If it's a structured checklist card, return the summary
+  if (item.data?.checklist) {
+    return item.data.summary || '要点清单规划'
+  }
+  
+  // If it's a structured dialogue card
+  if (item.data?.both || item.data?.display || item.data?.speak || item.data?.summary) {
+    const parts = [
+      item.data.both || item.data.display,
+      item.data.summary ? `摘要: ${item.data.summary}` : ''
+    ].filter(Boolean)
+    return parts.join('\n\n')
+  }
+
+  const content = item.data?.prompt || item.data?.template_text || ''
+  
+  // Try to extract <both> and <summary>
+  const bothMatch = content.match(/<both>([\s\S]*?)<\/both>/)
+  const summaryMatch = content.match(/<summary>([\s\S]*?)<\/summary>/)
+  
+  let bothText = bothMatch && bothMatch[1] ? bothMatch[1].trim() : ''
+  let summaryText = summaryMatch && summaryMatch[1] ? summaryMatch[1].trim() : ''
+  
+  // Clean tags
+  bothText = bothText.replace(/<\/?[a-zA-Z]+>/g, '').trim()
+  summaryText = summaryText.replace(/<\/?[a-zA-Z]+>/g, '').trim()
+
+  if (bothText || summaryText) {
+    return [bothText, summaryText].filter(Boolean).join('\n\n')
+  }
+  
+  // Fallback: clean raw content and take first 500 chars
+  let cleanText = content.replace(/<[a-zA-Z]+>[\s\S]*?<\/[a-zA-Z]+>/g, '')
+  cleanText = cleanText.replace(/[*#`\-]/g, '').trim()
+  return cleanText.substring(0, 500) + (cleanText.length > 500 ? '...' : '')
+}
+
+function getSubTypeTagType(subType: string) {
+  if (subType === 'inspiration') return 'success'
+  if (subType === 'beautify') return 'warning'
+  return 'primary'
+}
 
 // 归属的主题空间名称映射
 function getSpaceName(spaceId?: string) {
@@ -40,8 +252,14 @@ function downloadTemplate() {
 // 取消收藏单个项目
 async function handleUnfavorite() {
   const item = props.item
-  const payload = item.item_type === 'media' ? { url: item.data.url } : item.item_type === 'template' ? { template_text: item.data.template_text } : { prompt: item.data.prompt }
-  await collectionsStore.toggleFavorite(item.item_type, item.title, undefined, payload)
+  if (props.selectedSpaceId) {
+    // 文件夹内点击，仅移出空间 (unlink)
+    await collectionsStore.moveToSpace(item.id, null)
+  } else {
+    // 全部收藏内点击，彻底取消收藏 (delete)
+    const payload = item.item_type === 'media' ? { url: item.data.url } : item.item_type === 'template' ? { template_text: item.data.template_text } : { prompt: item.data.prompt }
+    await collectionsStore.toggleFavorite(item.item_type, item.title, undefined, payload)
+  }
 }
 
 // 复制到画布
@@ -83,7 +301,9 @@ function formatDate(dateStr: string) {
 <template>
   <div class="result-card" :class="{ 'is-selected': isSelected }">
     <div class="result-header" @click.stop="emit('click-header', $event)" style="cursor: pointer;">
-      <el-tag size="small" type="info">{{ item.item_type === 'template' ? '插槽模板' : '纯提示词' }}</el-tag>
+      <el-tag :type="getSubTypeTagType(itemSubType)" size="small" effect="light">
+        {{ getSubTypeLabel(itemSubType) }}
+      </el-tag>
       <span class="tpl-header-title" :title="item.title">{{ item.title }}</span>
     </div>
 
@@ -101,8 +321,39 @@ function formatDate(dateStr: string) {
     </div>
 
     <div class="image-wrapper template-text-content-wrapper">
-      <div class="template-text-display">
-        {{ item.data.template_text || item.data.prompt }}
+      <!-- Checklist items display -->
+      <div v-if="item.data?.checklist && item.data.checklist.length > 0" class="template-checklist-wrapper">
+        <div v-for="(task, idx) in item.data.checklist" :key="idx" class="template-checklist-item">
+          <el-checkbox :model-value="task.checked" disabled size="small">
+            <span class="checklist-item-text" :class="{ 'is-checked': task.checked }">{{ task.text }}</span>
+          </el-checkbox>
+        </div>
+        <div v-if="item.data.summary" class="checklist-summary" :title="item.data.summary">
+          <strong>摘要: </strong>{{ item.data.summary }}
+        </div>
+      </div>
+      <!-- Standard text display -->
+      <div v-else class="template-text-display">
+        {{ getInspirationSummary(item) }}
+      </div>
+
+      <!-- Left Bottom Audio Dock (avatar & microphone) -->
+      <div v-if="item.data?.chat_session_id" class="card-audio-footer" @click.stop>
+        <el-tooltip :content="`设计助手: ${getAgentName(item.data.role_id)}`" placement="top">
+          <div class="agent-avatar-container">
+            <img :src="getAgentAvatar(item.data.role_id)" class="card-agent-avatar" />
+          </div>
+        </el-tooltip>
+        <div 
+          class="card-tts-btn" 
+          :class="{ 'is-active': isLoading || isPlaying }" 
+          @click.stop="playTTS"
+          title="播放脑暴规划朗读"
+        >
+          <el-icon v-if="isLoading" class="is-loading"><i-ep-loading /></el-icon>
+          <el-icon v-else-if="isPlaying"><i-ep-video-pause /></el-icon>
+          <el-icon v-else><i-ep-microphone /></el-icon>
+        </div>
       </div>
 
       <!-- Star Button in top right corner -->
@@ -139,6 +390,13 @@ function formatDate(dateStr: string) {
                   <el-icon><i-ep-document-copy /></el-icon>
                 </div>
               </el-tooltip>
+              <!-- Discuss Button if it is linked to a session -->
+              <el-tooltip v-if="item.data?.chat_session_id" content="去讨论此灵感" placement="top">
+                <div class="icon-btn highlight-btn" @click.stop="goToDiscuss(item.data.chat_session_id, item.data.role_id)">
+                  <el-icon><i-ep-chat-dot-round /></el-icon>
+                </div>
+              </el-tooltip>
+
               <el-tooltip content="取消收藏" placement="top">
                 <div class="icon-btn danger" @click="handleUnfavorite">
                   <el-icon><i-ep-delete /></el-icon>
@@ -164,6 +422,7 @@ function formatDate(dateStr: string) {
   position: relative;
   display: flex;
   flex-direction: column;
+  cursor: pointer;
 }
 
 .result-card:hover {
@@ -424,5 +683,103 @@ function formatDate(dateStr: string) {
   color: #64748b;
   font-style: italic;
   font-weight: normal;
+}
+
+.icon-btn.highlight-btn {
+  background: #10b981;
+  color: #ffffff;
+  border-color: #10b981;
+}
+
+.icon-btn.highlight-btn:hover {
+  background: #059669;
+  color: #ffffff;
+  border-color: #059669;
+}
+
+.card-audio-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: auto; /* Push to bottom of flex container */
+  padding-top: 10px;
+  border-top: 1px dashed #f1f5f9;
+  z-index: 10;
+}
+
+.agent-avatar-container {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  overflow: hidden;
+  border: 1.5px solid #10b981; /* green theme border */
+  background: #f8fafc;
+}
+
+.card-agent-avatar {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.card-tts-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: #f1f5f9;
+  color: #64748b;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.card-tts-btn:hover {
+  background: #e2e8f0;
+  color: #10b981;
+}
+
+.card-tts-btn.is-active {
+  background: #d1fae5;
+  color: #10b981;
+}
+
+/* Checklist styling */
+.template-checklist-wrapper {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  text-align: left;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+.template-checklist-item {
+  display: flex;
+  align-items: center;
+}
+
+.checklist-item-text {
+  font-size: 13px;
+  color: #334155;
+}
+
+.checklist-item-text.is-checked {
+  color: #94a3b8;
+  text-decoration: line-through;
+}
+
+.checklist-summary {
+  margin-top: 8px;
+  font-size: 11px;
+  color: #64748b;
+  border-top: 1px dashed #e2e8f0;
+  padding-top: 6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 </style>

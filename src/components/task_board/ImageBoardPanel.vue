@@ -57,6 +57,25 @@ const emit = defineEmits(['detail', 'retry'])
             </span>
           </template>
         </el-table-column>
+        <el-table-column label="参考图" width="100" align="center">
+          <template #default="{ row }">
+            <div v-if="row.referenceMedia && row.referenceMedia.length > 0" class="board-ref-images">
+              <el-image
+                v-for="(refItem, index) in row.referenceMedia.slice(0, 2)"
+                :key="index"
+                :src="refItem.url"
+                class="board-ref-thumb"
+                :preview-src-list="[refItem.url]"
+                preview-teleported
+                fit="cover"
+              />
+              <span v-if="row.referenceMedia.length > 2" class="board-ref-more">
+                +{{ row.referenceMedia.length - 2 }}
+              </span>
+            </div>
+            <span v-else>—</span>
+          </template>
+        </el-table-column>
         <el-table-column label="创建时间" min-width="168">
           <template #default="{ row }">
             {{ rowCreatedAt(row)?.toLocaleString() ?? '—' }}
@@ -67,7 +86,7 @@ const emit = defineEmits(['detail', 'retry'])
             {{ rowDurationLabel(row, 'image', durationTick) }}
           </template>
         </el-table-column>
-        <el-table-column prop="model" label="模型" width="130" show-overflow-tooltip />
+        <el-table-column prop="model" label="model" width="130" show-overflow-tooltip />
         <el-table-column prop="type" label="类型" width="72" />
         <el-table-column label="操作" width="168" fixed="right" align="center">
           <template #default="{ row }">
@@ -86,3 +105,25 @@ const emit = defineEmits(['detail', 'retry'])
         </el-table-column>
       </el-table>
 </template>
+
+<style scoped>
+.board-ref-images {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+}
+.board-ref-thumb {
+  width: 28px;
+  height: 28px;
+  border-radius: 4px;
+  border: 1px solid #ebeef5;
+  cursor: pointer;
+  display: block;
+}
+.board-ref-more {
+  font-size: 11px;
+  color: #909399;
+  font-weight: bold;
+}
+</style>

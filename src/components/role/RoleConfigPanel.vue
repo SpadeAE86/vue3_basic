@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref, nextTick } from 'vue'
+import { ref, nextTick, onMounted, computed } from 'vue'
+import VoiceSelectDialog from './VoiceSelectDialog.vue'
 
 const props = defineProps<{
   roleId: string
@@ -10,11 +11,73 @@ const emit = defineEmits<{
   (e: 'open-crop'): void
   (e: 'update-meta'): void
   (e: 'start-chat'): void
+  (e: 'update-voice-character', voice: string): void
 }>()
 
 const inputTagVisible = ref(false)
 const newTagValue = ref('')
 const tagInputRef = ref<any>(null)
+const dialogVisible = ref(false)
+const voiceModels = ref<any[]>([])
+
+async function fetchVoiceModels() {
+  try {
+    const cRes = await fetch('/api/audio/voices/cloned')
+    const cData = await cRes.json()
+    const dRes = await fetch('/api/audio/voices/designed')
+    const dData = await dRes.json()
+    
+    // Default online models can be loaded too
+    const oRes = await fetch('/api/audio/models?provider=all')
+    const oData = await oRes.json()
+    
+    const all: any[] = []
+    
+    if (cData && cData.code === 200 && Array.isArray(cData.data)) {
+      all.push(...cData.data)
+    } else if (cData && Array.isArray(cData)) {
+      all.push(...cData)
+    }
+    
+    if (dData && dData.code === 200 && Array.isArray(dData.data)) {
+      all.push(...dData.data)
+    } else if (dData && Array.isArray(dData)) {
+      all.push(...dData)
+    }
+    
+    if (oData && oData.data) {
+      if (oData.data.big && Array.isArray(oData.data.big)) all.push(...oData.data.big)
+      if (oData.data.small && Array.isArray(oData.data.small)) all.push(...oData.data.small)
+    }
+    voiceModels.value = all
+  } catch (e) {
+    console.error('Failed to fetch voice models for display name resolution:', e)
+  }
+}
+
+onMounted(() => {
+  fetchVoiceModels()
+})
+
+const displayVoiceName = computed(() => {
+  const code = props.roleMeta.voice_character
+  if (!code) return '未配置'
+  if (code === 'Vivi') return 'Vivi (默认)'
+  
+  // Find in cloned/designed custom speaker list
+  const matchCustom = voiceModels.value.find(m => m.custom_speaker_id === code)
+  if (matchCustom) {
+    return matchCustom.voice_character
+  }
+  
+  // Find in online model presets
+  const matchPreset = voiceModels.value.find(m => m.voice_code === code)
+  if (matchPreset) {
+    return matchPreset.voice_character
+  }
+  
+  return code
+})
 
 function handleRemoveTag(tag: string) {
   if (!props.roleMeta.tags) return
@@ -43,7 +106,18 @@ function handleInputTagConfirm() {
   inputTagVisible.value = false
   newTagValue.value = ''
 }
+
+function openVoiceDialog() {
+  fetchVoiceModels() // Refresh voice list when opening dialog to catch any renamed ones
+  dialogVisible.value = true
+}
+
+function selectVoice(voiceCharacter: string) {
+  emit('update-voice-character', voiceCharacter)
+  dialogVisible.value = false
+}
 </script>
+
 
 <template>
   <div class="role-right-header">
@@ -64,7 +138,34 @@ function handleInputTagConfirm() {
           <h2 class="role-space-name">{{ props.roleMeta.name }}</h2>
           <el-tag size="small" type="success" v-if="props.roleMeta.voice_configured">🎵 音色就绪</el-tag>
         </div>
-        <p class="role-space-id">角色 ID: <code>{{ props.roleMeta.id }}</code></p>
+        <p class="role-space-id" @click="openVoiceDialog" style="cursor: pointer;" title="点击更换或配置音色">
+          角色音色: <code>{{ displayVoiceName }}</code>
+        </p>
+      </div>
+      <!-- 右侧操作按钮组 -->
+      <div class="role-top-actions">
+        <!-- 开始对话按钮 -->
+        <el-tooltip content="开始对话" placement="top">
+          <div class="top-action-btn chat-btn" @click="emit('start-chat')">
+            <el-icon><i-ep-chat-dot-round /></el-icon>
+          </div>
+        </el-tooltip>
+        <!-- 晚安信铃铛按钮 -->
+        <el-tooltip
+          :content="props.roleMeta.daily_message_enabled ? '晚安信：开启（点击关闭）' : '晚安信：关闭（点击开启）'"
+          placement="top"
+        >
+          <div
+            class="top-action-btn bell-btn"
+            :class="{ 'bell-btn--active': props.roleMeta.daily_message_enabled }"
+            @click="() => { props.roleMeta.daily_message_enabled = !props.roleMeta.daily_message_enabled; emit('update-meta') }"
+          >
+            <el-icon class="bell-icon">
+              <i-ep-bell-filled v-if="props.roleMeta.daily_message_enabled" />
+              <i-ep-bell v-else />
+            </el-icon>
+          </div>
+        </el-tooltip>
       </div>
     </div>
 
@@ -118,23 +219,12 @@ function handleInputTagConfirm() {
       </el-button>
     </div>
 
-    <!-- 音色状态开关 -->
-    <div class="role-voice-row">
-      <span class="tags-label">音色状态:</span>
-      <el-switch
-        v-model="props.roleMeta.voice_configured"
-        active-text="音色就绪"
-        inactive-text="未配置音色"
-        @change="emit('update-meta')"
-      />
-    </div>
-
-    <div class="role-header-actions">
-      <el-button type="primary" @click="emit('start-chat')">
-        <el-icon style="margin-right: 4px"><i-ep-chat-dot-round /></el-icon>
-        开始对话
-      </el-button>
-    </div>
+    <!-- 音色选择及创建弹窗 -->
+    <VoiceSelectDialog
+      v-model="dialogVisible"
+      :selected-voice-character="props.roleMeta.voice_character"
+      @select-voice="selectVoice"
+    />
   </div>
 </template>
 
@@ -279,17 +369,72 @@ function handleInputTagConfirm() {
   border-radius: 12px;
 }
 
-.role-voice-row {
+.role-space-id code {
+  background: #f1f5f9;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: monospace;
+  color: #475569;
+  border: 1px solid transparent;
+  transition: all 0.2s ease;
+}
+
+.role-space-id:hover code {
+  background: #eef2ff;
+  color: #6366f1;
+  border-color: #c7d2fe;
+}
+
+/* 右侧操作按钮组 */
+.role-top-actions {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 13px;
-  color: #475569;
+  margin-left: auto;
+  flex-shrink: 0;
 }
 
-.role-header-actions {
+.top-action-btn {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
   display: flex;
-  gap: 12px;
-  margin-top: 8px;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  cursor: pointer;
+  transition: all 0.25s ease;
+  border: 1.5px solid #e2e8f0;
+  background: #f8fafc;
+  color: #64748b;
+  box-sizing: border-box;
+}
+
+.top-action-btn:hover {
+  background: #ede9fe;
+  border-color: #a78bfa;
+  transform: scale(1.08);
+}
+
+.chat-btn:hover {
+  background: #eef2ff;
+  color: #6366f1;
+  border-color: #a5b4fc;
+}
+
+.bell-btn--active {
+  background: linear-gradient(135deg, #6366f1, #8b5cf6) !important;
+  border-color: #6366f1 !important;
+  box-shadow: 0 2px 8px rgba(99, 102, 241, 0.35) !important;
+  color: #ffffff !important;
+}
+
+.bell-btn--active .bell-icon {
+  color: #ffffff !important;
+}
+
+.bell-icon {
+  font-size: 18px;
+  transition: color 0.2s ease;
 }
 </style>

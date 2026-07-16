@@ -134,6 +134,9 @@ export const useChatStore = defineStore('chat', () => {
               } else if (raw.event_type === 'agent_thought') {
                 appendToLast('thinking', raw.content ?? '')
               } else {
+                if (raw.event_type === 'tool_result' && (raw.tool_name === 'schedule_heartbeat' || raw.tool_name === 'manage_scheduled_task' || raw.tool_name === 'manage_todo_list')) {
+                  window.dispatchEvent(new CustomEvent('scheduler:sync'))
+                }
                 finishStreaming()
                 pushEvent(raw)
               }

@@ -92,6 +92,8 @@ function getModelLabel(model: string) {
           :key="img.id"
           :item="img"
           :model-label="getModelLabel(img.model)"
+          :preview-list="visibleItems"
+          :preview-index="visibleItems.findIndex(i => i.id === img.id)"
           @delete="emit('delete', $event)"
           @retry="emit('retry', $event)"
         />

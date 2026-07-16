@@ -8,6 +8,7 @@ const props = defineProps<{
   galleryImages: any[]
   selectedGalleryImage: { filename: string; url: string } | null
   isImporting: boolean
+  generatingTasks?: any[]
 }>()
 
 const emit = defineEmits<{
@@ -15,6 +16,7 @@ const emit = defineEmits<{
   (e: 'set-portrait'): void
   (e: 'delete-image', img: any): void
   (e: 'open-import'): void
+  (e: 'open-ai-generate'): void
   (e: 'upload-success'): void
 }>()
 
@@ -141,6 +143,22 @@ function getRoleGradient(roleId: string) {
           <div class="loading-placeholder-content">
             <el-icon class="is-loading"><i-ep-loading /></el-icon>
             <span>导入中...</span>
+          </div>
+        </div>
+
+        <!-- 色彩渐变流动中的生图占位卡 -->
+        <div v-for="task in props.generatingTasks" :key="task.taskId" class="gallery-thumbnail-card is-generating-placeholder">
+          <div class="generating-placeholder-content">
+            <el-icon class="is-loading"><i-ep-magic-stick /></el-icon>
+            <span class="generating-text">AI 生图中...</span>
+          </div>
+        </div>
+
+        <!-- AI 生图按钮 (Dotted Card) -->
+        <div class="gallery-ai-generator-card" @click="emit('open-ai-generate')" title="通过 AI 灵感生图">
+          <div class="uploader-placeholder">
+            <el-icon><i-ep-magic-stick /></el-icon>
+            <span>AI 生图</span>
           </div>
         </div>
         
@@ -387,5 +405,67 @@ function getRoleGradient(roleId: string) {
 
 .gallery-uploader-card:hover .uploader-placeholder {
   color: #6366f1;
+}
+
+.gallery-ai-generator-card {
+  aspect-ratio: 1;
+  border: 2px dashed #cbd5e1;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.3s;
+  background: transparent;
+}
+
+.gallery-ai-generator-card:hover {
+  border-color: #6366f1;
+  background: rgba(99, 102, 241, 0.02);
+}
+
+.gallery-ai-generator-card:hover .uploader-placeholder {
+  color: #6366f1;
+}
+
+.gallery-thumbnail-card.is-generating-placeholder {
+  border: 2px dashed #a5b4fc;
+  background: linear-gradient(135deg, #e0e7ff, #fbcfe8, #e0f2fe);
+  background-size: 200% 200%;
+  animation: gradient-flow 3s ease infinite;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #6366f1;
+  font-size: 11px;
+  cursor: default;
+}
+
+.generating-placeholder-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.generating-placeholder-content .el-icon {
+  font-size: 18px;
+  animation: rotate-wand 2s linear infinite;
+}
+
+.generating-text {
+  font-weight: 500;
+  letter-spacing: 0.5px;
+}
+
+@keyframes gradient-flow {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+@keyframes rotate-wand {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
 }
 </style>

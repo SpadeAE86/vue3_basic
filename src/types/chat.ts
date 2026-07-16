@@ -17,6 +17,11 @@ export interface ChatEvent {
   
   // 参考图片列表
   referenceImages?: string[]
+
+  // 流式已生成的语音分片列表
+  voiceChunks?: string[]
+  // 生成该语音分片时所使用的音色角色名，用于当用户切换音色时让旧缓存失效
+  voiceCharacterUsed?: string
 }
 
 // 后端 SSE 推过来的原始格式 (和 event.py 对齐)

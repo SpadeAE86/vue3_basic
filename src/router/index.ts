@@ -97,6 +97,12 @@ const router = createRouter({
       meta: { title: '素材匹配任务', boardSection: 'video_match_search' },
     },
     {
+      path: '/task-board/lora',
+      name: 'task-board-lora',
+      component: () => import('../views/LoraBoardView.vue'),
+      meta: { title: 'LoRA看板' },
+    },
+    {
       path: '/task-board/video-match',
       name: 'task-board-video-match',
       redirect: { name: 'task-board-video-match-transcribe' },
@@ -118,6 +124,18 @@ const router = createRouter({
       name: 'collections',
       component: () => import('../views/CollectionsView.vue'),
       meta: { title: '收藏空间' },
+    },
+    {
+      path: '/collections/prompt-space/:id',
+      name: 'prompt-space',
+      component: () => import('../views/InspirationSpaceView.vue'),
+      meta: { title: '提示词空间' },
+    },
+    {
+      path: '/scheduler',
+      name: 'scheduler',
+      component: () => import('../views/SchedulerView.vue'),
+      meta: { title: '定时任务' },
     },
   ],
 })

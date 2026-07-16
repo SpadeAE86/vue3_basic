@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { ElMessage } from 'element-plus'
+import { mapSSEtoChatEvent } from '@/types/chat'
 
 export interface CollectionItem {
   id: string
@@ -29,6 +30,7 @@ export const useCollectionsStore = defineStore('collections', () => {
   const taggingTasks = ref<Record<string, { status: string; error?: string }>>({})
   const draggedItemIds = ref<string[]>([])
   const showUnclassifiedOnly = ref(false)
+  const activeEvaluationSessions = ref<Record<string, { events: any[], active: boolean, roleId?: string, title?: string }>>({})
 
   // 加载所有收藏记录
   async function loadCollections() {
@@ -149,13 +151,13 @@ export const useCollectionsStore = defineStore('collections', () => {
       if (res.success) {
         await loadThemeSpaces()
         ElMessage.success(`主题空间 "${name}" 创建成功`)
-        return true
+        return res.theme_space.id as string
       }
     } catch (e) {
       console.error('创建主题空间失败:', e)
       ElMessage.error('创建主题空间失败')
     }
-    return false
+    return null
   }
 
   // 删除主题分类空间
@@ -313,6 +315,165 @@ export const useCollectionsStore = defineStore('collections', () => {
     return false
   }
 
+  async function runBackgroundBrainstorm(newSid: string, recentRoleId: string, jotTitle: string, spaceId: string) {
+    const targetMsg = `我刚想到【${jotTitle}】这个好点子，怎么样，有什么想法和可以补充的吗？`
+    const customSystemPrompt = `由于这是后台自动生成的灵感评估会话，请跳过任何新手引导（Onboarding Guideline）和自我介绍，不要询问用户的姓名、时区或任何个人信息。请直接专注于客观且深度地评估这个灵感点子本身。
+请在你的回复结尾处，用 <summary>...</summary> 标签包裹你对这个点子的定位及最核心的 2-3 个要点总结（字数控制在 150-400 字左右，且该 summary 中不要包含任何 markdown 标签、换行 and 多余空行，方便我直接放进展示卡片中）。
+例：
+<summary>该项目旨在开发一个能操控 Live2D 模型的智能 Agent 系统。核心要点在于：设计支持表情和动作指令的 XML 协议；通过独立进程监听该协议并动态调整模型的待机动画、动作幅度和呼吸频率；最终实现大语言模型输出与角色视觉表现的分层隔离与联动，让虚拟角色具备自然、灵动的演出生命力。</summary>`
+
+    activeEvaluationSessions.value[newSid] = {
+      events: [
+        {
+          id: 'msg_user',
+          type: 'user',
+          content: targetMsg,
+          timestamp: Date.now()
+        }
+      ],
+      active: true,
+      roleId: recentRoleId,
+      title: jotTitle
+    }
+    
+    try {
+      const resp = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: targetMsg,
+          session_id: newSid,
+          role_id: recentRoleId,
+          session_title: `【灵感】${jotTitle.substring(0, 10)}`,
+          user_id: 'default_user',
+          max_iterations: 10,
+          disable_tts: true,
+          use_voice_tags: true,
+          custom_system_prompt: customSystemPrompt
+        })
+      })
+      
+      if (!resp.ok) throw new Error('SSE call failed')
+      
+      const reader = resp.body?.getReader()
+      if (!reader) throw new Error('No reader available')
+      
+      const decoder = new TextDecoder()
+      let buffer = ''
+      let aiReplyText = ''
+      
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() || ''
+        
+        for (const line of lines) {
+          const trimmed = line.trim()
+          if (!trimmed || !trimmed.startsWith('data:')) continue
+          const dataStr = trimmed.slice(5).trim()
+          if (dataStr === '[DONE]') {
+            finishBgStreaming(newSid)
+            break
+          }
+          
+          try {
+            const payload = JSON.parse(dataStr)
+            if (payload.event_type === 'session_id') {
+              // ignore session_id event
+            } else if (payload.event_type === 'update_conversation_name') {
+              if (activeEvaluationSessions.value[newSid]) {
+                activeEvaluationSessions.value[newSid].title = payload.title
+              }
+              loadThemeSpaces()
+            } else if (payload.event_type === 'text_chunk' && payload.content) {
+              aiReplyText += payload.content
+              appendBgEvent(newSid, 'assistant', payload.content)
+            } else if (payload.event_type === 'agent_thought' && payload.content) {
+              appendBgEvent(newSid, 'thinking', payload.content)
+            } else if (payload.event_type === 'voice_chunk') {
+              // ignore voice chunks
+            } else {
+              finishBgStreaming(newSid)
+              pushBgEvent(newSid, payload)
+            }
+          } catch {
+            // ignore parse errors
+          }
+        }
+      }
+      
+      // Save the AI reply as the first prompt card in this theme space!
+      if (aiReplyText.trim()) {
+        const alreadySaved = items.value.some(i => i.space_id === spaceId && i.title.startsWith('💡 灵感脑暴规划'))
+        if (!alreadySaved) {
+          const cleanTitle = activeEvaluationSessions.value[newSid]?.title || jotTitle
+          await toggleFavorite(
+            'prompt',
+            `💡 灵感脑暴规划 - ${cleanTitle}`,
+            undefined,
+            {
+              prompt: aiReplyText,
+              chat_session_id: newSid,
+              role_id: recentRoleId,
+              subtype: 'inspiration'
+            },
+            spaceId
+          )
+        }
+      }
+      
+      // Mark session as complete
+      if (activeEvaluationSessions.value[newSid]) {
+        activeEvaluationSessions.value[newSid].active = false
+      }
+    } catch (err) {
+      console.error('Background brain storming failed:', err)
+      if (activeEvaluationSessions.value[newSid]) {
+        activeEvaluationSessions.value[newSid].active = false
+      }
+    }
+  }
+
+  function appendBgEvent(sid: string, type: 'assistant' | 'thinking', delta: string) {
+    const session = activeEvaluationSessions.value[sid]
+    if (!session) return
+    const evts = session.events
+    const last = evts[evts.length - 1]
+    const mappedType = type === 'assistant' ? 'assistant' : 'thinking'
+    if (last && last.type === mappedType && last.streaming) {
+      last.content += delta
+    } else {
+      if (last && last.streaming) last.streaming = false
+      evts.push({
+        id: 'bg_' + Math.random().toString(36).substring(2, 9),
+        type: mappedType,
+        content: delta,
+        streaming: true,
+        timestamp: Date.now()
+      })
+    }
+  }
+
+  function pushBgEvent(sid: string, raw: any) {
+    const session = activeEvaluationSessions.value[sid]
+    if (!session) return
+    const ev = mapSSEtoChatEvent(raw)
+    if (ev) {
+      session.events.push(ev)
+    }
+  }
+
+  function finishBgStreaming(sid: string) {
+    const session = activeEvaluationSessions.value[sid]
+    if (!session) return
+    const evts = session.events
+    const last = evts[evts.length - 1]
+    if (last) last.streaming = false
+  }
+
   return {
     items,
     themeSpaces,
@@ -320,6 +481,7 @@ export const useCollectionsStore = defineStore('collections', () => {
     taggingTasks,
     draggedItemIds,
     showUnclassifiedOnly,
+    activeEvaluationSessions,
     init,
     loadCollections,
     loadThemeSpaces,
@@ -331,6 +493,7 @@ export const useCollectionsStore = defineStore('collections', () => {
     moveToSpace,
     batchMoveToSpace,
     updateItemTags,
-    autoTagItem
+    autoTagItem,
+    runBackgroundBrainstorm
   }
 })

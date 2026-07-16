@@ -4,15 +4,20 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { saveTemplateApi } from '@/api/generate'
 import { usePromptTemplates } from '@/composables/image/usePromptTemplates'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   visible: boolean
   isNew: boolean
   initialName: string
-}>()
+  mode?: 'preset' | 'collections'
+  initialSubtype?: 'inspiration' | 'prompt' | 'beautify'
+}>(), {
+  mode: 'preset',
+  initialSubtype: 'prompt'
+})
 
 const emit = defineEmits<{
   (e: 'update:visible', v: boolean): void
-  (e: 'saved', name: string, content: string): void
+  (e: 'saved', name: string, content: string, subtype?: 'inspiration' | 'prompt' | 'beautify'): void
 }>()
 
 const { getTemplateContent } = usePromptTemplates()
@@ -24,12 +29,14 @@ const isSlotDialogVisible = computed({
 
 const slotTemplateName = ref('')
 const slotTemplateText = ref('')
+const selectedSubtype = ref<'inspiration' | 'prompt' | 'beautify'>('prompt')
 const textareaRef = ref<HTMLTextAreaElement | null>(null)
 
 watch(() => props.visible, async (val) => {
   if (val) {
     slotTemplateName.value = props.isNew ? '' : props.initialName
     editingKey.value = null
+    selectedSubtype.value = props.initialSubtype || 'prompt'
     
     if (props.isNew) {
       slotTemplateText.value = ''
@@ -44,7 +51,7 @@ watch(() => props.visible, async (val) => {
 })
 
 // 解析变量规则
-const SLOT_REGEX = /\{([^:]+):\s*([^}]+)\}/g
+const SLOT_REGEX = /\{([^:]*):\s*([^}]+)\}/g
 
 interface DialogParsedVar {
   key: string
@@ -59,7 +66,9 @@ const dialogParsedVariables = computed<DialogParsedVar[]>(() => {
   while ((match = regex.exec(slotTemplateText.value)) !== null) {
     const key = (match[1] || '').trim()
     const defaultValue = (match[2] || '').trim()
-    if (key && !seenKeys.has(key)) {
+    if (key === '') {
+      vars.push({ key, defaultValue })
+    } else if (!seenKeys.has(key)) {
       seenKeys.add(key)
       vars.push({ key, defaultValue })
     }
@@ -96,7 +105,7 @@ function saveInlineEdit(key: string, oldValue: string) {
   const escapedVal = escapeRegExp(oldValue)
   const regex = new RegExp(`\\{${escapedKey}:\\s*${escapedVal}\\}`, 'g')
   slotTemplateText.value = slotTemplateText.value.replace(regex, `{${key}: ${newValue}}`)
-  ElMessage.success(`变量 [ ${key} ] 的默认值已更新为 "${newValue}"`)
+  ElMessage.success(`变量 [ ${key || '未命名'} ] 的默认值已更新为 "${newValue}"`)
 }
 
 function removeVariableTag(key: string, defaultValue: string) {
@@ -104,7 +113,7 @@ function removeVariableTag(key: string, defaultValue: string) {
   const escapedVal = escapeRegExp(defaultValue)
   const regex = new RegExp(`\\{${escapedKey}:\\s*${escapedVal}\\}`, 'g')
   slotTemplateText.value = slotTemplateText.value.replace(regex, defaultValue)
-  ElMessage.success(`已删除变量槽位 {${key}}，还原为普通文本`)
+  ElMessage.success(`已删除变量槽位 {${key || '未命名'}}，还原为普通文本`)
 }
 
 async function handleExtractVariable() {
@@ -130,9 +139,20 @@ async function handleExtractVariable() {
 
     if (varName) {
       const key = varName.trim()
-      const before = slotTemplateText.value.substring(0, start)
-      const after = slotTemplateText.value.substring(end)
-      slotTemplateText.value = `${before}{${key}: ${selectedText}}${after}`
+      const replacement = `{${key}: ${selectedText}}`
+      
+      const textarea = textareaRef.value
+      textarea.focus()
+      textarea.setSelectionRange(start, end)
+      
+      const success = document.execCommand('insertText', false, replacement)
+      if (!success) {
+        const before = slotTemplateText.value.substring(0, start)
+        const after = slotTemplateText.value.substring(end)
+        slotTemplateText.value = `${before}${replacement}${after}`
+      } else {
+        slotTemplateText.value = textarea.value
+      }
 
       nextTick(() => {
         if (textareaRef.value) {
@@ -148,6 +168,37 @@ async function handleExtractVariable() {
   }
 }
 
+function handleKeydown(e: KeyboardEvent) {
+  if (e.key === '{') {
+    const textarea = e.target as HTMLTextAreaElement
+    if (!textarea) return
+    const start = textarea.selectionStart
+    const end = textarea.selectionEnd
+
+    if (start !== undefined && end !== undefined && start !== end) {
+      e.preventDefault()
+      const selectedText = textarea.value.substring(start, end)
+      const replacement = `{: ${selectedText}}`
+      
+      textarea.focus()
+      textarea.setSelectionRange(start, end)
+      
+      const success = document.execCommand('insertText', false, replacement)
+      if (!success) {
+        const val = slotTemplateText.value
+        slotTemplateText.value = val.substring(0, start) + replacement + val.substring(end)
+      } else {
+        slotTemplateText.value = textarea.value
+      }
+      
+      nextTick(() => {
+        textarea.focus()
+        textarea.setSelectionRange(start + 1, start + 1)
+      })
+    }
+  }
+}
+
 async function handleSaveSlotTemplate() {
   if (!slotTemplateName.value.trim() || !slotTemplateText.value.trim()) {
     ElMessage.warning('模板名称和内容不能为空')
@@ -156,6 +207,13 @@ async function handleSaveSlotTemplate() {
 
   const name = slotTemplateName.value.trim()
   const content = slotTemplateText.value
+
+  if (props.mode === 'collections') {
+    emit('saved', name, content, selectedSubtype.value)
+    isSlotDialogVisible.value = false
+    return
+  }
+
   try {
     await saveTemplateApi(name, content)
     ElMessage.success('收藏成功')
@@ -171,12 +229,22 @@ async function handleSaveSlotTemplate() {
 <template>
   <el-dialog
     v-model="isSlotDialogVisible"
-    title="配置提示词插槽模板"
+    :title="mode === 'collections' ? '新建/导入灵感与模板' : '配置提示词插槽模板'"
     width="600px"
     append-to-body
     class="template-editor-dialog"
   >
     <div class="dialog-form">
+      <!-- 只有在 collections 导入模式下才允许选择模板子分类 -->
+      <div v-if="mode === 'collections'" class="form-field">
+        <label class="form-label">模板内容类型</label>
+        <el-radio-group v-model="selectedSubtype" size="small">
+          <el-radio-button value="inspiration">💡 创作点子</el-radio-button>
+          <el-radio-button value="prompt">📝 提示词模板</el-radio-button>
+          <el-radio-button value="beautify">✨ 美化模板</el-radio-button>
+        </el-radio-group>
+      </div>
+
       <div class="form-field">
         <label class="form-label">模板名称</label>
         <el-input v-model="slotTemplateName" :disabled="!isNew" placeholder="输入模板名称，如：背景氛围、角色五官等" />
@@ -189,6 +257,7 @@ async function handleSaveSlotTemplate() {
             type="primary"
             size="small"
             plain
+            :disabled="selectedSubtype === 'beautify'"
             @click="handleExtractVariable"
             class="extract-btn"
           >
@@ -197,7 +266,7 @@ async function handleSaveSlotTemplate() {
           </el-button>
         </div>
         <p class="extract-tip">
-          提示：在下方选中文本片段（如 "girl"），点击上方“提取”按钮，即可快速将其定义为变量槽位。
+          提示：{{ selectedSubtype === 'beautify' ? '当前为美化类型，已禁用变量插槽提取。' : '在下方选中文本片段（如 "girl"），点击上方“提取”按钮，即可快速将其定义为变量槽位。' }}
         </p>
 
         <!-- 可视化槽位变量编辑区 -->
@@ -205,16 +274,17 @@ async function handleSaveSlotTemplate() {
           <div class="panel-title">已提取的变量槽位（点击原值编辑，点击 x 还原为文本）：</div>
           <div class="dialog-tags-list">
             <div
-              v-for="v in dialogParsedVariables"
-              :key="v.key"
+              v-for="(v, index) in dialogParsedVariables"
+              :key="v.key + '_' + index"
               class="dialog-capsule-tag"
               @click.stop="startEditInline(v.key, v.defaultValue)"
             >
-              <span class="capsule-label">🏷️ {{ v.key }}:</span>
+              <span class="capsule-label">🏷️ {{ v.key || '(未命名)' }}:</span>
               <input
                 v-if="editingKey === v.key"
                 class="dialog-inline-capsule-input"
                 v-model="editingValue"
+                :style="{ width: (editingValue.length * 8 + 20) + 'px' }"
                 @blur="saveInlineEdit(v.key, v.defaultValue)"
                 @keyup.enter="saveInlineEdit(v.key, v.defaultValue)"
                 @click.stop
@@ -237,6 +307,7 @@ async function handleSaveSlotTemplate() {
           rows="8"
           placeholder="例如: A majestic {主体: golden dragon} flying high in the {天空: stormy sky}..."
           class="native-template-textarea"
+          @keydown="handleKeydown"
         ></textarea>
       </div>
     </div>

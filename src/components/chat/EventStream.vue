@@ -9,7 +9,15 @@ import { useChatStore } from '@/stores/chat'
 
 const props = defineProps<{
   events: ChatEvent[]
-  activeRole?: { id: string; name: string; avatar_emoji?: string; avatar_url?: string }
+  activeRole?: { id: string; name: string; description?: string; avatar_emoji?: string; avatar_url?: string; voice_character?: string }
+  sseActiveBubbleId?: string | null
+  sseIsPlayingAudio?: boolean
+  sseIsPausedAudio?: boolean
+}>()
+
+const emit = defineEmits<{
+  (e: 'toggle-sse-audio'): void
+  (e: 'stop-sse-audio'): void
 }>()
 
 const chatStore = useChatStore()
@@ -173,7 +181,14 @@ watch(
           :is-expanded="expandedEventId === event.id"
           :avatar-url="activeRole?.avatar_url"
           :avatar-name="activeRole?.name"
+          :voice-character="activeRole?.voice_character"
+          :role-id="activeRole?.id"
+          :role-description="activeRole?.description"
+          :is-sse-playing="sseActiveBubbleId === event.id && sseIsPlayingAudio"
+          :is-sse-paused="sseActiveBubbleId === event.id && sseIsPausedAudio"
           @toggle-expand="toggleExpand(event.id)"
+          @toggle-sse-audio="emit('toggle-sse-audio')"
+          @stop-sse-audio="emit('stop-sse-audio')"
         />
 
         <!-- 状态 / 错误 -->

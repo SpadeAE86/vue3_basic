@@ -160,7 +160,7 @@ export function useGenerateHistory(currentMode: Ref<GenerateMode>) {
       } catch (e) {
         console.error('Polling error:', e)
       }
-    }, 10000)
+    }, 5000)
   }
 
   /** 异步生图：轮询 /image/status/{taskId}，与视频接口路径与响应结构不同 */
@@ -237,7 +237,7 @@ export function useGenerateHistory(currentMode: Ref<GenerateMode>) {
       }
     }
 
-    pollingIntervals[key] = window.setInterval(tick, 3000)
+    pollingIntervals[key] = window.setInterval(tick, 5000)
     void tick()
   }
 

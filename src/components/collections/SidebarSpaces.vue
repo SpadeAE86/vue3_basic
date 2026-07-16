@@ -12,6 +12,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'update:selectedSpaceId', val: string | null): void
   (e: 'clear-selection'): void
+  (e: 'drop-local-files', payload: { paths: string[], spaceId: string | null }): void
 }>()
 
 const collectionsStore = useCollectionsStore()
@@ -47,14 +48,24 @@ async function handleDropToSpace(space: ThemeSpace, event: DragEvent) {
     itemIds = [...collectionsStore.draggedItemIds]
   }
   if (itemIds && itemIds.length > 0) {
-    try {
-      const success = await collectionsStore.batchMoveToSpace(itemIds, space.id)
-      if (success) {
-        ElMessage.success(`成功移动 ${itemIds.length} 个收藏项到 "${space.name}"`)
-        emit('clear-selection')
+    const localFileIds = itemIds.filter(id => id.startsWith('local-file-'))
+    const normalItemIds = itemIds.filter(id => !id.startsWith('local-file-'))
+
+    if (localFileIds.length > 0) {
+      const paths = localFileIds.map(id => id.substring('local-file-'.length))
+      emit('drop-local-files', { paths, spaceId: space.id })
+    }
+
+    if (normalItemIds.length > 0) {
+      try {
+        const success = await collectionsStore.batchMoveToSpace(normalItemIds, space.id)
+        if (success) {
+          ElMessage.success(`成功移动 ${normalItemIds.length} 个收藏项到 "${space.name}"`)
+          emit('clear-selection')
+        }
+      } catch (e) {
+        console.error('拖拽移入分类失败:', e)
       }
-    } catch (e) {
-      console.error('拖拽移入分类失败:', e)
     }
   }
 }
@@ -87,14 +98,24 @@ async function handleDropToAll(event: DragEvent) {
     itemIds = [...collectionsStore.draggedItemIds]
   }
   if (itemIds && itemIds.length > 0) {
-    try {
-      const success = await collectionsStore.batchMoveToSpace(itemIds, null)
-      if (success) {
-        ElMessage.success(`成功将 ${itemIds.length} 个收藏项移动到 "全部收藏"`)
-        emit('clear-selection')
+    const localFileIds = itemIds.filter(id => id.startsWith('local-file-'))
+    const normalItemIds = itemIds.filter(id => !id.startsWith('local-file-'))
+
+    if (localFileIds.length > 0) {
+      const paths = localFileIds.map(id => id.substring('local-file-'.length))
+      emit('drop-local-files', { paths, spaceId: null })
+    }
+
+    if (normalItemIds.length > 0) {
+      try {
+        const success = await collectionsStore.batchMoveToSpace(normalItemIds, null)
+        if (success) {
+          ElMessage.success(`成功将 ${itemIds.length} 个收藏项移动到 "全部收藏"`)
+          emit('clear-selection')
+        }
+      } catch (e) {
+        console.error('拖拽移动到全部收藏失败:', e)
       }
-    } catch (e) {
-      console.error('拖拽移动到全部收藏失败:', e)
     }
   }
 }
@@ -215,20 +236,65 @@ async function handleDeleteSpace(space: ThemeSpace) {
   }
 }
 
-// 根据当前分类筛选主题空间
+function getSpaceCount(spaceId: string) {
+  return collectionsStore.items.filter(i => {
+    const itemSpace = i.space_id ? collectionsStore.themeSpaces.find(s => s.id === i.space_id) : null
+    const isInsideInspirationSpace = itemSpace?.category === 'inspiration'
+    if (props.activeCategory === 'media') {
+      return i.item_type === 'media' || !!i.cover_url || isInsideInspirationSpace
+    } else {
+      return i.item_type === 'template' || i.item_type === 'prompt'
+    }
+  }).filter(i => i.space_id === spaceId).length
+}
+
+function getSpaceLastUpdateTime(spaceId: string, spaceCreatedAt: string): number {
+  const spaceItems = collectionsStore.items.filter(i => i.space_id === spaceId)
+  if (spaceItems.length === 0) {
+    return new Date(spaceCreatedAt || 0).getTime()
+  }
+  const times = spaceItems.map(i => new Date(i.created_at || i.created_at || 0).getTime())
+  return Math.max(...times)
+}
+
 const filteredSpaces = computed(() => {
-  return collectionsStore.themeSpaces.filter(s => {
+  const list = collectionsStore.themeSpaces.filter(s => {
+    if (s.category === 'inspiration') return true
     if (props.activeCategory === 'media') {
       return s.category === 'media'
     } else {
       return s.category === 'template' || s.category === 'prompt'
     }
   })
+  
+  return [...list].sort((a, b) => {
+    // 1. Keep "先普通再灵感"
+    const aIsInsp = a.category === 'inspiration' ? 1 : 0
+    const bIsInsp = b.category === 'inspiration' ? 1 : 0
+    if (aIsInsp !== bIsInsp) {
+      return aIsInsp - bIsInsp
+    }
+    
+    // 2. Sort by update time desc
+    const timeA = getSpaceLastUpdateTime(a.id, a.created_at)
+    const timeB = getSpaceLastUpdateTime(b.id, b.created_at)
+    if (timeA !== timeB) {
+      return timeB - timeA
+    }
+    
+    // 3. Sort by item count desc
+    return getSpaceCount(b.id) - getSpaceCount(a.id)
+  })
 })
+
 const displayAllCount = computed(() => {
   const categoryItems = collectionsStore.items.filter(i => {
+    const itemSpace = i.space_id ? collectionsStore.themeSpaces.find(s => s.id === i.space_id) : null
+    const isInsideInspirationSpace = itemSpace?.category === 'inspiration'
+    if (isInsideInspirationSpace) return false
+    
     if (props.activeCategory === 'media') {
-      return i.item_type === 'media'
+      return i.item_type === 'media' || !!i.cover_url
     } else {
       return i.item_type === 'template' || i.item_type === 'prompt'
     }
@@ -238,16 +304,6 @@ const displayAllCount = computed(() => {
   }
   return categoryItems.length
 })
-
-function getSpaceCount(spaceId: string) {
-  return collectionsStore.items.filter(i => {
-    if (props.activeCategory === 'media') {
-      return i.item_type === 'media'
-    } else {
-      return i.item_type === 'template' || i.item_type === 'prompt'
-    }
-  }).filter(i => i.space_id === spaceId).length
-}
 </script>
 
 <template>
@@ -309,7 +365,10 @@ function getSpaceCount(spaceId: string) {
         @dragleave="handleDragLeave(space, $event)"
         @drop="handleDropToSpace(space, $event)"
       >
-        <el-icon class="folder-icon"><i-ep-folder /></el-icon>
+        <el-icon class="folder-icon" :style="space.category === 'inspiration' ? 'color: #10b981; filter: drop-shadow(0 0 2px rgba(16, 185, 129, 0.4));' : ''">
+          <i-ep-folder-opened v-if="selectedSpaceId === space.id" />
+          <i-ep-folder v-else />
+        </el-icon>
         <span class="space-name" :title="space.name">{{ space.name }}</span>
         
         <span class="item-count">{{ getSpaceCount(space.id) }}</span>
@@ -400,6 +459,10 @@ function getSpaceCount(spaceId: string) {
   flex-direction: column;
   gap: 16px;
   box-shadow: 0 2px 8px rgba(0,0,0,0.02);
+  position: sticky;
+  top: 16px;
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
 }
 
 .sidebar-header {
@@ -422,13 +485,29 @@ function getSpaceCount(spaceId: string) {
   margin: 0;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
+  max-height: 580px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.spaces-list::-webkit-scrollbar {
+  width: 4px;
+}
+
+.spaces-list::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 4px;
+}
+
+.spaces-list::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 .space-item {
   display: flex;
   align-items: center;
-  padding: 8px 12px;
+  padding: 10px 14px;
   border-radius: 8px;
   cursor: pointer;
   transition: all 0.2s;
@@ -438,6 +517,7 @@ function getSpaceCount(spaceId: string) {
   position: relative;
   gap: 8px;
   overflow: hidden;
+  flex-shrink: 0;
 }
 
 .space-item:hover {

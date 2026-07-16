@@ -1,453 +1,399 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch, nextTick, reactive } from 'vue'
+import { useRouter } from 'vue-router'
 import { useCollectionsStore, type CollectionItem } from '@/stores/collections'
 import MediaPreviewDialog from '@/components/image/MediaPreviewDialog.vue'
 import SidebarSpaces from '@/components/collections/SidebarSpaces.vue'
 import MediaCard from '@/components/collections/MediaCard.vue'
 import TemplateCard from '@/components/collections/TemplateCard.vue'
+import PromptSlotDialog from '@/components/image/PromptSlotDialog.vue'
+import FloatingSearchPanel from '@/components/collections/FloatingSearchPanel.vue'
+import LocalGallery from '@/components/collections/LocalGallery.vue'
+import ImportChoiceDialog from '@/components/collections/ImportChoiceDialog.vue'
+import SpaceTaggerDialog from '@/components/collections/SpaceTaggerDialog.vue'
+import { uploadToObs } from '@/utils/obs'
+import { ElMessage, ElLoading, ElMessageBox } from 'element-plus'
 
+// Composables
+import { useCollectionsSelection } from './composables/useCollectionsSelection'
+import { useCollectionsPreview } from './composables/useCollectionsPreview'
+import { useLocalFolders } from './composables/useLocalFolders'
+import { useCollectionsClipboard } from './composables/useCollectionsClipboard'
+import { useCollectionsDragDrop } from './composables/useCollectionsDragDrop'
+import { useCollectionsContextMenu } from './composables/useCollectionsContextMenu'
+import { useCollectionsImport } from './composables/useCollectionsImport'
+import { useCollectionsFilterSort } from './composables/useCollectionsFilterSort'
+
+const router = useRouter()
 const collectionsStore = useCollectionsStore()
 
-// 选中的大分类: 'media' | 'template'
-const activeCategory = ref<'media' | 'template'>('media')
+// ─── Composable: Local Folders ───
+const {
+  localFolders,
+  activeFolderIndex,
+  localFolderContents,
+  localFolderLoading,
+  loadLocalFolder,
+  removeLocalFolder,
+  breadcrumbParts,
+  navigateBreadcrumb,
+  enterSubfolder
+} = useLocalFolders()
 
-// 选中的空间ID (null 代表 "全部")
-const selectedSpaceId = ref<string | null>(null)
+const visibleLocalFilesCount = ref(72)
+const visibleCloudFilesCount = ref(72)
 
-// ─── 选中高亮与多选 ───
-const selectedItemIds = ref<string[]>([])
-const lastSelectedIndex = ref<number | null>(null)
+// ─── Composable: Filter & Sort Actions ───
+const {
+  activeCategory,
+  activeSubFilter,
+  selectedSpaceId,
+  activeFolderId,
+  filterMode,
+  selectedTags,
+  searchQuery,
+  filteredItems,
+  getItemSubType,
+  handleSpaceSelect,
+  handleCategoryChange,
+  
+  dbFolders,
+  dbFiles,
+  visibleFilteredItems,
+  numColumns,
+  updateNumColumns,
+  dbColumnsData
+} = useCollectionsFilterSort(activeFolderIndex, visibleCloudFilesCount)
 
-function handleHeaderClick(item: CollectionItem, event: MouseEvent) {
-  const visibleItems = filteredItems.value
-  const index = visibleItems.findIndex(i => i.id === item.id)
-  if (index === -1) return
-
-  if (event.shiftKey && lastSelectedIndex.value !== null) {
-    const start = Math.min(lastSelectedIndex.value, index)
-    const end = Math.max(lastSelectedIndex.value, index)
-    for (let i = start; i <= end; i++) {
-      const it = visibleItems[i]
-      if (it && !selectedItemIds.value.includes(it.id)) {
-        selectedItemIds.value.push(it.id)
-      }
-    }
-  } else {
-    const idx = selectedItemIds.value.indexOf(item.id)
-    if (idx > -1) {
-      selectedItemIds.value.splice(idx, 1)
-    } else {
-      selectedItemIds.value.push(item.id)
-    }
-    lastSelectedIndex.value = index
-  }
+// ─── Composable: Card Selection ───
+function getCardDomId(id: string | number) {
+  return 'card-' + String(id).replace(/[^a-zA-Z0-9_-]/g, '_')
 }
 
-watch([activeCategory, selectedSpaceId], () => {
-  selectedItemIds.value = []
-  lastSelectedIndex.value = null
+const visibleLocalFiles = computed(() => {
+  return localFolderContents.value.files.slice(0, visibleLocalFilesCount.value)
 })
 
-// ─── 拖拽分类状态 ───
-const isDragging = ref(false)
-
-function setCustomDragImage(event: DragEvent, count: number, itemCoverUrl?: string) {
-  if (!event.dataTransfer) return
-  
-  const container = document.createElement('div')
-  container.style.position = 'absolute'
-  container.style.top = '-1000px'
-  container.style.left = '-1000px'
-  container.style.width = '80px'
-  container.style.height = '80px'
-  container.style.borderRadius = '12px'
-  container.style.background = 'rgba(30, 30, 38, 0.65)'
-  container.style.backdropFilter = 'blur(8px)'
-  container.style.setProperty('-webkit-backdrop-filter', 'blur(8px)')
-  container.style.border = '1px solid rgba(255, 255, 255, 0.2)'
-  container.style.boxShadow = '0 8px 16px rgba(0, 0, 0, 0.25)'
-  container.style.display = 'flex'
-  container.style.alignItems = 'center'
-  container.style.justifyContent = 'center'
-  container.style.overflow = 'hidden'
-  container.style.zIndex = '-9999'
-
-  if (itemCoverUrl) {
-    const img = document.createElement('img')
-    img.src = itemCoverUrl
-    img.style.width = '100%'
-    img.style.height = '100%'
-    img.style.objectFit = 'contain'
-    container.appendChild(img)
-  } else {
-    const text = document.createElement('span')
-    text.innerText = '📁'
-    text.style.fontSize = '24px'
-    container.appendChild(text)
+const currentGalleryFiles = computed(() => {
+  if (activeFolderIndex.value !== null) {
+    return localFolderContents.value.files
   }
+  return dbFiles.value
+})
 
-  const badge = document.createElement('div')
-  badge.innerText = String(count)
-  badge.style.position = 'absolute'
-  badge.style.top = '4px'
-  badge.style.right = '4px'
-  badge.style.background = '#ff4d4f'
-  badge.style.color = '#ffffff'
-  badge.style.fontSize = '11px'
-  badge.style.fontWeight = 'bold'
-  badge.style.minWidth = '18px'
-  badge.style.height = '18px'
-  badge.style.borderRadius = '9px'
-  badge.style.display = 'flex'
-  badge.style.alignItems = 'center'
-  badge.style.justifyContent = 'center'
-  badge.style.padding = '0 4px'
-  badge.style.boxSizing = 'border-box'
-  badge.style.boxShadow = '0 2px 4px rgba(0,0,0,0.2)'
-  container.appendChild(badge)
+const {
+  selectedItemIds,
+  lastSelectedIndex,
+  handleHeaderClick,
+  clearSelectionIfBlank
+} = useCollectionsSelection(currentGalleryFiles, activeFolderIndex, localFolderContents)
 
-  document.body.appendChild(container)
-  event.dataTransfer.setDragImage(container, 40, 40)
-  
-  setTimeout(() => {
-    document.body.removeChild(container)
-  }, 0)
-}
+// ─── Composable: Clipboard Actions ───
+const {
+  cutItemIds,
+  handleKeyDown,
+  handlePasteItems
+} = useCollectionsClipboard(
+  selectedItemIds,
+  activeFolderIndex,
+  localFolders,
+  activeFolderId,
+  localFolderContents,
+  loadLocalFolder
+)
 
-function handleDragStart(item: CollectionItem, event: DragEvent) {
-  isDragging.value = true
-  if (!selectedItemIds.value.includes(item.id)) {
-    selectedItemIds.value = [item.id]
-  }
-  collectionsStore.draggedItemIds = selectedItemIds.value
-  const coverUrl = item.cover_url || item.data.url || item.data.image_url
-  setCustomDragImage(event, selectedItemIds.value.length, coverUrl)
+// ─── Composable: Drag & Drop Actions ───
+const {
+  isDragging,
+  handleDragStart,
+  handleDragEnd,
+  handleLocalDragStart,
+  handleLocalDragEnd,
+  handleDragOverGlobal,
+  stopAutoScroll,
+  handleLocalDropOnFolder,
+  handleCloudDropOnFolder
+} = useCollectionsDragDrop(
+  selectedItemIds,
+  activeFolderIndex,
+  localFolders,
+  activeFolderId,
+  localFolderContents,
+  loadLocalFolder
+)
 
-  if (event.dataTransfer) {
-    event.dataTransfer.setData('text/plain', JSON.stringify(selectedItemIds.value))
-    event.dataTransfer.effectAllowed = 'move'
-  }
-}
+// ─── Composable: Context Menu Actions ───
+const {
+  contextMenuVisible,
+  contextMenuX,
+  contextMenuY,
+  taggerVisible,
+  taggerDirPath,
+  taggerFolderId,
+  taggerFolderTitle,
+  handleContextMenu,
+  contextMenuOptions,
+  handleContextMenuAction
+} = useCollectionsContextMenu(
+  selectedItemIds,
+  activeFolderIndex,
+  activeFolderId,
+  selectedSpaceId,
+  localFolders,
+  localFolderContents,
+  loadLocalFolder,
+  handleLocalDropOnFolder,
+  handleCloudDropOnFolder
+)
 
-function handleDragEnd() {
-  isDragging.value = false
-  setTimeout(() => {
-    collectionsStore.draggedItemIds = []
-  }, 200)
-}
+// ─── Composable: Preview Dialog ───
+const {
+  previewVisible,
+  previewUrl,
+  previewMediaType,
+  previewPrompt,
+  previewTags,
+  previewSpaceName,
+  previewItem,
+  openPreview,
+  handlePrevPreview,
+  handleNextPreview,
+  handleUpdateTags,
+  handlePrefillFromCollections
+} = useCollectionsPreview(
+  currentGalleryFiles,
+  getSpaceName,
+  (id, tags) => collectionsStore.updateItemTags(id, tags)
+)
 
-function clearSelectionIfBlank(event: MouseEvent) {
+// ─── Composable: Import & Upload Actions ───
+const {
+  isImportingMedia,
+  fileInputRef,
+  isImportDialogVisible,
+  importChoiceVisible,
+  defaultImportSubtype,
+  handleImportClick,
+  handleImportChoice,
+  handleFileSelected,
+  handleImportTemplateSaved,
+  handleDropLocalFiles
+} = useCollectionsImport(
+  activeCategory,
+  activeSubFilter,
+  selectedSpaceId,
+  localFolders,
+  activeFolderIndex
+)
+
+
+
+
+
+function handleScroll(event: Event) {
   const target = event.target as HTMLElement
-  if (
-    !target.closest('.result-card') &&
-    !target.closest('.spaces-sidebar') &&
-    !target.closest('.category-tabs') &&
-    !target.closest('.el-dialog') &&
-    !target.closest('.el-dropdown') &&
-    !target.closest('.el-popper') &&
-    !target.closest('.el-overlay') &&
-    !target.closest('.el-message') &&
-    !target.closest('.el-message-box') &&
-    !target.closest('.floating-search-panel')
-  ) {
-    selectedItemIds.value = []
-    lastSelectedIndex.value = null
-  }
-}
-
-// ─── 悬浮搜索框拖拽与过滤状态 ───
-const searchQuery = ref('')
-const searchDragPosition = ref({ left: 0, top: 0, dragged: false })
-const isDraggingSearch = ref(false)
-const searchDragStartPos = { x: 0, y: 0 }
-const searchDragStartOffset = { left: 0, top: 0 }
-
-function startDragSearch(e: MouseEvent) {
-  const target = e.target as HTMLElement
-  if (
-    target.tagName === 'INPUT' ||
-    target.closest('input') ||
-    target.tagName === 'BUTTON' ||
-    target.closest('button') ||
-    target.classList.contains('el-input__clear') ||
-    target.closest('.el-input__clear')
-  ) {
-    return
-  }
-  e.preventDefault()
-  isDraggingSearch.value = true
-  const el = document.querySelector('.floating-search-panel') as HTMLElement
-  if (el) {
-    const rect = el.getBoundingClientRect()
-    searchDragPosition.value.left = rect.left
-    searchDragPosition.value.top = rect.top
-    searchDragPosition.value.dragged = true
-
-    searchDragStartPos.x = e.clientX
-    searchDragStartPos.y = e.clientY
-    searchDragStartOffset.left = rect.left
-    searchDragStartOffset.top = rect.top
-
-    window.addEventListener('mousemove', onDragSearch)
-    window.addEventListener('mouseup', stopDragSearch)
-  }
-}
-
-function onDragSearch(e: MouseEvent) {
-  if (!isDraggingSearch.value) return
-  const dx = e.clientX - searchDragStartPos.x
-  const dy = e.clientY - searchDragStartPos.y
-  searchDragPosition.value.left = searchDragStartOffset.left + dx
-  searchDragPosition.value.top = searchDragStartOffset.top + dy
-}
-
-function stopDragSearch() {
-  isDraggingSearch.value = false
-  window.removeEventListener('mousemove', onDragSearch)
-  window.removeEventListener('mouseup', stopDragSearch)
-}
-
-function startTouchDragSearch(e: TouchEvent) {
-  if (e.touches.length !== 1) return
-  const touch = e.touches[0]
-  if (!touch) return
-  const target = e.target as HTMLElement
-  if (
-    target.tagName === 'INPUT' ||
-    target.closest('input') ||
-    target.tagName === 'BUTTON' ||
-    target.closest('button') ||
-    target.classList.contains('el-input__clear') ||
-    target.closest('.el-input__clear')
-  ) {
-    return
-  }
-  isDraggingSearch.value = true
-  const el = document.querySelector('.floating-search-panel') as HTMLElement
-  if (el) {
-    const rect = el.getBoundingClientRect()
-    searchDragPosition.value.left = rect.left
-    searchDragPosition.value.top = rect.top
-    searchDragPosition.value.dragged = true
-
-    searchDragStartPos.x = touch.clientX
-    searchDragStartPos.y = touch.clientY
-    searchDragStartOffset.left = rect.left
-    searchDragStartOffset.top = rect.top
-
-    window.addEventListener('touchmove', onTouchDragSearch, { passive: false })
-    window.addEventListener('touchend', stopTouchDragSearch)
-  }
-}
-
-function onTouchDragSearch(e: TouchEvent) {
-  if (!isDraggingSearch.value) return
-  if (e.touches.length !== 1) return
-  const touch = e.touches[0]
-  if (!touch) return
-  const dx = touch.clientX - searchDragStartPos.x
-  const dy = touch.clientY - searchDragStartPos.y
-  searchDragPosition.value.left = searchDragStartOffset.left + dx
-  searchDragPosition.value.top = searchDragStartOffset.top + dy
-}
-
-function stopTouchDragSearch() {
-  isDraggingSearch.value = false
-  window.removeEventListener('touchmove', onTouchDragSearch)
-  window.removeEventListener('touchend', stopTouchDragSearch)
-}
-
-const searchBoxStyle = computed(() => {
-  if (searchDragPosition.value.dragged) {
-    return {
-      left: `${searchDragPosition.value.left}px`,
-      top: `${searchDragPosition.value.top}px`,
-      right: 'auto',
-      transform: 'none'
-    }
-  }
-  return {
-    top: '120px',
-    right: '40px',
-    position: 'fixed' as const
-  }
-})
-
-// ─── 大图/视频 弹窗预览 ───
-const previewVisible = ref(false)
-const previewUrl = ref('')
-const previewMediaType = ref('video')
-const previewPrompt = ref('')
-const previewTags = ref<string[]>([])
-const previewSpaceName = ref('')
-const previewItem = ref<CollectionItem | null>(null)
-
-function openPreview(item: CollectionItem) {
-  previewItem.value = item
-  const url = item.data.url || item.data.image_url || ''
-  const isVid = url.toLowerCase().endsWith('.mp4') || url.toLowerCase().endsWith('.webm')
-  previewUrl.value = url
-  previewMediaType.value = item.data.media_type || (isVid ? 'video' : 'image')
-  previewPrompt.value = item.data.prompt || ''
-  previewTags.value = item.tags || []
-  previewSpaceName.value = getSpaceName(item.space_id)
-  previewVisible.value = true
-}
-
-async function handleUpdateTags(tags: string[]) {
-  if (!previewItem.value) return
-  const success = await collectionsStore.updateItemTags(previewItem.value.id, tags)
-  if (success) {
-    previewTags.value = tags
-    previewItem.value.tags = tags
-  }
-}
-
-const tagTree = ref<any>(null)
-const expandedCategoryPath = ref<string | null>(null)
-const filterMode = ref<'text' | 'tag'>('text')
-const selectedTags = ref<string[]>([])
-const tagInputVal = ref('')
-
-async function fetchTagTree() {
-  try {
-    const resp = await fetch('/api/collections/tag-tree')
-    const res = await resp.json()
-    if (res.success) {
-      tagTree.value = res.tag_tree
-    }
-  } catch (e) {
-    console.error('加载标签树失败:', e)
-  }
-}
-
-interface FlatCategoryItem {
-  name: string
-  path: string
-  tags: string[]
-  isLeaf: boolean
-  depth: number
-}
-
-const flatCategories = computed(() => {
-  const list: FlatCategoryItem[] = []
-  if (!tagTree.value) return list
+  const container = (target === document || (target as any) === window) 
+    ? document.documentElement 
+    : target
+    
+  if (!container || !container.scrollHeight) return
   
-  function traverse(tree: any, depth = 0) {
-    for (const key in tree) {
-      const node = tree[key]
-      list.push({
-        name: key,
-        path: node.path,
-        tags: node.tags || [],
-        isLeaf: node.is_leaf,
-        depth
-      })
-      if (node.children) {
-        traverse(node.children, depth + 1)
+  const scrollTop = container.scrollTop
+  const scrollHeight = container.scrollHeight
+  const clientHeight = container.clientHeight
+  
+  if (scrollHeight <= clientHeight) return
+  
+  const distanceToBottom = scrollHeight - scrollTop - clientHeight
+  const threshold = scrollHeight * 0.3
+  
+  if (distanceToBottom <= threshold) {
+    if (activeFolderIndex.value !== null) {
+      if (visibleLocalFilesCount.value < localFolderContents.value.files.length) {
+        visibleLocalFilesCount.value += 48
+      }
+    } else {
+      if (visibleCloudFilesCount.value < dbFiles.value.length) {
+        visibleCloudFilesCount.value += 48
       }
     }
   }
-  traverse(tagTree.value)
-  return list
+}
+
+// Watch navigation parameters to reset page sizes
+watch(
+  [activeFolderIndex, selectedSpaceId, activeCategory, searchQuery, selectedTags, activeFolderId],
+  () => {
+    visibleLocalFilesCount.value = 72
+    visibleCloudFilesCount.value = 72
+  }
+)
+
+function getScrollParent(node: HTMLElement | null): HTMLElement | null {
+  if (!node) return null
+  
+  const style = window.getComputedStyle(node)
+  const overflowY = style.overflowY
+  const isScrollable = overflowY === 'auto' || overflowY === 'scroll'
+  const hasScrollbar = node.scrollHeight > node.clientHeight
+  
+  if (isScrollable && hasScrollbar) {
+    return node
+  }
+  
+  return getScrollParent(node.parentElement)
+}
+
+function scrollToCard(cardEl: HTMLElement) {
+  const container = getScrollParent(cardEl) || document.querySelector('.app-main') || document.querySelector('.el-main') || document.documentElement
+  if (!container) return
+  
+  const containerRect = container.getBoundingClientRect()
+  const cardRect = cardEl.getBoundingClientRect()
+  
+  const relativeTop = cardRect.top - containerRect.top
+  const targetScrollTop = container.scrollTop + relativeTop - (container.clientHeight / 2) + (cardRect.height / 2)
+  
+  container.scrollTo({
+    top: targetScrollTop,
+    behavior: 'smooth'
+  })
+  
+  // Also scroll .app-main and .el-main as fallbacks
+  const appMain = document.querySelector('.app-main')
+  const elMain = document.querySelector('.el-main')
+  
+  if (appMain && appMain !== container) {
+    const rTop = cardRect.top - appMain.getBoundingClientRect().top
+    const tScroll = appMain.scrollTop + rTop - (appMain.clientHeight / 2) + (cardRect.height / 2)
+    appMain.scrollTo({ top: tScroll, behavior: 'smooth' })
+  }
+  if (elMain && elMain !== container && elMain !== appMain) {
+    const rTop = cardRect.top - elMain.getBoundingClientRect().top
+    const tScroll = elMain.scrollTop + rTop - (elMain.clientHeight / 2) + (cardRect.height / 2)
+    elMain.scrollTo({ top: tScroll, behavior: 'smooth' })
+  }
+}
+
+function handlePreviewItemSwitched(item: CollectionItem) {
+  if (activeFolderIndex.value !== null) {
+    const files = localFolderContents.value.files
+    const index = files.findIndex(f => f.id === item.id)
+    if (index > -1 && index >= visibleLocalFilesCount.value - 8) {
+      visibleLocalFilesCount.value = Math.min(files.length, index + 48)
+    }
+  } else {
+    const files = dbFiles.value
+    const index = files.findIndex(f => f.id === item.id)
+    if (index > -1 && index >= visibleCloudFilesCount.value - 8) {
+      visibleCloudFilesCount.value = Math.min(files.length, index + 48)
+    }
+  }
+  
+  nextTick(() => {
+    const scrollIntoViewFn = () => {
+      const targetId = getCardDomId(item.id)
+      let cardEl = document.getElementById(targetId)
+      
+      if (!cardEl) {
+        // Fallback: search by DOM index order
+        const isLocal = activeFolderIndex.value !== null
+        const files = isLocal ? localFolderContents.value.files : dbFiles.value
+        const fileIdx = files.findIndex(f => f.id === item.id)
+        if (fileIdx > -1) {
+          const numFolders = isLocal 
+            ? localFolderContents.value.folders.length 
+            : dbFolders.value.length
+            
+          const allCards = document.querySelectorAll('.masonry-grid .masonry-item, .templates-grid .template-card-container')
+          const fallbackCard = allCards[numFolders + fileIdx] as HTMLElement
+          if (fallbackCard) {
+            cardEl = fallbackCard
+          }
+        }
+      }
+      
+      if (cardEl) {
+        scrollToCard(cardEl)
+      }
+    }
+    // Perform scroll immediately
+    scrollIntoViewFn()
+    // Retry after 100ms to guarantee alignment after masonry layout updates
+    setTimeout(scrollIntoViewFn, 100)
+  })
+}
+
+// Watch previewItem to dynamically page files and scroll them into view
+watch(previewItem, (newItem) => {
+  if (!newItem) return
+  handlePreviewItemSwitched(newItem)
 })
 
-function toggleCategory(path: string) {
-  if (expandedCategoryPath.value === path) {
-    expandedCategoryPath.value = null
-  } else {
-    expandedCategoryPath.value = path
-    filterMode.value = 'tag' // 展开类目时自动切换至标签过滤模式
+function onPreviewItemSwitchedEvent(e: Event) {
+  const item = (e as CustomEvent).detail as CollectionItem
+  if (item) {
+    handlePreviewItemSwitched(item)
   }
-}
-
-function addFilterTag(tag: string) {
-  if (!selectedTags.value.includes(tag)) {
-    selectedTags.value.push(tag)
-  }
-}
-
-function addTagFromInput() {
-  const val = tagInputVal.value.trim()
-  if (val) {
-    if (!selectedTags.value.includes(val)) {
-      selectedTags.value.push(val)
-    }
-    tagInputVal.value = ''
-  }
-}
-
-function removeFilterTag(tag: string) {
-  selectedTags.value = selectedTags.value.filter(t => t !== tag)
 }
 
 onMounted(() => {
   collectionsStore.init()
-  fetchTagTree()
+  updateNumColumns()
   document.addEventListener('click', clearSelectionIfBlank)
+  window.addEventListener('local-folder-changed', loadLocalFolder)
+  window.addEventListener('keydown', handleKeyDown)
+  document.addEventListener('dragover', handleDragOverGlobal)
+  document.addEventListener('dragend', stopAutoScroll)
+  document.addEventListener('drop', stopAutoScroll)
+  window.addEventListener('scroll', handleScroll, { capture: true })
+  window.addEventListener('preview-item-switched', onPreviewItemSwitchedEvent)
+  window.addEventListener('resize', updateNumColumns)
 })
 
 onUnmounted(() => {
   document.removeEventListener('click', clearSelectionIfBlank)
+  window.removeEventListener('local-folder-changed', loadLocalFolder)
+  window.removeEventListener('keydown', handleKeyDown)
+  document.removeEventListener('dragover', handleDragOverGlobal)
+  document.removeEventListener('dragend', stopAutoScroll)
+  document.removeEventListener('drop', stopAutoScroll)
+  window.removeEventListener('scroll', handleScroll, { capture: true })
+  window.removeEventListener('preview-item-switched', onPreviewItemSwitchedEvent)
+  window.removeEventListener('resize', updateNumColumns)
 })
 
-// 根据当前分类和选中的空间筛选收藏项
-const filteredItems = computed(() => {
-  let filtered = collectionsStore.items.filter(item => {
-    if (activeCategory.value === 'media') {
-      if (item.item_type !== 'media') return false
-    } else {
-      if (item.item_type !== 'template' && item.item_type !== 'prompt') return false
-    }
-    
-    // 如果选中的是全部，支持过滤未分类
-    if (selectedSpaceId.value === null) {
-      if (collectionsStore.showUnclassifiedOnly) {
-        return !item.space_id
-      }
-      return true
-    } else {
-      return item.space_id === selectedSpaceId.value
-    }
-  })
+// Context Menu & Folders
+import ContextMenu from '@/components/collections/ContextMenu.vue'
+const dragoverLocalBreadcrumbPath = ref<string | null>(null)
+const dragoverCloudBreadcrumb = ref(false)
 
-  if (filterMode.value === 'text') {
-    // 文本搜索模式：按输入内容实时搜索
-    if (searchQuery.value.trim()) {
-      const q = searchQuery.value.trim().toLowerCase()
-      filtered = filtered.filter(item => {
-        const matchesTag = (item.tags || []).some(t => t.toLowerCase().includes(q))
-        const matchesTitle = (item.title || '').toLowerCase().includes(q)
-        const matchesPrompt = (item.data?.prompt || '').toLowerCase().includes(q)
-        return matchesTag || matchesTitle || matchesPrompt
-      })
-    }
-  } else {
-    // 标签过滤模式：必须同时包含选中的所有 selectedTags
-    if (selectedTags.value.length > 0) {
-      filtered = filtered.filter(item => {
-        const itemTags = (item.tags || []).map(t => t.toLowerCase())
-        return selectedTags.value.every(filterTag => 
-          itemTags.includes(filterTag.toLowerCase())
-        )
-      })
-    }
-  }
 
-  return filtered
+
+watch([activeCategory, selectedSpaceId, activeFolderIndex], () => {
+  selectedItemIds.value = []
+  lastSelectedIndex.value = null
+  activeFolderId.value = null
 })
 
 // 归属的主题空间名称映射
-function getSpaceName(spaceId?: string) {
+function getSpaceName(spaceId?: string | null) {
   if (!spaceId) return ''
   const space = collectionsStore.themeSpaces.find(s => s.id === spaceId)
   return space ? space.name : ''
 }
 
-// 切换大分类时重置选中的空间
-function handleCategoryChange(category: 'media' | 'template') {
-  activeCategory.value = category
-  selectedSpaceId.value = null
+function handleCardClick(item: CollectionItem) {
+  if (item.item_type === 'template' || item.item_type === 'prompt' || item.item_type === 'inspiration') {
+    if (item.data?.chat_session_id) {
+      router.push(`/chat?role_id=${item.data.role_id || 'default'}&session_id=${item.data.chat_session_id}`)
+    } else {
+      const subtype = getItemSubType(item)
+      if (subtype !== 'beautify') {
+        router.push(`/collections/prompt-space/${item.id}`)
+      }
+    }
+  }
 }
 </script>
 
@@ -456,86 +402,258 @@ function handleCategoryChange(category: 'media' | 'template') {
     <!-- 头部导航 -->
     <header class="collections-header">
       <div class="header-left">
-        <h1 class="page-title">✨ 我的灵感收藏空间</h1>
-        <p class="page-subtitle">沉淀创意片段，分类规划您的图像、视频与提示词模板空间。</p>
+        <div class="title-capsules-row">
+          <h1 class="page-title">✨ 我的灵感收藏空间</h1>
+          <div v-if="activeCategory === 'media'" class="capsules-wrapper">
+            <button 
+              class="capsule-btn" 
+              :class="{ active: activeFolderIndex === null }"
+              @click="activeFolderIndex = null"
+            >
+              收藏空间
+            </button>
+            <div 
+              v-for="(folder, index) in localFolders" 
+              :key="folder.basePath"
+              class="capsule-btn local-capsule"
+              :class="{ active: activeFolderIndex === index }"
+              @click="activeFolderIndex = index"
+            >
+              <el-icon class="folder-icon-mini"><i-ep-folder /></el-icon>
+              <span class="folder-name">{{ folder.name }}</span>
+              <button class="remove-btn" @click.stop="removeLocalFolder(index)">
+                <el-icon><i-ep-close /></el-icon>
+              </button>
+            </div>
+          </div>
+        </div>
+        
+        <p class="page-subtitle" v-if="activeFolderIndex === null">
+          沉淀创意片段，分类规划您的图像、视频与提示词模板空间。
+        </p>
+        <div v-else class="breadcrumbs">
+          <span 
+            v-for="(part, idx) in breadcrumbParts" 
+            :key="part.path" 
+            class="breadcrumb-item"
+          >
+            <span 
+              class="breadcrumb-link" 
+              :class="{ 'is-dragover': dragoverLocalBreadcrumbPath === part.path }"
+              @click="navigateBreadcrumb(idx)"
+              @dragover.prevent
+              @dragenter.prevent="dragoverLocalBreadcrumbPath = part.path"
+              @dragleave="dragoverLocalBreadcrumbPath = null"
+              @drop="handleLocalDropOnFolder({ destPath: part.path }); dragoverLocalBreadcrumbPath = null"
+            >{{ part.name }}</span>
+            <span v-if="idx < breadcrumbParts.length - 1" class="breadcrumb-separator">/</span>
+          </span>
+        </div>
       </div>
 
-      <div class="category-tabs">
-        <button 
-          class="tab-btn" 
-          :class="{ active: activeCategory === 'media' }"
-          @click="handleCategoryChange('media')"
+      <div class="header-right">
+        <!-- 隐藏的隐藏文件选择输入 -->
+        <input 
+          type="file" 
+          ref="fileInputRef" 
+          style="display: none" 
+          accept="image/*,video/*" 
+          @change="handleFileSelected"
+        />
+
+        <el-button 
+          type="primary" 
+          size="small" 
+          plain 
+          class="import-btn"
+          @click="handleImportClick"
+          :loading="isImportingMedia"
         >
-          <el-icon><i-ep-picture /></el-icon>
-          <span>多媒体画廊</span>
-        </button>
-        <button 
-          class="tab-btn" 
-          :class="{ active: activeCategory === 'template' }"
-          @click="handleCategoryChange('template')"
-        >
-          <el-icon><i-ep-memo /></el-icon>
-          <span>提示词模板</span>
-        </button>
+          <el-icon><i-ep-upload /></el-icon>
+          <span>导入</span>
+        </el-button>
+
+        <div class="category-tabs">
+          <button 
+            class="tab-btn" 
+            :class="{ active: activeCategory === 'media' }"
+            @click="handleCategoryChange('media')"
+          >
+            <el-icon><i-ep-picture /></el-icon>
+            <span>多媒体画廊</span>
+          </button>
+          <button 
+            class="tab-btn" 
+            :class="{ active: activeCategory === 'template' }"
+            @click="handleCategoryChange('template')"
+          >
+            <el-icon><i-ep-memo /></el-icon>
+            <span>灵感源泉</span>
+          </button>
+        </div>
       </div>
     </header>
 
     <div class="collections-content">
       <!-- 左边栏：主题空间 -->
       <SidebarSpaces
-        v-model:selectedSpaceId="selectedSpaceId"
+        :selectedSpaceId="selectedSpaceId"
         :active-category="activeCategory"
         :selected-item-ids="selectedItemIds"
+        @update:selectedSpaceId="handleSpaceSelect"
         @clear-selection="selectedItemIds = []; lastSelectedIndex = null;"
+        @drop-local-files="handleDropLocalFiles"
       />
 
       <!-- 主区域：瀑布流与卡片网格 -->
       <main class="main-gallery">
+        <!-- Secondary Sub-Filter tabs row for 灵感源泉 -->
+        <div v-if="activeCategory === 'template'" class="sub-filter-row">
+          <button 
+            class="sub-filter-btn" 
+            :class="{ active: activeSubFilter === 'all' }"
+            @click="activeSubFilter = 'all'"
+          >
+            全部 ({{ totalTemplateCount }})
+          </button>
+          <button 
+            class="sub-filter-btn" 
+            :class="{ active: activeSubFilter === 'inspiration' }"
+            @click="activeSubFilter = 'inspiration'"
+          >
+            💡 灵感 ({{ inspirationCount }})
+          </button>
+          <button 
+            class="sub-filter-btn" 
+            :class="{ active: activeSubFilter === 'prompt' }"
+            @click="activeSubFilter = 'prompt'"
+          >
+            📝 提示词 ({{ promptTemplateCount }})
+          </button>
+          <button 
+            class="sub-filter-btn" 
+            :class="{ active: activeSubFilter === 'beautify' }"
+            @click="activeSubFilter = 'beautify'"
+          >
+            ✨ 美化 ({{ beautifyCount }})
+          </button>
+        </div>
+
         <!-- 列表状态 -->
         <div v-if="collectionsStore.loading" class="loading-state">
           <el-icon class="is-loading" :size="32"><i-ep-loading /></el-icon>
           <span>加载数据中...</span>
         </div>
 
-        <div v-else-if="filteredItems.length === 0" class="empty-state">
-          <el-empty description="当前空间空空如也，快去画布或提示词对比页面点亮星星收藏吧！" />
-        </div>
-
-        <div v-else class="gallery-wrapper">
-          <!-- 1. 多媒体画廊 (媒体瀑布流) -->
-          <div v-if="activeCategory === 'media'" class="masonry-grid">
-            <div 
-              v-for="item in filteredItems" 
-              :key="item.id" 
-              class="masonry-item"
-              draggable="true"
-              @dragstart="handleDragStart(item, $event)"
-              @dragend="handleDragEnd"
+        <div v-else class="gallery-wrapper" @contextmenu.prevent="handleContextMenu">
+          <!-- Database Collections Folder Breadcrumbs -->
+          <div v-if="activeFolderIndex === null && activeFolderId !== null" class="folder-breadcrumbs">
+            <el-button 
+              type="primary" 
+              link
+              @click="activeFolderId = null"
+              class="breadcrumb-back-btn"
+              :class="{ 'is-dragover': dragoverCloudBreadcrumb }"
+              @dragover.prevent
+              @dragenter.prevent="dragoverCloudBreadcrumb = true"
+              @dragleave="dragoverCloudBreadcrumb = false"
+              @drop="handleCloudDropOnFolder(''); dragoverCloudBreadcrumb = false"
             >
-              <MediaCard
-                :item="item"
-                :is-selected="selectedItemIds.includes(item.id)"
-                @click-header="handleHeaderClick(item, $event)"
-                @click-preview="openPreview"
-              />
-            </div>
+              <el-icon><i-ep-arrow-left /></el-icon> 返回上级 (拖至此移出文件夹)
+            </el-button>
+            <span class="breadcrumb-separator">/</span>
+            <span class="current-folder-name">{{ getFolderName(activeFolderId) }}</span>
           </div>
 
-          <!-- 2. 提示词模板展示 -->
-          <div v-else-if="activeCategory === 'template'" class="templates-grid">
-            <div 
-              v-for="item in filteredItems" 
-              :key="item.id" 
-              class="template-card-container"
-              draggable="true"
-              @dragstart="handleDragStart(item, $event)"
-              @dragend="handleDragEnd"
-            >
-              <TemplateCard
-                :item="item"
-                :is-selected="selectedItemIds.includes(item.id)"
-                @click-header="handleHeaderClick(item, $event)"
+          <!-- Empty state if no items -->
+          <div v-if="filteredItems.length === 0" class="empty-state">
+            <el-empty description="当前空间空空如也，右击可以创建新文件夹，或拖拽文件进行整理" />
+          </div>
+
+          <div v-else>
+            <!-- 1. 多媒体画廊 (媒体瀑布流) -->
+            <div v-if="activeCategory === 'media'">
+              <!-- 本地文件夹画廊 -->
+              <LocalGallery
+                v-if="activeFolderIndex !== null"
+                :folders="localFolderContents.folders"
+                :files="visibleLocalFiles"
+                :full-files="localFolderContents.files"
+                :selected-item-ids="selectedItemIds"
+                :cut-item-ids="cutItemIds"
+                :loading="localFolderLoading"
+                @enter-subfolder="enterSubfolder"
+                @click-preview="openPreview"
+                @click-header="({ item, event }) => handleHeaderClick(item, event)"
+                @dragstart="handleLocalDragStart"
+                @dragend="handleLocalDragEnd"
+                @context-menu="handleContextMenu"
+                @drop-items-on-folder="handleLocalDropOnFolder"
               />
+              
+              <!-- 数据库收藏空间画廊 -->
+              <div v-else class="masonry-grid" :style="{ gridTemplateColumns: `repeat(${numColumns}, 1fr)` }">
+                <div v-for="(col, colIdx) in dbColumnsData" :key="colIdx" class="masonry-column">
+                  <div 
+                    v-for="item in col" 
+                    :key="item.id" 
+                    :id="getCardDomId(item.id)"
+                    :data-item-id="item.id"
+                    class="masonry-item"
+                    :class="{ 'is-cut': cutItemIds.includes(item.id) }"
+                    draggable="true"
+                    @dragstart="handleDragStart(item, $event)"
+                    @dragend="handleDragEnd"
+                  >
+                    <MediaCard
+                      :item="item"
+                      :is-selected="selectedItemIds.includes(item.id)"
+                      :selected-space-id="selectedSpaceId"
+                      :preview-list="dbFiles"
+                      :preview-index="item.item_type === 'folder' ? undefined : dbFiles.findIndex(f => f.id === item.id)"
+                      @click-header="ev => handleHeaderClick(item, ev)"
+                      @click-preview="openPreview"
+                      @enter-virtual-folder="id => activeFolderId = id"
+                      @drop-items-on-folder="payload => handleCloudDropOnFolder(payload.destFolderId)"
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- 2. 提示词模板展示 -->
+            <div v-else-if="activeCategory === 'template'" class="templates-grid">
+              <div 
+                v-for="(item, index) in visibleFilteredItems" 
+                :key="item.id" 
+                :id="getCardDomId(item.id)"
+                class="template-card-container"
+                :class="{ 'is-cut': cutItemIds.includes(item.id) }"
+                draggable="true"
+                @dragstart="handleDragStart(item, $event)"
+                @dragend="handleDragEnd"
+              >
+                <MediaCard
+                  v-if="item.cover_url || item.item_type === 'folder'"
+                  :item="item"
+                  :is-selected="selectedItemIds.includes(item.id)"
+                  :selected-space-id="selectedSpaceId"
+                  :preview-list="dbFiles"
+                  :preview-index="item.item_type === 'folder' ? undefined : dbFiles.findIndex(f => f.id === item.id)"
+                  @click-header="ev => handleHeaderClick(item, ev)"
+                  @click-preview="openPreview"
+                  @enter-virtual-folder="id => activeFolderId = id"
+                  @drop-items-on-folder="payload => handleCloudDropOnFolder(payload.destFolderId)"
+                />
+                <TemplateCard
+                  v-else
+                  :item="item"
+                  :is-selected="selectedItemIds.includes(item.id)"
+                  :selected-space-id="selectedSpaceId"
+                  @click-header="ev => handleHeaderClick(item, ev)"
+                  @click="handleCardClick(item)"
+                />
+              </div>
             </div>
           </div>
         </div>
@@ -549,126 +667,59 @@ function handleCategoryChange(category: 'media' | 'template') {
       :prompt="previewPrompt"
       :tags="previewTags"
       :space-name="previewSpaceName"
+      :reference-media="previewItem?.data?.referenceMedia"
+      :show-carousel="true"
       @update-tags="handleUpdateTags"
+      @prefill="handlePrefillFromCollections"
+      @prev="handlePrevPreview"
+      @next="handleNextPreview"
+    />
+
+    <ImportChoiceDialog
+      v-model="importChoiceVisible"
+      @choice="handleImportChoice"
     />
 
     <!-- Floating Draggable Search Panel -->
-    <div
-      class="floating-search-panel"
-      :class="{ 'is-dragging': isDraggingSearch }"
-      :style="searchBoxStyle"
-    >
-      <div
-        class="search-panel-header"
-        @mousedown="startDragSearch"
-        @touchstart="startTouchDragSearch"
-      >
-        <span class="search-title">🔍 搜索过滤</span>
-        <span class="drag-handle-dots">⋮⋮</span>
-      </div>
+    <FloatingSearchPanel
+      v-model:searchQuery="searchQuery"
+      v-model:selectedTags="selectedTags"
+      v-model:filterMode="filterMode"
+    />
 
-      <!-- Mode Toggle Switch -->
-      <div class="filter-mode-toggle">
-        <button 
-          class="mode-toggle-btn" 
-          :class="{ active: filterMode === 'text' }"
-          @click="filterMode = 'text'"
-        >
-          文本搜索
-        </button>
-        <button 
-          class="mode-toggle-btn" 
-          :class="{ active: filterMode === 'tag' }"
-          @click="filterMode = 'tag'"
-        >
-          标签过滤
-        </button>
-      </div>
+    <!-- 灵感源泉导入/新建弹窗，复用插槽模板编辑器 -->
+    <PromptSlotDialog
+      v-model:visible="isImportDialogVisible"
+      :is-new="true"
+      initial-name=""
+      mode="collections"
+      :initial-subtype="defaultImportSubtype"
+      @saved="handleImportTemplateSaved"
+    />
 
-      <!-- Search Input Section -->
-      <div class="search-input-wrapper">
-        <!-- Text Search Input -->
-        <el-input
-          v-if="filterMode === 'text'"
-          v-model="searchQuery"
-          placeholder="搜索标签、标题或提示词..."
-          clearable
-          size="small"
-        >
-          <template #prefix>
-            <el-icon><i-ep-search /></el-icon>
-          </template>
-        </el-input>
+    <!-- Context Menu Component -->
+    <ContextMenu
+      v-model:visible="contextMenuVisible"
+      :x="contextMenuX"
+      :y="contextMenuY"
+      :options="contextMenuOptions"
+      @action="handleContextMenuAction"
+    />
 
-        <!-- Tag Capsules Filtering Input -->
-        <div v-else class="tag-filter-bar">
-          <div class="tag-capsules-container">
-            <span 
-              v-for="tag in selectedTags" 
-              :key="tag" 
-              class="tag-capsule-filter"
-            >
-              #{{ tag }}
-              <span class="remove-btn" @click.stop="removeFilterTag(tag)">×</span>
-            </span>
-            <input
-              v-model="tagInputVal"
-              type="text"
-              placeholder="输入标签并回车..."
-              class="tag-text-input"
-              @keydown.enter.stop="addTagFromInput"
-            />
-          </div>
-        </div>
-      </div>
-
-      <!-- Accordion Tag Tree (Only shown in Tag Mode) -->
-      <div v-if="filterMode === 'tag' && tagTree" class="tag-tree-container">
-        <div 
-          v-for="cat in flatCategories" 
-          :key="cat.path" 
-          class="tree-category-node"
-        >
-          <div 
-            class="category-node-header" 
-            :class="{ 'is-expanded': expandedCategoryPath === cat.path }"
-            @click.stop="toggleCategory(cat.path)"
-          >
-            <span class="category-name">
-              <span class="tree-indent" :style="{ width: `${cat.depth * 8}px` }"></span>
-              <span class="folder-icon">{{ cat.isLeaf ? '🏷️' : (expandedCategoryPath === cat.path ? '📂' : '📁') }}</span>
-              <span class="cat-label">{{ cat.name }}</span>
-            </span>
-            <span v-if="cat.tags.length > 0" class="tag-count-badge">
-              {{ cat.tags.length }}
-            </span>
-          </div>
-          
-          <!-- Expanded Capsules Pills List -->
-          <div 
-            v-if="expandedCategoryPath === cat.path && cat.tags.length > 0" 
-            class="category-tags-pills"
-          >
-            <button
-              v-for="tag in cat.tags"
-              :key="tag"
-              class="tag-pill-btn"
-              :class="{ 'is-active': selectedTags.includes(tag) }"
-              @click.stop="addFilterTag(tag)"
-            >
-              # {{ tag }}
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
+    <!-- LoRA Tagger Workspace Dialog -->
+    <SpaceTaggerDialog
+      v-model:visible="taggerVisible"
+      :dir-path="taggerDirPath"
+      :folder-id="taggerFolderId"
+      :folder-title="taggerFolderTitle"
+    />
   </div>
 </template>
 
 <style scoped>
 .collections-page {
   padding: 24px;
-  max-width: 1600px;
+  max-width: 1800px;
   margin: 0 auto;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   color: #1e293b;
@@ -684,6 +735,29 @@ function handleCategoryChange(category: 'media' | 'template') {
   align-items: flex-end;
   border-bottom: 1px solid #e2e8f0;
   padding-bottom: 20px;
+}
+
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.import-btn {
+  border-radius: 20px;
+  padding: 6px 16px;
+  font-weight: 600;
+  font-size: 13px;
+  height: 32px;
+  border-color: #6366f1;
+  color: #6366f1;
+  transition: all 0.2s ease;
+}
+
+.import-btn:hover {
+  background-color: #f5f3ff;
+  color: #4f46e5;
+  border-color: #4f46e5;
 }
 
 .page-title {
@@ -762,24 +836,41 @@ function handleCategoryChange(category: 'media' | 'template') {
 
 /* Masonry Grid waterfall flow */
 .masonry-grid {
-  columns: 4;
-  column-gap: 16px;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+  align-items: start;
 }
 
+@media (min-width: 1600px) {
+  .masonry-grid {
+    grid-template-columns: repeat(5, 1fr);
+  }
+}
+@media (min-width: 1900px) {
+  .masonry-grid {
+    grid-template-columns: repeat(6, 1fr);
+  }
+}
 @media (max-width: 1200px) {
   .masonry-grid {
-    columns: 3;
+    grid-template-columns: repeat(3, 1fr);
   }
 }
 @media (max-width: 900px) {
   .masonry-grid {
-    columns: 2;
+    grid-template-columns: repeat(2, 1fr);
   }
 }
 
+.masonry-column {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
 .masonry-item {
-  break-inside: avoid;
-  margin-bottom: 16px;
+  width: 100%;
 }
 
 /* Template Grid layout */
@@ -787,6 +878,7 @@ function handleCategoryChange(category: 'media' | 'template') {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
   gap: 16px;
+  align-items: start;
 }
 
 .template-card-container {
@@ -794,307 +886,240 @@ function handleCategoryChange(category: 'media' | 'template') {
   width: 100%;
 }
 
-/* ─── Floating Draggable Search Panel Styles ─── */
-.floating-search-panel {
-  position: fixed;
-  z-index: 1000;
-  width: 280px; /* Slightly wider to accommodate tags tree nicely */
-  max-height: 500px;
+
+
+/* Secondary Sub-Filter Row styles */
+.sub-filter-row {
   display: flex;
-  flex-direction: column;
-  padding: 14px;
-  background: rgba(255, 255, 255, 0.75);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  border-radius: 20px;
-  border: 1px solid rgba(99, 102, 241, 0.18);
-  box-shadow: 0 10px 36px rgba(99, 102, 241, 0.08);
-  cursor: default;
-  transition: border-color 0.3s, box-shadow 0.3s, max-height 0.3s;
-  box-sizing: border-box;
+  gap: 10px;
+  margin-bottom: 20px;
+  background-color: rgba(241, 245, 249, 0.6);
+  backdrop-filter: blur(10px);
+  padding: 6px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(226, 232, 240, 0.8);
+  width: fit-content;
 }
 
-.floating-search-panel:hover {
-  border-color: rgba(99, 102, 241, 0.35);
-  box-shadow: 0 14px 44px rgba(99, 102, 241, 0.14);
-}
-
-.floating-search-panel.is-dragging {
-  border-color: #6366f1;
-  box-shadow: 0 18px 56px rgba(99, 102, 241, 0.24);
-  transition: none !important;
-}
-
-.search-panel-header {
+.sub-filter-btn {
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  margin-bottom: 10px;
-  width: 100%;
-  flex-shrink: 0;
-  cursor: grab;
-  user-select: none;
-}
-
-.floating-search-panel.is-dragging .search-panel-header {
-  cursor: grabbing;
-}
-
-.search-title {
-  font-size: 11px;
-  font-weight: 700;
-  color: #4f46e5;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-}
-
-.drag-handle-dots {
-  color: #94a3b8;
-  font-size: 14px;
-  letter-spacing: 1.5px;
-}
-
-/* Mode Switch Toggle Button */
-.filter-mode-toggle {
-  display: flex;
-  background-color: rgba(226, 232, 240, 0.5);
-  border-radius: 10px;
-  padding: 3px;
-  margin-bottom: 10px;
-  flex-shrink: 0;
-}
-
-.mode-toggle-btn {
-  flex: 1;
-  padding: 6px 10px;
-  font-size: 11px;
+  gap: 6px;
+  padding: 6px 14px;
+  border-radius: 8px;
+  border: none;
+  font-size: 12.5px;
   font-weight: 600;
   color: #64748b;
-  border: none;
-  background: none;
-  border-radius: 8px;
   cursor: pointer;
+  background: none;
   transition: all 0.2s ease;
 }
 
-.mode-toggle-btn.active {
+.sub-filter-btn:hover:not(.active) {
+  color: #334155;
+  background-color: rgba(0, 0, 0, 0.03);
+}
+
+.sub-filter-btn.active {
   background-color: #ffffff;
-  color: #4f46e5;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+  color: #6366f1;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  border: 1px solid rgba(99, 102, 241, 0.15);
 }
 
-.search-input-wrapper {
-  width: 100%;
-  flex-shrink: 0;
+/* ─── Capsules Styles ─── */
+.title-capsules-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 6px;
+  flex-wrap: wrap;
 }
 
-.search-input-wrapper :deep(.el-input__wrapper) {
-  background-color: rgba(255, 255, 255, 0.6) !important;
-  border-radius: 8px;
-  border: 1px solid rgba(0, 0, 0, 0.05) !important;
+.title-capsules-row .page-title {
+  margin: 0;
 }
 
-.search-input-wrapper :deep(.el-input__wrapper.is-focus) {
-  border-color: #6366f1 !important;
-  box-shadow: 0 0 0 1px #6366f1 !important;
+.capsules-wrapper {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
-/* Tag filter capsules bar */
-.tag-filter-bar {
-  background: rgba(255, 255, 255, 0.8);
-  border: 1px solid rgba(0, 0, 0, 0.08);
-  border-radius: 10px;
-  padding: 6px 8px;
-  min-height: 32px;
+.capsule-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  border-radius: 14px;
+  padding: 0 12px;
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid #cbd5e1;
+  background: #f8fafc;
+  color: #475569;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
   box-sizing: border-box;
 }
 
-.tag-capsules-container {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  align-items: center;
-}
-
-.tag-capsule-filter {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  background: linear-gradient(135deg, #e0e7ff 0%, #e0f2fe 100%);
-  color: #4338ca;
-  font-size: 11px;
-  font-weight: 600;
-  padding: 3px 8px;
-  border-radius: 999px;
-  box-shadow: 0 1px 2px rgba(99, 102, 241, 0.05);
-  animation: scaleUp 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
-}
-
-.tag-capsule-filter .remove-btn {
-  cursor: pointer;
-  color: #6366f1;
-  font-weight: bold;
-  font-size: 12px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  transition: background 0.2s, color 0.2s;
-}
-
-.tag-capsule-filter .remove-btn:hover {
-  background: #4f46e5;
-  color: #ffffff;
-}
-
-.tag-text-input {
-  border: none;
-  background: transparent;
-  outline: none;
-  font-size: 11px;
+.capsule-btn:hover {
+  background-color: #f1f5f9;
+  border-color: #94a3b8;
   color: #1e293b;
-  flex: 1;
-  min-width: 80px;
-  padding: 2px 0;
 }
 
-/* Accordion Tag Tree Styles */
-.tag-tree-container {
-  margin-top: 12px;
-  overflow-y: auto;
-  max-height: 330px; /* Constrain tree container height to enforce scrolling */
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding-right: 4px;
+.capsule-btn.active {
+  background-color: #eef2ff;
+  color: #6366f1;
+  border-color: #c7d2fe;
+  box-shadow: 0 1px 2px rgba(99, 102, 241, 0.05);
 }
 
-/* Custom scrollbar for tree */
-.tag-tree-container::-webkit-scrollbar {
-  width: 6px;
-}
-.tag-tree-container::-webkit-scrollbar-track {
-  background: rgba(0, 0, 0, 0.02);
-}
-.tag-tree-container::-webkit-scrollbar-thumb {
-  background: rgba(99, 102, 241, 0.25);
-  border-radius: 3px;
-}
-.tag-tree-container::-webkit-scrollbar-thumb:hover {
-  background: rgba(99, 102, 241, 0.45);
-}
-
-
-.tree-category-node {
-  background: rgba(248, 250, 252, 0.5);
-  border-radius: 10px;
-  border: 1px solid rgba(0, 0, 0, 0.02);
-  overflow: hidden;
-  transition: all 0.2s ease;
-}
-
-.tree-category-node:hover {
-  background: rgba(248, 250, 252, 0.8);
-}
-
-.category-node-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 8px 10px;
-  cursor: pointer;
-  transition: background-color 0.2s;
-}
-
-.category-node-header:hover {
-  background-color: rgba(99, 102, 241, 0.05);
-}
-
-.category-node-header.is-expanded {
-  background-color: rgba(99, 102, 241, 0.08);
-  border-bottom: 1px solid rgba(99, 102, 241, 0.05);
-}
-
-.category-name {
-  display: flex;
-  align-items: center;
-  font-size: 12px;
-  font-weight: 600;
-  color: #334155;
-}
-
-.tree-indent {
-  display: inline-block;
-  flex-shrink: 0;
-}
-
-.folder-icon {
-  margin-right: 6px;
+.folder-icon-mini {
   font-size: 13px;
+  color: #f59e0b;
 }
 
-.cat-label {
+.local-capsule {
+  padding-right: 6px;
+}
+
+.local-capsule .folder-name {
+  max-width: 100px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.tag-count-badge {
-  background-color: rgba(99, 102, 241, 0.12);
-  color: #4f46e5;
-  font-size: 10px;
-  font-weight: 700;
-  padding: 2px 6px;
-  border-radius: 999px;
-}
-
-/* Capsules pills for tags */
-.category-tags-pills {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  padding: 10px;
-  background: rgba(255, 255, 255, 0.6);
-  border-top: 1px dashed rgba(99, 102, 241, 0.08);
-  animation: fadeInSlide 0.2s ease-out forwards;
-}
-
-.tag-pill-btn {
-  border: 1px solid rgba(203, 213, 225, 0.6);
-  background: #ffffff;
-  color: #475569;
-  font-size: 11px;
-  font-weight: 500;
-  padding: 4px 10px;
-  border-radius: 999px;
+.remove-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: none;
+  color: #94a3b8;
   cursor: pointer;
-  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.02);
+  padding: 2px;
+  border-radius: 50%;
+  transition: all 0.2s ease;
+  width: 0;
+  opacity: 0;
+  overflow: hidden;
+  margin-left: 0;
 }
 
-.tag-pill-btn:hover {
-  background: rgba(99, 102, 241, 0.05);
-  border-color: rgba(99, 102, 241, 0.3);
-  color: #4f46e5;
+.local-capsule:hover .remove-btn {
+  width: 16px;
+  opacity: 1;
+  margin-left: 4px;
 }
 
-.tag-pill-btn.is-active {
-  background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
-  color: #ffffff;
-  border-color: transparent;
-  box-shadow: 0 2px 6px rgba(99, 102, 241, 0.25);
+.remove-btn:hover {
+  background-color: rgba(0, 0, 0, 0.05);
+  color: #ef4444;
 }
 
-/* Keyframes for animations */
-@keyframes scaleUp {
-  0% { transform: scale(0.9); opacity: 0; }
-  100% { transform: scale(1); opacity: 1; }
+/* Breadcrumbs */
+.breadcrumbs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+  color: #64748b;
+  margin-top: 6px;
+  flex-wrap: wrap;
 }
 
-@keyframes fadeInSlide {
-  0% { opacity: 0; transform: translateY(-8px); }
-  100% { opacity: 1; transform: translateY(0); }
+.breadcrumb-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.breadcrumb-link {
+  cursor: pointer;
+  transition: color 0.2s;
+  font-weight: 500;
+}
+
+.breadcrumb-link:hover {
+  color: #6366f1;
+  text-decoration: underline;
+}
+
+.breadcrumb-separator {
+  color: #cbd5e1;
+  user-select: none;
+}
+
+/* Virtual Folder Breadcrumbs */
+.folder-breadcrumbs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 16px;
+  font-size: 14px;
+  color: #64748b;
+}
+
+.breadcrumb-back-btn {
+  font-size: 13.5px;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: #6366f1 !important;
+}
+
+.breadcrumb-back-btn:hover {
+  text-decoration: underline;
+}
+
+.breadcrumb-separator {
+  color: #cbd5e1;
+}
+
+.current-folder-name {
+  font-weight: 600;
+  color: #1e293b;
+}
+
+/* Breadcrumbs Drag Over Hover Highlight styles */
+.breadcrumb-link {
+  transition: all 0.2s ease;
+  padding: 2px 4px;
+  border-radius: 4px;
+}
+
+.breadcrumb-link.is-dragover {
+  background-color: rgba(99, 102, 241, 0.15) !important;
+  color: #6366f1 !important;
+  border: 1px dashed #6366f1;
+  transform: scale(1.05);
+}
+
+.breadcrumb-back-btn {
+  transition: all 0.2s ease;
+  padding: 4px 8px;
+  border-radius: 4px;
+  border: 1px solid transparent !important;
+}
+
+.breadcrumb-back-btn.is-dragover {
+  background-color: rgba(99, 102, 241, 0.15) !important;
+  color: #6366f1 !important;
+  border: 1px dashed #6366f1 !important;
+  transform: scale(1.03);
+}
+
+/* Removed Intermediate Import Choice Dialog Styles - moved to ImportChoiceDialog.vue */
+.masonry-item.is-cut,
+.template-card-container.is-cut {
+  opacity: 0.5;
+  filter: grayscale(30%);
+  transition: opacity 0.2s ease;
 }
 </style>

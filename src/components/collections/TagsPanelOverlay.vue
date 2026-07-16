@@ -44,11 +44,11 @@ function updateTagsPosition() {
   if (img) {
     const rect = img.getBoundingClientRect()
     const viewportWidth = window.innerWidth
-    // 距离图边缘 200px
-    let targetLeft = rect.right + 200
+    // 距离图边缘 20px
+    let targetLeft = rect.right + 20
 
-    // 检查右边缘空间（至少需要 150px）
-    if (viewportWidth - targetLeft < 150) {
+    // 检查右边缘空间（面板宽度 320px，至少预留 340px）
+    if (viewportWidth - targetLeft < 340) {
       rightTagsStyle.value = {
         left: 'auto',
         right: '40px',
@@ -60,7 +60,7 @@ function updateTagsPosition() {
       rightTagsStyle.value = {
         left: `${targetLeft}px`,
         right: 'auto',
-        top: `${rect.top + rect.height / 2 - 200}px`,
+        top: `${rect.top + rect.height / 2 - 120}px`,
         transform: 'translateY(-50%)',
         alignItems: 'flex-start'
       }
@@ -228,11 +228,41 @@ async function handleAiAutoTag() {
 }
 
 // ─── 标签编辑/保存/删除 ───
+const lastAddedTag = ref(localStorage.getItem('diy_last_added_tag') || '')
+
+async function handleCopyTag(tag: string) {
+  try {
+    await navigator.clipboard.writeText(tag)
+    ElMessage.success(`已复制标签: ${tag}`)
+  } catch (err) {
+    console.error(err)
+    ElMessage.error('复制失败')
+  }
+}
+
+async function handleCopyAllTags(tags: string[]) {
+  if (!tags || tags.length === 0) {
+    ElMessage.warning('标签列表为空')
+    return
+  }
+  try {
+    await navigator.clipboard.writeText(tags.join(', '))
+    ElMessage.success('已复制全部标签为逗号分隔文本')
+  } catch (err) {
+    console.error(err)
+    ElMessage.error('复制失败')
+  }
+}
+
 function startAddViewerTag() {
   isAddingTag.value = true
+  newViewerTagInput.value = lastAddedTag.value
   nextTick(() => {
     const input = document.getElementById(`viewer-tag-input-${props.item.id}`) as HTMLInputElement
-    input?.focus()
+    if (input) {
+      input.focus()
+      input.select()
+    }
   })
 }
 
@@ -263,20 +293,125 @@ async function handleSaveEditedViewerTag(oldTag: string) {
   activeEditingTag.value = null
 }
 
+// ─── Autocomplete / Fuzzy Recommendations Logic ───
+const autocompleteResults = ref<any[]>([])
+const autocompleteIndex = ref(0)
+
+watch(newViewerTagInput, async (newVal) => {
+  const query = newVal.trim()
+  if (!query) {
+    autocompleteResults.value = []
+    autocompleteIndex.value = 0
+    return
+  }
+  try {
+    const res = await fetch(`/api/tagger/danbooru?query=${encodeURIComponent(query)}&limit=15`)
+    const data = await res.json()
+    if (data.success) {
+      autocompleteResults.value = data.results || []
+      autocompleteIndex.value = 0
+    }
+  } catch (err) {
+    console.error('Failed to fetch danbooru tags:', err)
+  }
+})
+
+function navigateAutocomplete(dir: number) {
+  if (autocompleteResults.value.length === 0) return
+  const len = autocompleteResults.value.length
+  autocompleteIndex.value = (autocompleteIndex.value + dir + len) % len
+}
+
+function selectHighlightedAutocomplete() {
+  if (autocompleteResults.value.length > 0) {
+    const item = autocompleteResults.value[autocompleteIndex.value]
+    if (item) {
+      selectAutocompleteItem(item)
+    }
+  }
+}
+
+async function handleSelectAutocomplete() {
+  if (autocompleteResults.value.length > 0 && autocompleteIndex.value >= 0) {
+    const item = autocompleteResults.value[autocompleteIndex.value]
+    if (item) {
+      selectAutocompleteItem(item)
+      return
+    }
+  }
+  await handleSaveViewerTag()
+}
+
+function selectAutocompleteItem(resItem: any) {
+  const tagToAdd = resItem.tag.replace(/_/g, ' ')
+  // Adopt suggestion into the input box instead of saving immediately
+  newViewerTagInput.value = tagToAdd
+  autocompleteResults.value = []
+  nextTick(() => {
+    const input = document.getElementById(`viewer-tag-input-${props.item.id}`) as HTMLInputElement
+    input?.focus()
+  })
+}
+
+async function onViewerInputBlur() {
+  setTimeout(() => {
+    // Click away should NOT automatically submit. Just close and clean up.
+    newViewerTagInput.value = ''
+    isAddingTag.value = false
+    autocompleteResults.value = []
+  }, 200)
+}
+
+function highlightMatch(text: string, query: string) {
+  if (!query) return text
+  const q = query.toLowerCase()
+  const t = text.toLowerCase()
+  const idx = t.indexOf(q)
+  if (idx > -1) {
+    const originalMatch = text.slice(idx, idx + query.length)
+    return text.slice(0, idx) + `<strong style="text-decoration: underline;">${originalMatch}</strong>` + text.slice(idx + query.length)
+  }
+  return text
+}
+
+function formatCount(count: number): string {
+  if (count >= 1000000) {
+    return (count / 1000000).toFixed(1) + 'M'
+  }
+  if (count >= 1000) {
+    return (count / 1000).toFixed(1) + 'k'
+  }
+  return String(count)
+}
+
 async function handleSaveViewerTag() {
   const raw = newViewerTagInput.value.trim()
   if (raw) {
-    const parts = raw.split(/[,，;；\s]+/).map(s => s.trim()).filter(Boolean)
+    const parts = raw.split(/[,，;；\n\r]+/).map(s => s.trim()).filter(Boolean)
     const currentTags = [...(props.item.tags || [])]
     let changed = false
+    const addedTags: string[] = []
+    const existingTags: string[] = []
     for (const p of parts) {
-      if (!currentTags.includes(p)) {
-        currentTags.push(p)
+      const cleaned = p.replace(/_/g, ' ')
+      if (currentTags.includes(cleaned)) {
+        existingTags.push(cleaned)
+      } else {
+        currentTags.push(cleaned)
         changed = true
+        addedTags.push(cleaned)
       }
     }
+    if (existingTags.length > 0 && addedTags.length === 0) {
+      ElMessage.warning(`标签 "${existingTags.join(', ')}" 已存在`)
+    }
     if (changed) {
-      await collectionsStore.updateItemTags(props.item.id, currentTags)
+      const success = await collectionsStore.updateItemTags(props.item.id, currentTags)
+      if (success !== false) {
+        lastAddedTag.value = raw
+        localStorage.setItem('diy_last_added_tag', raw)
+        ElMessage.success(`标签 "${addedTags.join(', ')}" 添加成功`)
+      }
     }
   }
   newViewerTagInput.value = ''
@@ -327,15 +462,26 @@ onUnmounted(() => {
       <!-- Panel Header with Title and Close Button ("隐藏" text) -->
       <div class="tags-panel-header">
         <span class="result-preview-label">标签管理</span>
-        <el-button
-          type="info"
-          link
-          size="small"
-          class="tags-panel-close-btn"
-          @click.stop="closePanel"
-        >
-          隐藏
-        </el-button>
+        <div class="header-action-buttons" style="display: flex; align-items: center; gap: 8px;">
+          <el-button
+            type="primary"
+            link
+            size="small"
+            title="复制全部标签 (逗号分隔)"
+            @click.stop="handleCopyAllTags(item.tags || [])"
+          >
+            <el-icon><i-ep-document-copy /></el-icon>
+          </el-button>
+          <el-button
+            type="info"
+            link
+            size="small"
+            class="tags-panel-close-btn"
+            @click.stop="closePanel"
+          >
+            隐藏
+          </el-button>
+        </div>
       </div>
 
       <!-- Folder Space Tag (Read-only) -->
@@ -346,13 +492,14 @@ onUnmounted(() => {
       </div>
 
       <!-- Content Tags List (vertical) -->
-      <div class="viewer-vertical-tags-container">
+      <div class="viewer-vertical-tags-container" @wheel.stop>
         <span
           v-for="tag in (item.tags || [])"
           :key="tag"
           class="viewer-custom-pill"
-          @click.stop="startEditViewerTag(tag)"
-          title="点击修改此标签"
+          title="点击复制，双击编辑此标签"
+          @click.stop="handleCopyTag(tag)"
+          @dblclick.stop="startEditViewerTag(tag)"
         >
           <template v-if="activeEditingTag === tag">
             <input
@@ -369,36 +516,60 @@ onUnmounted(() => {
             <span class="viewer-custom-pill-remove" @click.stop="handleRemoveViewerTag(tag)">×</span>
           </template>
         </span>
+      </div>
 
-        <!-- Actions row (Add Tag on the left, AI Tagging on the right) -->
-        <div class="viewer-tag-actions-row">
-          <!-- Add Tag button / input -->
-          <div v-if="isAddingTag" class="viewer-add-tag-form">
-            <input
-              :id="'viewer-tag-input-' + item.id"
-              v-model="newViewerTagInput"
-              class="viewer-add-tag-input"
-              placeholder="新标签..."
-              @keyup.enter="handleSaveViewerTag"
-              @blur="handleSaveViewerTag"
-              @click.stop
-            />
+      <!-- Actions row (Add Tag on the left, AI Tagging on the right) -->
+      <div class="viewer-tag-actions-row" @wheel.stop>
+        <!-- Add Tag button / input -->
+        <div v-if="isAddingTag" class="viewer-add-tag-form" style="position: relative; width: 100%;">
+          <input
+            :id="'viewer-tag-input-' + item.id"
+            v-model="newViewerTagInput"
+            class="viewer-add-tag-input"
+            placeholder="新标签..."
+            @keyup.enter="handleSelectAutocomplete"
+            @keydown.down.prevent.stop="navigateAutocomplete(1)"
+            @keydown.up.prevent.stop="navigateAutocomplete(-1)"
+            @keydown.tab.prevent.stop="selectHighlightedAutocomplete"
+            @keydown.stop
+            @blur="onViewerInputBlur"
+            @click.stop
+          />
+          <!-- Autocomplete Dropdown -->
+          <div v-if="autocompleteResults.length > 0" class="autocomplete-dropdown" @wheel.stop>
+            <div
+              v-for="(res, idx) in autocompleteResults"
+              :key="res.tag"
+              class="autocomplete-item"
+              :class="{
+                'is-highlighted': idx === autocompleteIndex,
+                'is-existing': (item.tags || []).includes(res.tag.replace(/_/g, ' '))
+              }"
+              @mousedown.prevent
+              @click="selectAutocompleteItem(res)"
+            >
+              <span class="tag-left" v-html="highlightMatch(res.tag, newViewerTagInput)"></span>
+              <span class="tag-right">
+                <span v-if="res.ch_name" class="tag-ch-name" :title="res.ch_name">{{ res.ch_name }}</span>
+                <span class="tag-count">{{ formatCount(res.count) }}</span>
+              </span>
+            </div>
           </div>
-          <button v-else class="viewer-add-tag-btn" @click.stop="startAddViewerTag" title="添加标签">
-            <el-icon><i-ep-plus /></el-icon>
-          </button>
-
-          <!-- AI tagging button -->
-          <button
-            class="viewer-ai-tag-btn"
-            :class="{ 'is-loading': isAiTagging }"
-            :disabled="isAiTagging"
-            @click.stop="handleAiAutoTag"
-            title="AI 读图自动打标 (doubao-vision)"
-          >
-            <el-icon><i-ep-magic-stick /></el-icon>
-          </button>
         </div>
+        <button v-else class="viewer-add-tag-btn" @click.stop="startAddViewerTag" title="添加标签">
+          <el-icon><i-ep-plus /></el-icon>
+        </button>
+
+        <!-- AI tagging button -->
+        <button
+          class="viewer-ai-tag-btn"
+          :class="{ 'is-loading': isAiTagging }"
+          :disabled="isAiTagging"
+          @click.stop="handleAiAutoTag"
+          title="AI 读图自动打标 (doubao-vision)"
+        >
+          <el-icon><i-ep-magic-stick /></el-icon>
+        </button>
       </div>
     </div>
 
@@ -424,7 +595,6 @@ onUnmounted(() => {
   flex-direction: column;
   gap: 12px;
   max-height: 80vh;
-  overflow-y: auto;
   padding: 14px;
   box-sizing: border-box;
   background: rgba(30, 30, 38, 0.45);
@@ -433,7 +603,7 @@ onUnmounted(() => {
   border-radius: 20px;
   border: 1px solid rgba(255, 255, 255, 0.14);
   box-shadow: 0 6px 24px rgba(0, 0, 0, 0.25);
-  width: 170px;
+  width: 320px;
   transition: left 0.15s ease, right 0.15s ease, top 0.15s ease;
   cursor: grab;
 }
@@ -488,11 +658,25 @@ onUnmounted(() => {
 }
 
 .viewer-vertical-tags-container {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  align-content: start;
   gap: 8px;
   width: 100%;
+  flex: 1;
+  overflow-y: auto;
+  max-height: calc(80vh - 140px);
+  padding-right: 2px;
+}
+
+.viewer-vertical-tags-container::-webkit-scrollbar {
+  display: none;
+}
+.viewer-vertical-tags-container {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
 }
 
 .viewer-space-pill {
@@ -550,6 +734,8 @@ onUnmounted(() => {
 }
 
 .viewer-tag-actions-row {
+  position: relative;
+  z-index: 999;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -746,5 +932,94 @@ onUnmounted(() => {
   background: rgba(30, 30, 38, 0.65);
   transform: translateY(-50%) scale(1.1);
   color: #fff;
+}
+
+/* Autocomplete Dropdown Styles */
+.autocomplete-dropdown {
+  position: absolute;
+  left: 0;
+  width: 292px;
+  bottom: 34px;
+  background: rgba(20, 20, 25, 0.95);
+  backdrop-filter: blur(15px);
+  -webkit-backdrop-filter: blur(15px);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 12px;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.4);
+  max-height: 250px;
+  overflow-y: auto;
+  z-index: 10002;
+}
+
+.autocomplete-dropdown::-webkit-scrollbar {
+  display: none;
+}
+.autocomplete-dropdown {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.autocomplete-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  cursor: pointer;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.85);
+  transition: all 0.15s;
+}
+
+.autocomplete-item:last-child {
+  border-bottom: none;
+}
+
+.autocomplete-item.is-highlighted {
+  background: rgba(167, 139, 250, 0.25);
+  color: #fff;
+}
+
+.autocomplete-item.is-existing {
+  background: rgba(251, 191, 36, 0.15);
+  color: #fde047;
+}
+
+.autocomplete-item.is-existing.is-highlighted {
+  background: rgba(251, 191, 36, 0.3);
+}
+
+.tag-left {
+  text-align: left;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tag-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: 8px;
+  color: rgba(255, 255, 255, 0.45);
+}
+
+.tag-ch-name {
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+  text-align: right;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.tag-count {
+  font-size: 9px;
+  background: rgba(255, 255, 255, 0.08);
+  padding: 1px 4px;
+  border-radius: 4px;
+  color: rgba(255, 255, 255, 0.7);
 }
 </style>

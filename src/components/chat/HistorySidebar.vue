@@ -2,6 +2,9 @@
 import { ref, onMounted, watch } from 'vue'
 import { ArrowLeft, ArrowRight, ChatLineRound, MoreFilled, Download, Delete, Plus } from '@element-plus/icons-vue'
 import { ElMessageBox, ElMessage } from 'element-plus'
+import { useCollectionsStore } from '@/stores/collections'
+
+const collectionsStore = useCollectionsStore()
 
 const props = defineProps<{
   currentSessionId: string | null
@@ -44,6 +47,19 @@ async function fetchSessions(reset = false) {
       if (reset) {
         const activeSession = sessions.value.find((s: Session) => s.session_id === props.currentSessionId)
         sessions.value = data.sessions
+        
+        // Add any active background brain-storming sessions matching this roleId!
+        Object.entries(collectionsStore.activeEvaluationSessions).forEach(([sid, sess]: [string, any]) => {
+          if (sess.roleId === props.roleId && !sessions.value.some((s: any) => s.session_id === sid)) {
+            sessions.value.unshift({
+              session_id: sid,
+              title: `【灵感】${sess.title.substring(0, 12)}`,
+              updated_at: Math.floor(Date.now() / 1000),
+              role_id: props.roleId
+            })
+          }
+        })
+
         if (activeSession && !data.sessions.some((s: any) => s.session_id === props.currentSessionId)) {
           sessions.value.unshift(activeSession)
         }

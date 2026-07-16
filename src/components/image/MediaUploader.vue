@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { uploadToObs, getMediaType } from '@/utils/obs'
+import MediaCollectionsImportDialog from './MediaCollectionsImportDialog.vue'
 
 export interface MediaFile {
   url: string
@@ -28,6 +29,34 @@ const isDragging = ref(false)
 const acceptString = computed(() => {
   return acceptTypes.value.map(t => `${t}/*`).join(',')
 })
+
+const isCollectionDialogVisible = ref(false)
+const selectedUrls = ref<string[]>([])
+
+// Sync selectedUrls with modelValue
+watch(() => props.modelValue, (newVal) => {
+  selectedUrls.value = newVal.map(m => m.url)
+}, { immediate: true })
+
+function handleSelectMultipleFromCollection(urls: string[]) {
+  const currentItems = [...props.modelValue]
+  const availableSlots = max - currentItems.length
+  
+  if (availableSlots <= 0) {
+    ElMessage.warning(`最多只能上传 ${max} 个参考素材`)
+    return
+  }
+  
+  const toAdd = urls.slice(0, availableSlots)
+  if (urls.length > availableSlots) {
+    ElMessage.warning(`参考素材个数超限，仅成功导入前 ${availableSlots} 张图片`)
+  } else {
+    ElMessage.success(`成功导入 ${toAdd.length} 张参考图`)
+  }
+  
+  const newItems = [...currentItems, ...toAdd.map(url => ({ url, type: 'image' as const }))]
+  emit('update:modelValue', newItems)
+}
 
 interface UploadingMedia {
   id: string
@@ -265,7 +294,7 @@ defineExpose({
         @dragover="onDragOver"
         @dragleave="onDragLeave"
         @drop="onDrop"
-        :title="disabled ? '当前模型不支持参考素材' : '点击或拖拽添加参考素材'"
+        :title="disabled ? '当前模型不支持参考素材' : '点击/拖拽添加参考素材，或点击右下角从收藏导入'"
       >
         <el-icon v-if="!disabled">
           <i-ep-plus v-if="acceptTypes.length > 1" />
@@ -274,6 +303,16 @@ defineExpose({
           <i-ep-picture v-else />
         </el-icon>
         <el-icon v-else><i-ep-circle-close /></el-icon>
+
+        <!-- 收藏角标 -->
+        <div
+          v-if="!disabled && acceptTypes.includes('image')"
+          class="import-from-collection-badge"
+          @click.stop="isCollectionDialogVisible = true"
+          title="从收藏空间导入参考图"
+        >
+          <el-icon><i-ep-folder /></el-icon>
+        </div>
       </div>
     </div>
     
@@ -284,6 +323,14 @@ defineExpose({
       multiple
       style="display: none;"
       @change="handleFileSelect"
+    />
+
+    <!-- 从收藏导入 Dialog -->
+    <MediaCollectionsImportDialog
+      v-model="isCollectionDialogVisible"
+      :selected-urls="selectedUrls"
+      :max-count="max"
+      @select-multiple="handleSelectMultipleFromCollection"
     />
   </div>
 </template>
@@ -393,6 +440,7 @@ defineExpose({
 }
 
 .upload-btn {
+  position: relative;
   width: 40px;
   height: 40px;
   border-radius: 6px;
@@ -417,5 +465,42 @@ defineExpose({
   background: #f5f7fa;
   border-color: #e4e7ed;
   color: #c0c4cc;
+}
+
+.import-from-collection-badge {
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  width: 18px;
+  height: 18px;
+  background: #6366f1;
+  color: #ffffff;
+  clip-path: polygon(100% 0, 100% 100%, 0 100%);
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-end;
+  padding-bottom: 2px;
+  padding-right: 2px;
+  cursor: pointer;
+  opacity: 0;
+  transform: scale(0.85);
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  z-index: 5;
+}
+
+.upload-btn:hover .import-from-collection-badge {
+  opacity: 0.9;
+  transform: scale(1);
+}
+
+.import-from-collection-badge:hover {
+  opacity: 1 !important;
+  background: #4f46e5;
+  transform: scale(1.15) !important;
+}
+
+.import-from-collection-badge .el-icon {
+  font-size: 8px !important;
+  color: #ffffff;
 }
 </style>

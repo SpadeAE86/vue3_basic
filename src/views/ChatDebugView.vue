@@ -1,18 +1,58 @@
 <script setup lang="ts">
-import { ref, onMounted, watch, computed } from 'vue'
+import { ref, onMounted, watch, computed, onActivated, onDeactivated, onBeforeUnmount } from 'vue'
+import { useRoute } from 'vue-router'
 import type { ChatEvent, SSEEventPayload } from '@/types/chat'
 import { mapSSEtoChatEvent } from '@/types/chat'
 import EventStream from '@/components/chat/EventStream.vue'
 import ChatInput from '@/components/chat/ChatInput.vue'
 import HistorySidebar from '@/components/chat/HistorySidebar.vue'
 import type { MediaFile } from '@/components/image/MediaUploader.vue'
+import { useCollectionsStore } from '@/stores/collections'
 
+const collectionsStore = useCollectionsStore()
+
+const route = useRoute()
 const events = ref<ChatEvent[]>([])
 const loading = ref(false)
 const sessionId = ref<string | null>(null)
 const sidebarRef = ref<InstanceType<typeof HistorySidebar> | null>(null)
 const activeRoleId = ref(localStorage.getItem('agent_debug_active_role_id') || 'default')
-const roles = ref<{ id: string; name: string; description?: string; avatar_emoji?: string }[]>([])
+const roles = ref<{ id: string; name: string; description?: string; avatar_emoji?: string; avatar_url?: string; voice_character?: string }[]>([])
+const tokenInfo = ref<{ token_count: number; threshold: number; percent: number } | null>(null)
+const autoTtsEnabled = ref(localStorage.getItem('agent_debug_auto_tts_enabled') !== 'false')
+watch(autoTtsEnabled, (newVal) => {
+  localStorage.setItem('agent_debug_auto_tts_enabled', newVal ? 'true' : 'false')
+})
+
+async function fetchTokenInfo() {
+  if (!sessionId.value) {
+    tokenInfo.value = null
+    return
+  }
+  try {
+    const res = await fetch(`${API_BASE}/chat/sessions/${sessionId.value}/tokens`)
+    if (res.ok) {
+      const data = await res.json()
+      if (data.success) {
+        tokenInfo.value = {
+          token_count: data.token_count,
+          threshold: data.threshold,
+          percent: data.percent
+        }
+      }
+    }
+  } catch (err) {
+    console.error('Failed to fetch token info:', err)
+  }
+}
+
+watch(sessionId, (newSid) => {
+  if (newSid) {
+    fetchTokenInfo()
+  } else {
+    tokenInfo.value = null
+  }
+})
 
 async function fetchRoles() {
   try {
@@ -70,6 +110,7 @@ const useMock = ref(false)
 const API_BASE = '/api'   // 你的后端地址
 
 async function handleSend(text: string, referenceMedia: MediaFile[] = [], model: string = 'gpt-5.4') {
+  resetSseAudioPlayer()
   if (useMock.value && !sessionId.value) {
     sessionId.value = 'mock_' + Math.random().toString(36).substring(2, 10)
     setTimeout(() => sidebarRef.value?.refresh(), 100)
@@ -125,6 +166,15 @@ async function handleSelectSession(sid: string, roleId = 'default') {
     localStorage.setItem('agent_debug_active_role_id', roleId)
   }
   events.value = []
+  
+  const bgSession = collectionsStore.activeEvaluationSessions[sid]
+  if (bgSession) {
+    events.value = bgSession.events
+    loading.value = false
+    await fetchTokenInfo()
+    return
+  }
+  
   loading.value = true
   
   if (sid.startsWith('mock_')) {
@@ -144,6 +194,7 @@ async function handleSelectSession(sid: string, roleId = 'default') {
     }
   }
   loading.value = false
+  await fetchTokenInfo()
 }
 
 /** 推入一个后端事件 (一次到位, 非流式) */
@@ -165,15 +216,182 @@ function handleDeleteSession(sid: string) {
   }
 }
 
-onMounted(() => {
-  fetchRoles()
-  const saved = localStorage.getItem('agent_debug_active_session_id')
-  if (saved) {
-    handleSelectSession(saved)
+onMounted(async () => {
+  await fetchRoles()
+  const queryRoleId = route.query.role_id as string
+  const querySessionId = route.query.session_id as string
+  
+  if (querySessionId && queryRoleId) {
+    await handleSelectSession(querySessionId, queryRoleId)
+    const queryMsg = route.query.message as string
+    if (queryMsg && events.value.length === 0 && !loading.value) {
+      handleSend(queryMsg)
+      router.replace({ path: '/chat', query: { ...route.query, message: undefined } })
+    }
+  } else if (queryRoleId) {
+    if (activeRoleId.value !== queryRoleId) {
+      activeRoleId.value = queryRoleId
+    } else {
+      const saved = localStorage.getItem('agent_debug_active_session_id')
+      const savedRole = localStorage.getItem('agent_debug_active_role_id') || 'default'
+      if (saved && savedRole === queryRoleId) {
+        handleSelectSession(saved, queryRoleId)
+      } else {
+        watchActiveRoleOnce()
+      }
+    }
   } else {
-    // 首次载入如果没有保存的 Session，也自动加载当前角色的最后一个 Session
-    watchActiveRoleOnce()
+    const saved = localStorage.getItem('agent_debug_active_session_id')
+    if (saved) {
+      const savedRole = localStorage.getItem('agent_debug_active_role_id') || 'default'
+      handleSelectSession(saved, savedRole)
+    } else {
+      watchActiveRoleOnce()
+    }
   }
+})
+
+watch(() => route.query, async (newQuery) => {
+  const queryRoleId = newQuery.role_id as string
+  const querySessionId = newQuery.session_id as string
+  
+  if (querySessionId && queryRoleId) {
+    await handleSelectSession(querySessionId, queryRoleId)
+    const queryMsg = newQuery.message as string
+    if (queryMsg && events.value.length === 0 && !loading.value) {
+      handleSend(queryMsg)
+      router.replace({ path: '/chat', query: { ...newQuery, message: undefined } })
+    }
+  } else if (queryRoleId && typeof queryRoleId === 'string') {
+    if (activeRoleId.value !== queryRoleId) {
+      activeRoleId.value = queryRoleId
+    }
+  }
+}, { deep: true })
+
+watch(() => {
+  if (!sessionId.value) return null
+  return collectionsStore.activeEvaluationSessions[sessionId.value]?.events
+}, (newEvts) => {
+  if (newEvts) {
+    events.value = [...newEvts]
+  }
+}, { deep: true })
+
+const isFirstActivation = ref(true)
+
+onActivated(async () => {
+  if (isFirstActivation.value) {
+    isFirstActivation.value = false
+    return
+  }
+  // Subsequent activations:
+  await fetchRoles()
+  
+  const queryRoleId = route.query.role_id as string
+  const querySessionId = route.query.session_id as string
+  
+  if (querySessionId && queryRoleId) {
+    await handleSelectSession(querySessionId, queryRoleId)
+    const queryMsg = route.query.message as string
+    if (queryMsg && events.value.length === 0 && !loading.value) {
+      handleSend(queryMsg)
+      router.replace({ path: '/chat', query: { ...route.query, message: undefined } })
+    }
+  } else {
+    // Check if localStorage has been updated with a new background session!
+    const saved = localStorage.getItem('agent_debug_active_session_id')
+    if (saved && saved !== sessionId.value) {
+      const savedRole = localStorage.getItem('agent_debug_active_role_id') || 'default'
+      await handleSelectSession(saved, savedRole)
+    }
+    // Always refresh the sidebar on activation to ensure session list is up-to-date
+    sidebarRef.value?.refresh()
+  }
+})
+
+const sseAudioPlaylist = ref<{ url: string; index: number }[]>([])
+let sseAudioExpectedIndex = 0
+let sseActiveAudio: HTMLAudioElement | null = null
+const sseIsPlayingAudio = ref(false)
+const sseIsPausedAudio = ref(false)
+const sseActiveBubbleId = ref<string | null>(null)
+
+function playSseAudioQueue() {
+  if (sseIsPlayingAudio.value) return
+  
+  const nextItem = sseAudioPlaylist.value.find(item => item.index === sseAudioExpectedIndex)
+  if (!nextItem) {
+    // 队列播放完成，重置状态
+    sseIsPlayingAudio.value = false
+    sseIsPausedAudio.value = false
+    return
+  }
+  
+  sseIsPlayingAudio.value = true
+  sseIsPausedAudio.value = false
+  const audio = new Audio(nextItem.url)
+  sseActiveAudio = audio
+  
+  audio.onended = () => {
+    sseIsPlayingAudio.value = false
+    sseActiveAudio = null
+    sseAudioExpectedIndex++
+    playSseAudioQueue()
+  }
+  
+  audio.onerror = () => {
+    console.error('SSE audio play error')
+    sseIsPlayingAudio.value = false
+    sseActiveAudio = null
+    sseAudioExpectedIndex++
+    playSseAudioQueue()
+  }
+  
+  audio.play().catch(err => {
+    console.error('SSE audio play error:', err)
+    sseIsPlayingAudio.value = false
+    sseActiveAudio = null
+    sseAudioExpectedIndex++
+    playSseAudioQueue()
+  })
+}
+
+function handleToggleSseAudio() {
+  if (sseActiveAudio) {
+    if (sseActiveAudio.paused) {
+      sseActiveAudio.play().then(() => {
+        sseIsPlayingAudio.value = true
+        sseIsPausedAudio.value = false
+      }).catch(err => {
+        console.error('Failed to resume SSE audio:', err)
+      })
+    } else {
+      sseActiveAudio.pause()
+      sseIsPlayingAudio.value = false
+      sseIsPausedAudio.value = true
+    }
+  }
+}
+
+function resetSseAudioPlayer() {
+  if (sseActiveAudio) {
+    sseActiveAudio.pause()
+    sseActiveAudio = null
+  }
+  sseAudioPlaylist.value = []
+  sseAudioExpectedIndex = 0
+  sseIsPlayingAudio.value = false
+  sseIsPausedAudio.value = false
+  sseActiveBubbleId.value = null
+}
+
+onDeactivated(() => {
+  resetSseAudioPlayer()
+})
+
+onBeforeUnmount(() => {
+  resetSseAudioPlayer()
 })
 
 async function watchActiveRoleOnce() {
@@ -288,6 +506,7 @@ async function simulateAgentResponse(userText: string) {
 // ─── 真实 SSE 连接 ──────────────────────────────────────────────
 async function connectSSE(userText: string, referenceMedia: MediaFile[] = [], model: string = 'gpt-5.4') {
   try {
+    const isEvaluation = !!route.query.space_id
     const resp = await fetch(`${API_BASE}/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -299,6 +518,9 @@ async function connectSSE(userText: string, referenceMedia: MediaFile[] = [], mo
         session_id: sessionId.value || undefined,
         max_iterations: 10,
         role_id: activeRoleId.value,
+        disable_tts: (isEvaluation || !autoTtsEnabled.value) ? true : undefined,
+        use_voice_tags: true,
+        session_title: isEvaluation ? (route.query.session_title as string || '【灵感】脑暴规划') : undefined
       }),
     })
 
@@ -329,6 +551,30 @@ async function connectSSE(userText: string, referenceMedia: MediaFile[] = [], mo
           // [DONE] 标记 = 流结束
           if (dataStr === '[DONE]') {
             finishStreaming()
+            // If it is linked to a space, save the final AI reply to that space!
+            const spaceId = route.query.space_id as string
+            if (spaceId) {
+              const lastAssistantMsg = events.value.slice().reverse().find(e => e.type === 'assistant')
+              const textContent = lastAssistantMsg?.content || ''
+              const alreadySaved = collectionsStore.items.some(i => i.space_id === spaceId && i.title.startsWith('💡 灵感脑暴规划'))
+              if (!alreadySaved && textContent.trim()) {
+                const sessionTitle = route.query.session_title as string || ''
+                const cleanTitle = sessionTitle.replace('【灵感】', '')
+                const titleStr = `💡 灵感脑暴规划 - ${cleanTitle}`
+                collectionsStore.toggleFavorite(
+                  'prompt',
+                  titleStr,
+                  undefined,
+                  {
+                    prompt: textContent,
+                    chat_session_id: sessionId.value,
+                    role_id: activeRoleId.value,
+                    subtype: 'inspiration'
+                  },
+                  spaceId
+                )
+              }
+            }
             return
           }
 
@@ -339,24 +585,75 @@ async function connectSSE(userText: string, referenceMedia: MediaFile[] = [], mo
             if (raw.event_type === 'session_id') {
               sessionId.value = raw.session_id
               localStorage.setItem('agent_debug_active_session_id', raw.session_id)
+            } else if (raw.event_type === 'update_conversation_name') {
+              if (raw.title) {
+                if (sidebarRef.value && sidebarRef.value.sessions) {
+                  const s = sidebarRef.value.sessions.find((x: any) => x.session_id === raw.session_id || x.session_id === sessionId.value)
+                  if (s) {
+                    s.title = raw.title
+                  }
+                }
+                collectionsStore.loadThemeSpaces()
+              }
             } else if (raw.event_type === 'text_chunk') {
               // text_chunk 和 agent_thought 用追加模式 (流式效果)
               appendToLast('assistant', raw.content ?? '')
             } else if (raw.event_type === 'agent_thought') {
               appendToLast('thinking', raw.content ?? '')
+            } else if (raw.event_type === 'voice_chunk') {
+              let audioUrl = raw.url || ''
+              if (raw.data_type === 'base64' && raw.data) {
+                try {
+                  const binaryString = atob(raw.data)
+                  const len = binaryString.length
+                  const bytes = new Uint8Array(len)
+                  for (let i = 0; i < len; i++) {
+                    bytes[i] = binaryString.charCodeAt(i)
+                  }
+                  const blob = new Blob([bytes], { type: 'audio/mp3' })
+                  audioUrl = URL.createObjectURL(blob)
+                } catch (err) {
+                  console.error('Failed to decode base64 voice chunk:', err)
+                }
+              }
+              sseAudioPlaylist.value.push({ url: audioUrl, index: raw.index })
+              playSseAudioQueue()
+              // 将流式返回的语音分片 url 存储到当前对应的回复气泡事件中
+              const assistantEvent = [...events.value].reverse().find(e => e.type === 'assistant')
+              if (assistantEvent) {
+                if (!assistantEvent.voiceChunks) {
+                  assistantEvent.voiceChunks = []
+                }
+                assistantEvent.voiceChunks[raw.index] = audioUrl
+                
+                // 标记当前正在播放此气泡的流式音频
+                sseActiveBubbleId.value = assistantEvent.id
+                
+                // 记录本次生成所使用的音色，供后续气泡点击朗读判断是否已变更
+                const activeRole = roles.value.find(r => r.id === activeRoleId.value)
+                assistantEvent.voiceCharacterUsed = activeRole?.voice_character || 'Vivi'
+              }
             } else {
-              // 其他事件 (tool_call, tool_result, status_update 等) 直接 push
               finishStreaming()
               pushEvent(raw)
+              if (raw.event_type === 'tool_result' && (raw.tool_name === 'schedule_heartbeat' || raw.tool_name === 'manage_scheduled_task' || raw.tool_name === 'manage_todo_list')) {
+                window.dispatchEvent(new CustomEvent('scheduler:sync'))
+              }
               if (raw.event_type === 'tool_result' && raw.tool_name === 'rename_role') {
                 fetchRoles()
               }
             }
 
             // task_complete / error → 结束
-            if (raw.event_type === 'task_complete' || raw.event_type === 'error') {
+            if (raw.event_type === 'task_complete') {
               finishStreaming()
               fetchRoles()
+              fetchTokenInfo()
+              // Do NOT return here, to allow trailing voice_chunk events to continue streaming and playing!
+            } else if (raw.event_type === 'error') {
+              finishStreaming()
+              fetchRoles()
+              fetchTokenInfo()
               return
             }
           } catch (e) {
@@ -379,6 +676,17 @@ async function connectSSE(userText: string, referenceMedia: MediaFile[] = [], mo
       <div class="chat-toolbar">
         <span class="toolbar-title">Agent 调试</span>
 
+        <!-- TTS 自动播放开关 -->
+        <div class="tts-switch-wrapper" v-if="activeRole && activeRole.voice_character">
+          <el-switch
+            v-model="autoTtsEnabled"
+            active-text="自动朗读"
+            inactive-text="静音"
+            inline-prompt
+            style="--el-switch-on-color: #6366f1; --el-switch-off-color: #94a3b8; margin-left: 12px;"
+          />
+        </div>
+
         <div class="toolbar-spacer" />
         <el-button text size="small" @click="clearEvents" :disabled="events.length === 0">
           <el-icon><i-ep-delete /></el-icon>
@@ -387,10 +695,18 @@ async function connectSSE(userText: string, referenceMedia: MediaFile[] = [], mo
       </div>
 
       <!-- 事件流 -->
-      <EventStream :events="events" :active-role="activeRole" />
+      <EventStream 
+        :events="events" 
+        :active-role="activeRole" 
+        :sse-active-bubble-id="sseActiveBubbleId"
+        :sse-is-playing-audio="sseIsPlayingAudio"
+        :sse-is-paused-audio="sseIsPausedAudio"
+        @toggle-sse-audio="handleToggleSseAudio"
+        @stop-sse-audio="resetSseAudioPlayer"
+      />
 
       <!-- 输入框 -->
-      <ChatInput :disabled="loading" v-model:role-id="activeRoleId" @send="handleSend" />
+      <ChatInput :disabled="loading" v-model:role-id="activeRoleId" :token-info="tokenInfo" @send="handleSend" />
     </div>
 
     <!-- 历史会话栏 (右侧) -->

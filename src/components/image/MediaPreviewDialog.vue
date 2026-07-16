@@ -1,7 +1,11 @@
 <script setup lang="ts">
-import { computed, ref, watch, nextTick } from 'vue'
+import { computed, ref, watch, nextTick, onMounted, onUnmounted } from 'vue'
+import { ElImageViewer } from 'element-plus'
+import type { CollectionItem } from '@/stores/collections'
+import TagsPanelOverlay from '../collections/TagsPanelOverlay.vue'
+import PromptDock from './PromptDock.vue'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   modelValue: boolean
   url: string
   /** 文生图 / 图生图 / 文生视频 / 图生视频 */
@@ -9,12 +13,32 @@ const props = defineProps<{
   prompt?: string
   tags?: string[]
   spaceName?: string
-}>()
+  referenceMedia?: Array<{ url: string; type: string }>
+  showCarousel?: boolean
+  item?: CollectionItem
+}>(), {
+  showCarousel: false
+})
 
 const emit = defineEmits<{
   (e: 'update:modelValue', value: boolean): void
   (e: 'update-tags', tags: string[]): void
+  (e: 'prefill'): void
+  (e: 'prev'): void
+  (e: 'next'): void
 }>()
+
+const refPreviewUrl = ref<string | null>(null)
+const refPreviewType = ref<string>('image')
+
+function openRefPreview(url: string, type: string = 'image') {
+  refPreviewUrl.value = url
+  refPreviewType.value = type
+}
+
+function handlePrefillBtn() {
+  emit('prefill')
+}
 
 const videoRef = ref<HTMLVideoElement | null>(null)
 
@@ -34,6 +58,7 @@ const addTagInputRef = ref<HTMLInputElement | null>(null)
 
 watch(() => props.tags, (newTags) => {
   localTags.value = [...(newTags || [])]
+  showTagPanel.value = newTags !== undefined
 }, { immediate: true })
 
 function startAddTag() {
@@ -67,6 +92,24 @@ function handleRemoveTag(tag: string) {
   emit('update-tags', localTags.value)
 }
 
+function handleKeyDown(event: KeyboardEvent) {
+  if (!props.modelValue) return
+  
+  // Skip if user is typing in inputs or textareas
+  const target = event.target as HTMLElement
+  if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
+    return
+  }
+
+  if (event.key === 'ArrowLeft') {
+    event.preventDefault()
+    emit('prev')
+  } else if (event.key === 'ArrowRight') {
+    event.preventDefault()
+    emit('next')
+  }
+}
+
 watch(
   () => props.modelValue,
   (open) => {
@@ -74,8 +117,20 @@ watch(
       videoRef.value.pause()
       videoRef.value.currentTime = 0
     }
-  },
+  }
 )
+
+onMounted(() => {
+  if (props.showCarousel) {
+    window.addEventListener('keydown', handleKeyDown, true) // Capture phase to pre-empt media player/focus-trap handlers
+  }
+})
+
+onUnmounted(() => {
+  if (props.showCarousel) {
+    window.removeEventListener('keydown', handleKeyDown, true)
+  }
+})
 
 function onClosed() {
   if (videoRef.value) {
@@ -107,89 +162,70 @@ function close() {
     @update:model-value="onVisibleChange"
     @closed="onClosed"
   >
-    <div class="preview-shell">
-      <button type="button" class="close-fab" aria-label="关闭" @click="close">
-        <el-icon :size="20"><i-ep-close /></el-icon>
+    <div class="dialog-content-wrapper">
+      <!-- Left and Right navigation buttons -->
+      <button v-if="showCarousel" type="button" class="nav-arrow nav-arrow-left" @click.stop="emit('prev')" aria-label="上一张">
+        <el-icon :size="24"><i-ep-arrow-left /></el-icon>
+      </button>
+      <button v-if="showCarousel" type="button" class="nav-arrow nav-arrow-right" @click.stop="emit('next')" aria-label="下一张">
+        <el-icon :size="24"><i-ep-arrow-right /></el-icon>
       </button>
 
-      <div class="preview-media">
-        <video
-          v-if="isVideo"
-          ref="videoRef"
-          :key="url"
-          :src="url"
-          class="media-contain"
-          controls
-          playsinline
-          preload="metadata"
-        />
-        <img v-else :src="url" alt="" class="media-contain" />
-      </div>
+      <div class="preview-shell">
+        <button type="button" class="close-fab" aria-label="关闭" @click="close">
+          <el-icon :size="20"><i-ep-close /></el-icon>
+        </button>
 
-      <div class="preview-panels-wrapper">
-        <!-- Prompt panel -->
-        <aside v-show="showPromptPanel" class="preview-panel prompt-panel">
-          <div class="panel-header">
-            <span class="panel-title">提示词</span>
-            <button class="toggle-panel-btn" @click="showPromptPanel = false">隐藏</button>
-          </div>
-          <p class="prompt-body">{{ promptText }}</p>
-        </aside>
-
-        <!-- Tag panel -->
-        <aside v-show="showTagPanel" class="preview-panel tag-panel">
-          <div class="panel-header">
-            <span class="panel-title">标签管理</span>
-            <button class="toggle-panel-btn" @click="showTagPanel = false">隐藏</button>
-          </div>
-
-          <!-- Collection folder/category tag -->
-          <div class="space-section">
-            <div class="section-subtitle">所属空间</div>
-            <span v-if="spaceName" class="space-tag-pill">
-              <el-icon><i-ep-folder /></el-icon> {{ spaceName }}
-            </span>
-            <span v-else class="space-tag-pill empty">未分类</span>
-          </div>
-
-          <!-- Item tags list -->
-          <div class="tags-section">
-            <div class="section-subtitle">内容标签</div>
-            <div class="tags-list">
-              <span v-for="(tag, idx) in localTags" :key="idx" class="tag-pill-item">
-                {{ tag }}
-                <span class="tag-pill-remove" @click="handleRemoveTag(tag)">×</span>
-              </span>
-              
-              <!-- Add tag input -->
-              <div v-if="isAddingTag" class="add-tag-form">
-                <input
-                  ref="addTagInputRef"
-                  v-model="newTagInput"
-                  class="add-tag-input"
-                  placeholder="新标签..."
-                  @keyup.enter="handleSaveTag"
-                  @blur="handleSaveTag"
-                />
-              </div>
-              <button v-else class="add-tag-btn" @click="startAddTag" title="添加标签">
-                <el-icon><i-ep-plus /></el-icon>
-              </button>
-            </div>
-          </div>
-        </aside>
-
-        <!-- Collapsed triggers -->
-        <div class="collapsed-triggers">
-          <button v-if="!showPromptPanel" class="trigger-btn" @click="showPromptPanel = true">
-            <el-icon><i-ep-document /></el-icon> 显示提示词
-          </button>
-          <button v-if="!showTagPanel" class="trigger-btn" @click="showTagPanel = true">
-            <el-icon><i-ep-price-tag /></el-icon> 显示标签
-          </button>
+        <div class="preview-media">
+          <video
+            v-if="isVideo"
+            ref="videoRef"
+            :key="url"
+            :src="url"
+            class="media-contain"
+            controls
+            playsinline
+            preload="metadata"
+          />
+          <img v-else :src="url" alt="" class="media-contain" />
         </div>
+
+        <!-- Center Bottom Prompt Dock Overlay -->
+        <PromptDock
+          v-model:visible="showPromptPanel"
+          :prompt="promptText"
+          :reference-media="referenceMedia"
+          @prefill="handlePrefillBtn"
+          @click-reference="payload => openRefPreview(payload.url, payload.type)"
+        />
+
+        <!-- Floating Tags Panel Overlay (Collections only) -->
+        <TagsPanelOverlay
+          v-if="tags !== undefined && item"
+          :item="item"
+          v-model:visible="showTagPanel"
+        />
       </div>
     </div>
+
+  <!-- 外部弹窗，解决二次预览挂载 -->
+    <ElImageViewer
+      v-if="refPreviewUrl && refPreviewType === 'image'"
+      :url-list="[refPreviewUrl]"
+      @close="refPreviewUrl = null"
+      teleported
+    />
+    <el-dialog
+      v-else-if="refPreviewUrl && refPreviewType === 'video'"
+      :model-value="true"
+      append-to-body
+      align-center
+      width="fit-content"
+      class="video-preview-inner-dialog"
+      @close="refPreviewUrl = null"
+    >
+      <video :src="refPreviewUrl" controls autoplay style="max-width: 90vw; max-height: 90vh;" />
+    </el-dialog>
   </el-dialog>
 </template>
 
@@ -198,7 +234,6 @@ function close() {
   position: relative;
   display: flex;
   width: 100%;
-  /* 上下留出视口空隙，避免贴顶、底侧留白过大 */
   height: min(94vh, calc(100dvh - 6vh));
   max-height: calc(100dvh - 12vh);
   min-height: 260px;
@@ -234,7 +269,6 @@ function close() {
   flex: 1 1 0;
   min-width: 0;
   min-height: 0;
-  border-radius: 32px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -243,7 +277,6 @@ function close() {
   box-sizing: border-box;
 }
 
-/* 完整显示画面：contain，不裁切；宽度优先撑满列，高度随比例落在列高内 */
 .media-contain {
   max-width: 100%;
   max-height: 100%;
@@ -253,204 +286,10 @@ function close() {
   object-position: center;
 }
 
-.preview-panels-wrapper {
-  display: flex;
-  height: 100%;
-  background: #111;
-  border-left: 1px solid rgba(255, 255, 255, 0.08);
-}
-
-.preview-panel {
-  width: 280px;
-  box-sizing: border-box;
-  padding: 20px;
-  overflow-y: auto;
-  color: #fff;
-  border-right: 1px solid rgba(255, 255, 255, 0.05);
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.preview-panel:last-child {
-  border-right: none;
-}
-
-.panel-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-  padding-bottom: 8px;
-}
-
-.panel-title {
-  font-size: 14px;
-  font-weight: 600;
-  color: #a78bfa;
-}
-
-.toggle-panel-btn {
-  background: none;
-  border: none;
-  color: rgba(255, 255, 255, 0.5);
-  font-size: 12px;
-  cursor: pointer;
-  padding: 2px 6px;
-  border-radius: 4px;
-}
-
-.toggle-panel-btn:hover {
-  background: rgba(255, 255, 255, 0.1);
-  color: #fff;
-}
-
-.prompt-body {
-  margin: 0;
-  font-size: 14px;
-  line-height: 1.6;
-  white-space: pre-wrap;
-  word-break: break-word;
-  color: rgba(255, 255, 255, 0.9);
-}
-
-/* Tag styles inside preview dialog */
-.space-section, .tags-section {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.section-subtitle {
-  font-size: 11px;
-  font-weight: 700;
-  color: rgba(255, 255, 255, 0.4);
-  text-transform: uppercase;
-}
-
-.space-tag-pill {
-  background: rgba(124, 58, 237, 0.2);
-  border: 1px solid rgba(124, 58, 237, 0.4);
-  color: #ddd6fe;
-  padding: 4px 10px;
-  border-radius: 12px;
-  font-size: 12px;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  width: fit-content;
-}
-
-.space-tag-pill.empty {
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  color: rgba(255, 255, 255, 0.3);
-}
-
-.tags-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  align-items: center;
-}
-
-.tag-pill-item {
-  background: rgba(5, 150, 105, 0.2);
-  border: 1px solid rgba(5, 150, 105, 0.4);
-  color: #a7f3d0;
-  padding: 2px 8px;
-  border-radius: 12px;
-  font-size: 11px;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.tag-pill-remove {
-  cursor: pointer;
-  color: rgba(255, 255, 255, 0.4);
-  font-weight: bold;
-  margin-left: 2px;
-}
-
-.tag-pill-remove:hover {
-  color: #ef4444;
-}
-
-.add-tag-btn {
-  width: 24px;
-  height: 24px;
-  border-radius: 50%;
-  border: 1px dashed rgba(255, 255, 255, 0.3);
-  background: none;
-  color: rgba(255, 255, 255, 0.6);
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: all 0.2s;
-}
-
-.add-tag-btn:hover {
-  border-color: #a78bfa;
-  color: #a78bfa;
-}
-
-.add-tag-form {
-  display: inline-flex;
-}
-
-.add-tag-input {
-  background: rgba(255, 255, 255, 0.08);
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  color: #fff;
-  border-radius: 12px;
-  padding: 2px 8px;
-  font-size: 11px;
-  outline: none;
-  width: 80px;
-}
-
-.add-tag-input:focus {
-  border-color: #a78bfa;
-}
-
-/* Collapsed triggers */
-.collapsed-triggers {
-  position: absolute;
-  right: 14px;
-  bottom: 14px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  z-index: 10;
-  pointer-events: auto;
-}
-
-.trigger-btn {
-  background: rgba(30, 30, 38, 0.85);
-  backdrop-filter: blur(8px);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  color: #fff;
-  padding: 6px 12px;
-  border-radius: 16px;
-  font-size: 11px;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  box-shadow: 0 4px 12px rgba(0,0,0,0.3);
-  transition: all 0.2s;
-}
-
-.trigger-btn:hover {
-  background: #a78bfa;
-  border-color: #a78bfa;
-}
 </style>
 
 <style>
-/* 必须带 .media-preview-dialog：裸 .el-dialog 会全局污染所有弹窗（打开媒体预览后其它对话框背景被透明化）。 */
+/* 必须带 .media-preview-dialog：避免全局污染 */
 .el-dialog.media-preview-dialog {
   padding: 0;
   margin: 10vh auto !important;
@@ -458,7 +297,7 @@ function close() {
   background: transparent !important;
   box-shadow: none !important;
   border-radius: 32px;
-  overflow: hidden;
+  overflow: visible;
 }
 
 .media-preview-dialog .el-dialog__header {
@@ -469,7 +308,61 @@ function close() {
   padding: 0;
   background: transparent;
   border-radius: 16px;
-  overflow: hidden;
+  overflow: visible;
   max-height: 96dvh;
+}
+
+.dialog-content-wrapper {
+  position: relative;
+  overflow: visible;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.nav-arrow {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  z-index: 1000;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  backdrop-filter: blur(8px);
+}
+
+.nav-arrow:hover {
+  background: rgba(255, 255, 255, 0.18);
+  border-color: rgba(255, 255, 255, 0.35);
+  color: #ffffff;
+  transform: translateY(-50%) scale(1.15);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+}
+
+.nav-arrow-left {
+  left: -76px;
+}
+
+.nav-arrow-right {
+  right: -76px;
+}
+
+@media (max-width: 1024px) {
+  .nav-arrow-left {
+    left: 8px;
+    background: rgba(0, 0, 0, 0.4);
+  }
+  .nav-arrow-right {
+    right: 8px;
+    background: rgba(0, 0, 0, 0.4);
+  }
 }
 </style>

@@ -5,7 +5,7 @@ import { useCollectionsStore } from '@/stores/collections'
 
 const props = defineProps<{
   modelValue: boolean
-  roleId: string
+  roleId?: string
   galleryImages: any[]
 }>()
 
@@ -13,6 +13,7 @@ const emit = defineEmits<{
   (e: 'update:modelValue', val: boolean): void
   (e: 'importing'): void
   (e: 'imported'): void
+  (e: 'select-image', url: string): void
 }>()
 
 const visible = ref(props.modelValue)
@@ -41,13 +42,22 @@ const filteredCollectionsItems = computed(() => {
 function isAlreadyImported(item: any) {
   const url = item.data.url || item.data.image_url
   if (!url) return false
-  return props.galleryImages.some(gImg => gImg.source_url === url)
+  return props.galleryImages.some(gImg => {
+    if (typeof gImg === 'string') return gImg === url
+    return gImg.source_url === url || gImg.url === url
+  })
 }
 
 async function handleSelectImport(item: any) {
   const url = item.data.url || item.data.image_url
   if (!url) return
   if (importingItemIds.value.includes(item.id)) return
+  
+  if (!props.roleId) {
+    emit('select-image', url)
+    visible.value = false
+    return
+  }
   
   importingItemIds.value.push(item.id)
   emit('importing')

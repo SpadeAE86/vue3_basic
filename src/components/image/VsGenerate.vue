@@ -100,6 +100,13 @@ const beautifiedPromptB = ref('')
 const resultB = computed(() => generatedImages.value.find(img => img.id === lastGeneratedIdB.value))
 const lastGeneratedIdB = ref('')
 
+const vsPreviewList = computed(() => {
+  const list = []
+  if (resultA.value) list.push(resultA.value)
+  if (resultB.value) list.push(resultB.value)
+  return list
+})
+
 const generating = ref(false)
 
 // 监听模板列表加载
@@ -525,7 +532,14 @@ function handleBeautifyRawPrompt() {
           <div class="diff-content">{{ beautifiedPromptA }}</div>
         </div>
         <div class="result-box">
-          <ResultCard v-if="resultA" :item="resultA" :model-label="resultA.model" @delete="deleteImage" />
+          <ResultCard
+            v-if="resultA"
+            :item="resultA"
+            :model-label="resultA.model"
+            :preview-list="vsPreviewList"
+            :preview-index="vsPreviewList.findIndex(i => i.id === resultA.id)"
+            @delete="deleteImage"
+          />
           <div v-else class="empty-result">等待生成...</div>
         </div>
       </div>
@@ -546,7 +560,14 @@ function handleBeautifyRawPrompt() {
           <div class="diff-content">{{ beautifiedPromptB }}</div>
         </div>
         <div class="result-box">
-          <ResultCard v-if="resultB" :item="resultB" :model-label="resultB.model" @delete="deleteImage" />
+          <ResultCard
+            v-if="resultB"
+            :item="resultB"
+            :model-label="resultB.model"
+            :preview-list="vsPreviewList"
+            :preview-index="vsPreviewList.findIndex(i => i.id === resultB.id)"
+            @delete="deleteImage"
+          />
           <div v-else class="empty-result">等待生成...</div>
         </div>
       </div>

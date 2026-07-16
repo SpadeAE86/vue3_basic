@@ -1,8 +1,17 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
+import { useRoute } from 'vue-router'
 import { Graph } from '@antv/g6'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { groupColor, buildGroupColorMap } from '@/utils/graphColors'
+import {
+  type GraphNode,
+  type GraphEdge,
+  enrichClique,
+  enrichCenter,
+  layoutConfigs,
+  getMostCentralNodeLabel
+} from '@/utils/graphHelpers'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { useChatStore } from '@/stores/chat'
 import AgentSidebar from '@/components/canvas/AgentSidebar.vue'
@@ -15,6 +24,7 @@ import {
 } from '@/api/workspace.api'
 
 const containerRef = ref<HTMLDivElement>()
+const route = useRoute()
 let graph: Graph | null = null
 
 // ============================================================
@@ -38,19 +48,6 @@ function toggleForceLayout() {
 // ============================================================
 // 原始数据 —— Agent 生成的 JSON 格式
 // ============================================================
-interface GraphNode {
-  id: string
-  data: { label: string; group: string; _isCenter?: boolean }
-  [key: string]: any
-}
-
-interface GraphEdge {
-  source: string
-  target: string
-  data: { label: string; _cluster?: boolean }
-  [key: string]: any
-}
-
 const graphData: { nodes: GraphNode[], edges: GraphEdge[] } = {
   nodes: [
     { id: 'vue3', data: { label: 'Vue 3', group: 'framework' } },
@@ -79,108 +76,6 @@ const graphData: { nodes: GraphNode[], edges: GraphEdge[] } = {
     { source: 'electron', target: 'nodejs', data: { label: '运行时' } },
     { source: 'electron', target: 'vite', data: { label: 'HMR 集成' } },
   ],
-}
-
-// ============================================================
-// 策略 A: Clique 全连接虚边
-// O(n²) 边，但同组节点之间 every pair 都有直接拉力，聚合效果最好
-// ============================================================
-function enrichClique(data: { nodes: GraphNode[], edges: GraphEdge[] }) {
-  const groupMap = new Map<string, string[]>()
-  for (const node of data.nodes) {
-    const g = node.data?.group || 'default'
-    if (!groupMap.has(g)) groupMap.set(g, [])
-    groupMap.get(g)!.push(node.id)
-  }
-
-  const clusterEdges: typeof data.edges = []
-  for (const [, ids] of groupMap) {
-    for (let i = 0; i < ids.length; i++) {
-      for (let j = i + 1; j < ids.length; j++) {
-        const exists = data.edges.some(
-          (e) =>
-            (e.source === ids[i] && e.target === ids[j]) ||
-            (e.source === ids[j] && e.target === ids[i]),
-        )
-        if (!exists) {
-          clusterEdges.push({
-            source: ids[i] as string,
-            target: ids[j] as string,
-            data: { label: '', _cluster: true },
-          })
-        }
-      }
-    }
-  }
-  return { nodes: [...data.nodes], edges: [...data.edges, ...clusterEdges] }
-}
-
-// ============================================================
-// 策略 B: 虚拟中心节点
-// O(n) 边，可扩展性好，但 center 位置是被动平衡，聚合效果较弱
-// ============================================================
-function enrichCenter(data: { nodes: GraphNode[], edges: GraphEdge[] }) {
-  const groupMap = new Map<string, string[]>()
-  for (const node of data.nodes) {
-    const g = node.data?.group || 'default'
-    if (!groupMap.has(g)) groupMap.set(g, [])
-    groupMap.get(g)!.push(node.id)
-  }
-
-  const centerNodes: typeof data.nodes = []
-  const centerEdges: typeof data.edges = []
-
-  for (const [group, ids] of groupMap) {
-    const centerId = `__center_${group}`
-    centerNodes.push({
-      id: centerId,
-      data: { label: '', group, _isCenter: true },
-    })
-    for (const nodeId of ids) {
-      centerEdges.push({
-        source: centerId,
-        target: nodeId,
-        data: { label: '', _cluster: true },
-      })
-    }
-  }
-
-  return {
-    nodes: [...data.nodes, ...centerNodes],
-    edges: [...data.edges, ...centerEdges],
-  }
-}
-
-// ============================================================
-// 布局参数 —— 两种模式用不同的力参数
-// ============================================================
-const layoutConfigs = {
-  clique: {
-    type: 'd3-force' as const,
-    animated: true,
-    preventOverlap: true,
-    link: {
-      distance: (edge: any) => (edge.data?._cluster ? 60 : 180),
-      strength: (edge: any) => (edge.data?._cluster ? 0.4 : 0.15),
-    },
-    collide: { radius: 50, strength: 0.8 },
-    manyBody: { strength: -300 },
-    center: { strength: 0.05 },
-  },
-  center: {
-    type: 'd3-force' as const,
-    animated: true,
-    preventOverlap: true,
-    link: {
-      distance: (edge: any) => (edge.data?._cluster ? 30 : 200),
-      strength: (edge: any) => (edge.data?._cluster ? 1.2 : 0.05),
-    },
-    collide: { radius: 40, strength: 0.9 },
-    manyBody: {
-      strength: (d: any) => (d.data?._isCenter ? 0 : -250),
-    },
-    center: { strength: 0.05 },
-  },
 }
 
 // 节点颜色映射 —— 动态根据当前图的 groups 生成，支持任意 group 名称
@@ -252,18 +147,49 @@ function createGraph(mode: 'clique' | 'center' | 'static') {
           stroke: '#fff',
           lineWidth: 2,
         },
+        state: {
+          active: {
+            size: 50,
+            opacity: 1,
+          },
+          inactive: {
+            opacity: 0.2,
+          }
+        },
+        animation: {
+          state: [{ fields: ['size', 'opacity'], duration: 250, easing: 'cubic-bezier(0.25, 1, 0.5, 1)' }]
+        }
       },
       edge: {
         style: {
           ...sharedEdgeStyle,
           stroke: '#c0c4cc',
           lineWidth: 1.5,
-          endArrow: true,
+          endArrow: false,
           labelText: (d: any) => d.data?.label || '',
+          label: false,
         },
+        state: {
+          active: {
+            stroke: '#409eff',
+            lineWidth: 2,
+            endArrow: true,
+            label: true,
+            opacity: 1,
+          },
+          inactive: {
+            opacity: 0.2,
+            label: false,
+          }
+        },
+        animation: {
+          state: [{ fields: ['stroke', 'lineWidth', 'opacity'], duration: 250, easing: 'cubic-bezier(0.25, 1, 0.5, 1)' }]
+        }
       },
       behaviors: ['drag-canvas', 'zoom-canvas', 'drag-element'],
     })
+    
+    registerHoverHandlers(graph)
     graph.render()
     return
   }
@@ -297,15 +223,46 @@ function createGraph(mode: 'clique' | 'center' | 'static') {
         lineWidth: (d: any) => (d.data?._isCenter ? 0 : 2),
         opacity: (d: any) => (d.data?._isCenter ? 0 : 1),
       },
+      state: {
+        active: {
+          size: 50,
+          opacity: 1,
+        },
+        inactive: {
+          opacity: 0.2,
+        }
+      },
+      animation: {
+        state: [{ fields: ['size', 'opacity'], duration: 250, easing: 'cubic-bezier(0.25, 1, 0.5, 1)' }]
+      }
     },
     edge: {
       style: {
         ...sharedEdgeStyle,
         stroke: (d: any) => (d.data?._cluster ? 'transparent' : '#c0c4cc'),
         lineWidth: (d: any) => (d.data?._cluster ? 0 : 1.5),
-        endArrow: (d: any) => !d.data?._cluster,
-        labelText: (d: any) => d.data?.label || '',
+        endArrow: false,
+        labelText: (d: any) => (d.data?._cluster ? '' : (d.data?.label || '')),
+        label: false,
       },
+      state: {
+        active: {
+          stroke: '#409eff',
+          lineWidth: 2,
+          endArrow: true,
+          label: true,
+          opacity: 1,
+          labelBackground: true,
+          labelBackgroundFill: '#ffffff'
+        },
+        inactive: {
+          opacity: 0.2,
+          label: false,
+        }
+      },
+      animation: {
+        state: [{ fields: ['stroke', 'lineWidth', 'opacity'], duration: 250, easing: 'cubic-bezier(0.25, 1, 0.5, 1)' }]
+      }
     },
     behaviors: [
       'drag-canvas',
@@ -314,7 +271,65 @@ function createGraph(mode: 'clique' | 'center' | 'static') {
     ],
   })
 
+  registerHoverHandlers(graph)
   graph.render()
+}
+
+function registerHoverHandlers(g: Graph) {
+  let isDragging = false
+
+  g.on('dragstart', () => {
+    isDragging = true
+  })
+
+  g.on('dragend', () => {
+    isDragging = false
+  })
+
+  g.on('node:pointerenter', (evt) => {
+    if (isDragging) return
+    const nodeId = evt.itemId || (evt.target && evt.target.id)
+    if (!nodeId) return
+    const data = g.getData()
+    
+    const states: Record<string, string[]> = {}
+    
+    data.nodes.forEach((node: any) => {
+      if (node.data?._isCenter) return
+      const isSelf = node.id === nodeId
+      const isSelfOrNeighbor = isSelf || data.edges.some((e: any) => 
+        !e.data?._cluster && (
+          (e.source === nodeId && e.target === node.id) || 
+          (e.target === nodeId && e.source === node.id)
+        )
+      )
+      states[node.id] = [isSelfOrNeighbor ? 'active' : 'inactive']
+    })
+    
+    data.edges.forEach((edge: any) => {
+      if (edge.data?._cluster) return // Ignore virtual layout cluster edges
+      const isConnected = edge.source === nodeId || edge.target === nodeId
+      states[edge.id] = [isConnected ? 'active' : 'inactive']
+    })
+    
+    g.setElementState(states)
+  })
+
+  g.on('node:pointerleave', () => {
+    if (isDragging) return
+    const data = g.getData()
+    const states: Record<string, string[]> = {}
+    
+    data.nodes.forEach((node: any) => {
+      states[node.id] = []
+    })
+    
+    data.edges.forEach((edge: any) => {
+      states[edge.id] = []
+    })
+    
+    g.setElementState(states)
+  })
 }
 
 // 切换模式时重建图
@@ -379,45 +394,7 @@ async function selectGraph(name: string) {
   }
 }
 
-// 默认命名算法：找度数（连接边数）最高的节点
-function getMostCentralNodeLabel(nodes: GraphNode[], edges: GraphEdge[]): string {
-  if (!nodes || nodes.length === 0) return '未命名力导图'
-  
-  const degreeMap: Record<string, number> = {}
-  for (const node of nodes) {
-    degreeMap[node.id] = 0
-  }
-  
-  for (const edge of edges) {
-    if (degreeMap[edge.source] !== undefined) {
-      degreeMap[edge.source] = (degreeMap[edge.source] || 0) + 1
-    }
-    if (degreeMap[edge.target] !== undefined) {
-      degreeMap[edge.target] = (degreeMap[edge.target] || 0) + 1
-    }
-  }
-  
-  let maxDegree = -1
-  let centralNodeId = ''
-  for (const node of nodes) {
-    const deg = degreeMap[node.id] || 0
-    if (deg > maxDegree) {
-      maxDegree = deg
-      centralNodeId = node.id
-    }
-  }
-  
-  const centralNode = nodes.find(n => n.id === centralNodeId)
-  if (centralNode) {
-    return centralNode.data?.label || centralNode.id
-  }
-  
-  const firstNode = nodes[0]
-  if (firstNode) {
-    return firstNode.data?.label || firstNode.id
-  }
-  return '未命名力导图'
-}
+
 
 function handleDrop(e: DragEvent) {
   const files = e.dataTransfer?.files
@@ -631,8 +608,9 @@ onMounted(async () => {
     }
   }
   
-  // 从 localStorage 恢复上次选中的图（切页面/刷新后维持选中状态）
-  const startGraph = workspaceStore.selectedGraphName
+  // 优先从 URL query.name 读取，其次从 localStorage 恢复
+  const queryGraph = route.query.name as string
+  const startGraph = queryGraph || workspaceStore.selectedGraphName
   const exists = startGraph && historyList.value.some(h => h.name === startGraph)
   if (exists) {
     selectGraph(startGraph)

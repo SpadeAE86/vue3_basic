@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
+import { getImageStatusApi } from '@/api/generate'
 
 // 导入子组件
 import RoleVisualPanel from '@/components/role/RoleVisualPanel.vue'
@@ -9,15 +10,29 @@ import RoleConfigPanel from '@/components/role/RoleConfigPanel.vue'
 import RoleTabsPanel from '@/components/role/RoleTabsPanel.vue'
 import AvatarCropDialog from '@/components/role/AvatarCropDialog.vue'
 import CollectionsImportDialog from '@/components/role/CollectionsImportDialog.vue'
+import AiGenerateDialog from '@/components/role/AiGenerateDialog.vue'
 
 const route = useRoute()
 const router = useRouter()
 const roleId = computed(() => route.params.role_id as string)
 
+const isFromChat = computed(() => route.query.from === 'chat')
+const backText = computed(() => isFromChat.value ? '返回 Agent 对话' : '返回角色列表')
+const backTitle = computed(() => isFromChat.value ? '返回 Agent 对话' : '返回角色列表')
+
+function goBack() {
+  if (isFromChat.value) {
+    router.push(`/chat?role_id=${roleId.value}`)
+  } else {
+    router.push('/role-cards')
+  }
+}
+
 const roleMeta = ref<any>(null)
 const userSettings = ref('')
 const identityContent = ref('')
 const soulContent = ref('')
+const habbitContent = ref('')
 
 const saveLoading = ref(false)
 const loading = ref(false)
@@ -30,6 +45,92 @@ const isImporting = ref(false)
 // 弹窗可见性
 const collectionsDialogVisible = ref(false)
 const cropDialogVisible = ref(false)
+const aiGenerateDialogVisible = ref(false)
+
+// 生图任务追踪
+const generatingTasks = ref<Array<{ taskId: string; prompt: string }>>([])
+const pollingIntervals: Record<string, number> = {}
+
+onUnmounted(() => {
+  Object.values(pollingIntervals).forEach(clearInterval)
+})
+
+function handleTaskSubmitted(task: { taskId: string; prompt: string }) {
+  generatingTasks.value.push(task)
+  startImagePolling(task.taskId)
+}
+
+async function startImagePolling(taskId: string) {
+  if (pollingIntervals[taskId]) {
+    clearInterval(pollingIntervals[taskId])
+  }
+  
+  const startTime = Date.now()
+  const MAX_POLLING_TIME = 15 * 60 * 1000 // 15 minutes
+  
+  const tick = async () => {
+    try {
+      if (Date.now() - startTime > MAX_POLLING_TIME) {
+        clearInterval(pollingIntervals[taskId])
+        delete pollingIntervals[taskId]
+        generatingTasks.value = generatingTasks.value.filter(t => t.taskId !== taskId)
+        ElMessage.error('生图任务超时')
+        return
+      }
+      
+      const data = await getImageStatusApi(taskId)
+      if (!data.success) {
+        clearInterval(pollingIntervals[taskId])
+        delete pollingIntervals[taskId]
+        generatingTasks.value = generatingTasks.value.filter(t => t.taskId !== taskId)
+        ElMessage.error(data.error || '获取生图状态失败')
+        return
+      }
+      
+      const st = String(data.status || '').toLowerCase()
+      const url = data.url
+      
+      if (st === 'failed' || st === 'error') {
+        clearInterval(pollingIntervals[taskId])
+        delete pollingIntervals[taskId]
+        generatingTasks.value = generatingTasks.value.filter(t => t.taskId !== taskId)
+        ElMessage.error(data.error || '图片生成失败')
+        return
+      }
+      
+      if (url) {
+        clearInterval(pollingIntervals[taskId])
+        delete pollingIntervals[taskId]
+        
+        // 成功生成，开始导入角色相册
+        try {
+          const resImport = await fetch(`/api/chat/roles/${roleId.value}/gallery/import`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url })
+          })
+          const importData = await resImport.json()
+          if (importData.ok) {
+            ElMessage.success('图片生成并成功导入画廊')
+            await fetchRoleDetails()
+            await fetchGallery()
+          } else {
+            ElMessage.error(importData.error || '导入画廊失败')
+          }
+        } catch (importErr) {
+          ElMessage.error('导入画廊异常')
+        } finally {
+          generatingTasks.value = generatingTasks.value.filter(t => t.taskId !== taskId)
+        }
+      }
+    } catch (err) {
+      console.error('Polling error for task:', taskId, err)
+    }
+  }
+  
+  pollingIntervals[taskId] = window.setInterval(tick, 3000)
+  void tick()
+}
 
 async function fetchRoleDetails() {
   loading.value = true
@@ -41,6 +142,12 @@ async function fetchRoleDetails() {
       const found = allRoles.find((r: any) => r.id === roleId.value)
       if (found) {
         if (!found.tags) found.tags = []
+        if (found.daily_message_enabled === undefined) {
+          found.daily_message_enabled = true
+        }
+        if (!found.voice_character) {
+          found.voice_character = 'Vivi'
+        }
         roleMeta.value = found
       }
     }
@@ -65,6 +172,14 @@ async function fetchRoleDetails() {
       soulContent.value = await resSoul.text()
     } else {
       soulContent.value = 'SOUL.md 正在由 AI 自动维护...'
+    }
+
+    // 4. 获取角色台词 (HABIT.md)
+    const resHabit = await fetch(`/api/chat/roles/${roleId.value}/files/HABIT.md?t=${Date.now()}`)
+    if (resHabit.ok) {
+      habbitContent.value = await resHabit.text()
+    } else {
+      habbitContent.value = ''
     }
 
   } catch (err) {
@@ -119,7 +234,9 @@ async function handleUpdateMeta() {
         name: roleMeta.value.name,
         description: roleMeta.value.description,
         tags: roleMeta.value.tags,
-        voice_configured: roleMeta.value.voice_configured
+        voice_configured: roleMeta.value.voice_configured,
+        voice_character: roleMeta.value.voice_character || 'Vivi',
+        daily_message_enabled: roleMeta.value.daily_message_enabled
       })
     })
     const data = await res.json()
@@ -129,6 +246,14 @@ async function handleUpdateMeta() {
   } catch (err) {
     console.error('更新元数据失败:', err)
     ElMessage.error('更新基本设定失败')
+  }
+}
+
+function handleUpdateVoiceCharacter(voiceCharacter: string) {
+  if (roleMeta.value) {
+    roleMeta.value.voice_character = voiceCharacter
+    roleMeta.value.voice_configured = !!voiceCharacter
+    handleUpdateMeta()
   }
 }
 
@@ -225,10 +350,12 @@ onMounted(() => {
 
 <template>
   <div class="role-space-container" v-loading="loading">
-    <!-- 左上角返回导航 -->
-    <div class="back-navigation-header" @click="router.push('/role-cards')" title="返回角色列表">
-      <el-icon class="back-icon"><i-ep-arrow-left /></el-icon>
-      <span>返回角色列表</span>
+    <!-- 左上角返回导航（左对齐至 1200px 布局区域）-->
+    <div class="back-navigation-wrapper">
+      <div class="back-navigation-header" @click="goBack" :title="backTitle">
+        <el-icon class="back-icon"><i-ep-arrow-left /></el-icon>
+        <span>{{ backText }}</span>
+      </div>
     </div>
 
     <div class="role-space-layout" v-if="roleMeta">
@@ -240,10 +367,12 @@ onMounted(() => {
         :gallery-images="galleryImages"
         :selected-gallery-image="selectedGalleryImage"
         :is-importing="isImporting"
+        :generating-tasks="generatingTasks"
         @select-thumbnail="handleSelectThumbnail"
         @set-portrait="handleSetPortrait"
         @delete-image="handleDeleteImage"
         @open-import="collectionsDialogVisible = true"
+        @open-ai-generate="aiGenerateDialogVisible = true"
         @upload-success="fetchGallery"
       />
 
@@ -254,13 +383,20 @@ onMounted(() => {
           :role-meta="roleMeta"
           @open-crop="cropDialogVisible = true"
           @update-meta="handleUpdateMeta"
+          @update-voice-character="handleUpdateVoiceCharacter"
           @start-chat="router.push(`/chat?role_id=${roleId}`)"
         />
 
         <RoleTabsPanel
+          :role-id="roleId"
+          :voice-configured="roleMeta.voice_configured"
+          :voice-character="roleMeta.voice_character || 'Vivi'"
+          :role-description="roleMeta.description || ''"
+          :role-tags="roleMeta.tags || []"
           v-model:user-settings="userSettings"
           v-model:identity-content="identityContent"
           v-model:soul-content="soulContent"
+          v-model:habbit-content="habbitContent"
           :save-loading="saveLoading"
           @save-file="handleSaveFile"
         />
@@ -282,6 +418,15 @@ onMounted(() => {
       :role-id="roleId"
       :source-url="displayPortraitUrl"
       @cropped="onCropped"
+    />
+
+    <!-- AI 生图 Dialog -->
+    <AiGenerateDialog
+      v-model="aiGenerateDialogVisible"
+      :role-id="roleId"
+      :role-name="roleMeta?.name || ''"
+      :role-description="roleMeta?.description || ''"
+      @task-submitted="handleTaskSubmitted"
     />
   </div>
 </template>
@@ -309,12 +454,18 @@ onMounted(() => {
   gap: 20px;
 }
 
+/* 对齐导航按钮到 1200px 布局区域的左侧 */
+.back-navigation-wrapper {
+  max-width: 1200px;
+  margin: 0 auto 16px auto;
+  display: flex;
+  justify-content: flex-start;
+}
+
 .back-navigation-header {
   display: flex;
   align-items: center;
   gap: 8px;
-  max-width: 1200px;
-  margin: 0 auto 16px auto;
   color: #64748b;
   font-size: 14px;
   font-weight: 500;

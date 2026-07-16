@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, watch } from 'vue'
+import { ref, onMounted, onUnmounted, watch } from 'vue'
 import PromptComposer from '@/components/image/PromptComposer.vue'
 import ResultGrid from '@/components/image/ResultGrid.vue'
 import TemplateEditDialog from '@/components/image/TemplateEditDialog.vue'
@@ -53,9 +53,52 @@ const {
   retryImageTask,
 } = useGenerateHistory(currentMode)
 
+const prefillListener = (event: Event) => {
+  const detail = (event as CustomEvent<any>).detail
+  if (!detail) return
+  
+  const isVideo = detail.type?.includes('v') || detail.type?.includes('video')
+  currentMode.value = isVideo ? 'video' : 'image'
+  
+  form.prompt = detail.prompt || ''
+  
+  if (isVideo) {
+    if (detail.model) form.videoModel = detail.model
+    if (detail.resolution) form.videoResolution = detail.resolution
+    if (detail.duration) form.videoDuration = detail.duration
+  } else {
+    if (detail.model) form.imageModel = detail.model
+    if (detail.resolution) {
+      form.sizeLevel = detail.resolution
+    } else if (detail.size && ['1K', '2K', '3K', '4K'].includes(detail.size)) {
+      form.sizeLevel = detail.size
+    }
+  }
+  
+  if (detail.ratio) {
+    form.ratio = detail.ratio
+  }
+  
+  if (detail.referenceMedia && Array.isArray(detail.referenceMedia)) {
+    form.referenceMedia = detail.referenceMedia.map((m: any) => ({
+      name: m.url ? m.url.split('/').pop() || 'reference' : 'reference',
+      url: m.url,
+      type: m.type || 'image',
+      status: 'done' as const
+    }))
+  } else {
+    form.referenceMedia = []
+  }
+}
+
 onMounted(async () => {
   loadTemplates()
   await loadHistory()
+  window.addEventListener('imagegen:prefill', prefillListener)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('imagegen:prefill', prefillListener)
 })
 
 watch(currentMode, async () => {
